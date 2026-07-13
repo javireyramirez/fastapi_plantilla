@@ -1,0 +1,61 @@
+services:
+  api: &main_app
+    build:
+      context: .
+      target: dev
+      dockerfile: ./Dockerfile
+    image: fastapi_plantilla:${FASTAPI_PLANTILLA_VERSION:-latest}
+    restart: always
+    ports:
+      # Exposes application port.
+    - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    environment:
+      FASTAPI_PLANTILLA_HOST: 0.0.0.0
+      FASTAPI_PLANTILLA_RELOAD: "True"
+      FASTAPI_PLANTILLA_DB_HOST: fastapi_plantilla-db
+      FASTAPI_PLANTILLA_DB_PORT: 5432
+      FASTAPI_PLANTILLA_DB_USER: fastapi_plantilla
+      FASTAPI_PLANTILLA_DB_PASS: fastapi_plantilla
+      FASTAPI_PLANTILLA_DB_BASE: fastapi_plantilla
+    volumes:
+      - .:/app/src/
+
+  db:
+    image: postgres:18.3-trixie
+    hostname: fastapi_plantilla-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: "fastapi_plantilla"
+      POSTGRES_USER: "fastapi_plantilla"
+      POSTGRES_DB: "fastapi_plantilla"
+    volumes:
+      - fastapi_plantilla-db-data:/var/lib/postgresql
+    restart: always
+    healthcheck:
+      test: pg_isready -U fastapi_plantilla
+      interval: 2s
+      timeout: 3s
+      retries: 40
+
+  migrator:
+    <<: *main_app
+    restart: "no"
+    command: alembic upgrade head
+    depends_on:
+      db:
+        condition: service_healthy
+
+
+
+volumes:
+  fastapi_plantilla-db-data:
+    name: fastapi_plantilla-db-data
