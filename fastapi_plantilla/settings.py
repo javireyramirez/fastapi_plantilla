@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     db_base: str = "fastapi_plantilla"
     db_echo: bool = False
 
+    # Authentication & Security
+    auth_secret: str
+    google_client_id: str | None = None
+    google_client_secret: str | None = None
+    session_cookie_name: str = "fastapi_session"
+    session_expire_days: int = 7
+    cookie_secure: bool = False
+
     @property
     def db_url(self) -> URL:
         """
@@ -69,4 +77,4 @@ class Settings(BaseSettings):
     )
 
 
-settings = Settings()
+settings = Settings()  # type: ignore[call-arg]
