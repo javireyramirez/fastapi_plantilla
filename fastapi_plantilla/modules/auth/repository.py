@@ -8,7 +8,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from fastapi_plantilla.db.dependencies import get_db_session
+from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.modules.auth.models import (
     Account,
     Session,

@@ -2,6 +2,7 @@ from functools import lru_cache
 
 from fastapi import Depends
 
+from fastapi_plantilla.core.config import EmailBackend, settings
 from fastapi_plantilla.modules.email.renderer import TemplateRenderer
 from fastapi_plantilla.modules.email.service import EmailService
 from fastapi_plantilla.modules.email.transports import (
@@ -9,7 +10,6 @@ from fastapi_plantilla.modules.email.transports import (
     ResendTransport,
     SmtpTransport,
 )
-from fastapi_plantilla.settings import EmailBackend, settings
 
 
 @lru_cache

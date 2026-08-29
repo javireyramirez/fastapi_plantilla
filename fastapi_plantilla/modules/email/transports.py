@@ -7,8 +7,8 @@ import resend
 from loguru import logger
 from resend.exceptions import ResendError
 
+from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.modules.email.builder import EmailPayload
-from fastapi_plantilla.settings import settings
 
 
 class BaseTransport(Protocol):

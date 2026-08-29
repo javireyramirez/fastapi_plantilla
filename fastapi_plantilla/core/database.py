@@ -1,12 +1,49 @@
+import pkgutil
+from collections.abc import AsyncGenerator
+from pathlib import Path
+
+import sqlalchemy as sa
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
+from starlette.requests import Request
 
-from fastapi_plantilla.settings import settings
+from fastapi_plantilla.core.config import settings
+
+meta = sa.MetaData()
+
+
+class Base(DeclarativeBase):
+    """Base class for all SQLAlchemy models."""
+
+    metadata = meta
+
+
+def load_all_models() -> None:
+    """Load all domain models from the modules directory."""
+    modules_dir = Path(__file__).resolve().parent.parent / "modules"
+    if modules_dir.exists():
+        for module in pkgutil.walk_packages(
+            path=[str(modules_dir)],
+            prefix="fastapi_plantilla.modules.",
+        ):
+            if module.name.endswith(".models"):
+                __import__(module.name)
+
+
+async def get_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
+    """Provide a transactional database session for the request lifecycle."""
+    session: AsyncSession = request.app.state.db_session_factory()
+    try:
+        yield session
+    finally:
+        await session.commit()
+        await session.close()
 
 
 async def create_database() -> None:
-    """Create a database."""
+    """Create application database if it does not exist."""
     db_url = make_url(str(settings.db_url.with_path("/postgres")))
     engine = create_async_engine(db_url, isolation_level="AUTOCOMMIT")
 
@@ -27,10 +64,11 @@ async def create_database() -> None:
                 f'CREATE DATABASE "{settings.db_base}" ENCODING "utf8" TEMPLATE template1',  # noqa: E501
             )
         )
+    await engine.dispose()
 
 
 async def drop_database() -> None:
-    """Drop current database."""
+    """Drop application database if it exists."""
     db_url = make_url(str(settings.db_url.with_path("/postgres")))
     engine = create_async_engine(db_url, isolation_level="AUTOCOMMIT")
     async with engine.connect() as conn:
@@ -42,3 +80,4 @@ async def drop_database() -> None:
         )
         await conn.execute(text(disc_users))
         await conn.execute(text(f'DROP DATABASE "{settings.db_base}"'))
+    await engine.dispose()

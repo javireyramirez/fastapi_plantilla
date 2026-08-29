@@ -2,11 +2,11 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio.engine import create_async_engine
-from sqlalchemy.future import Connection
-from fastapi_plantilla.db.meta import meta
-from fastapi_plantilla.db.models import load_all_models
-from fastapi_plantilla.settings import settings
+
+from fastapi_plantilla.core.config import settings
+from fastapi_plantilla.core.database import load_all_models, meta
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -77,6 +77,7 @@ async def run_migrations_online() -> None:
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
+
 
 loop = asyncio.get_event_loop()
 if context.is_offline_mode():

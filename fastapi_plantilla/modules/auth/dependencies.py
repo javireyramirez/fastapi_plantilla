@@ -1,8 +1,8 @@
 from fastapi import Cookie, Depends, Header, HTTPException, status
 
+from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.modules.auth.schema import AuthResponse, UserResponse
 from fastapi_plantilla.modules.auth.service import AuthService
-from fastapi_plantilla.settings import settings
 
 
 async def get_current_session(

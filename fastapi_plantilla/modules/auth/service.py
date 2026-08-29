@@ -8,6 +8,7 @@ from argon2.exceptions import VerifyMismatchError
 from fastapi import Depends, HTTPException, status
 from yarl import URL
 
+from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.auth.repository import AuthRepository
 from fastapi_plantilla.modules.auth.schema import (
@@ -22,7 +23,6 @@ from fastapi_plantilla.modules.auth.schema import (
     UserResponse,
 )
 from fastapi_plantilla.modules.auth.utils import sign_token, unsign_token
-from fastapi_plantilla.settings import settings
 
 ph = PasswordHasher()
 

@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from fastapi_plantilla.core.config import EmailBackend, settings
 from fastapi_plantilla.modules.email.builder import EmailBuilder, EmailPayload
 from fastapi_plantilla.modules.email.dependencies import (
     get_email_service,
@@ -11,7 +12,6 @@ from fastapi_plantilla.modules.email.dependencies import (
 from fastapi_plantilla.modules.email.renderer import TemplateRenderer
 from fastapi_plantilla.modules.email.service import EmailService
 from fastapi_plantilla.modules.email.transports import ResendTransport, SmtpTransport
-from fastapi_plantilla.settings import EmailBackend, settings
 
 
 def test_template_renderer_renders_html_with_context() -> None:

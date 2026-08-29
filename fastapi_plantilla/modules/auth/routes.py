@@ -11,6 +11,7 @@ from fastapi import (
 )
 from fastapi.responses import RedirectResponse
 
+from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.modules.auth.dependencies import (
     get_current_session,
     get_current_user,
@@ -25,7 +26,6 @@ from fastapi_plantilla.modules.auth.schema import (
     UserResponse,
 )
 from fastapi_plantilla.modules.auth.service import AuthService
-from fastapi_plantilla.settings import settings
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 

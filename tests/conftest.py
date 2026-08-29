@@ -11,10 +11,15 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from fastapi_plantilla.db.dependencies import get_db_session
-from fastapi_plantilla.db.utils import create_database, drop_database
-from fastapi_plantilla.settings import settings
-from fastapi_plantilla.web.application import get_app
+from fastapi_plantilla.app import get_app
+from fastapi_plantilla.core.config import settings
+from fastapi_plantilla.core.database import (
+    create_database,
+    drop_database,
+    get_db_session,
+    load_all_models,
+    meta,
+)
 
 
 @pytest.fixture(scope="session")
@@ -34,9 +39,6 @@ async def _engine(anyio_backend: Any) -> AsyncGenerator[AsyncEngine, None]:
 
     :yield: new engine.
     """
-    from fastapi_plantilla.db.meta import meta
-    from fastapi_plantilla.db.models import load_all_models
-
     load_all_models()
 
     await create_database()

@@ -1,14 +1,14 @@
 import uvicorn
 
+from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.gunicorn_runner import GunicornApplication
-from fastapi_plantilla.settings import settings
 
 
 def main() -> None:
     """Entrypoint of the application."""
     if settings.reload:
         uvicorn.run(
-            "fastapi_plantilla.web.application:get_app",
+            "fastapi_plantilla.app:get_app",
             workers=settings.workers_count,
             host=settings.host,
             port=settings.port,
@@ -21,7 +21,7 @@ def main() -> None:
         # option is not used, because reload
         # feature doesn't work with gunicorn workers.
         GunicornApplication(
-            "fastapi_plantilla.web.application:get_app",
+            "fastapi_plantilla.app:get_app",
             host=settings.host,
             port=settings.port,
             workers=settings.workers_count,

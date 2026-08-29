@@ -27,11 +27,7 @@ class EmailBackend(enum.StrEnum):
 
 
 class Settings(BaseSettings):
-    """
-    Application settings.
-
-    All configurations are loaded from environment variables (.env).
-    """
+    """Application settings loaded from environment variables."""
 
     # Server / App
     host: str = "127.0.0.1"
@@ -78,11 +74,7 @@ class Settings(BaseSettings):
 
     @property
     def db_url(self) -> URL:
-        """
-        Assemble database URL from settings.
-
-        :return: database URL.
-        """
+        """Assemble database URL from settings."""
         return URL.build(
             scheme="postgresql+asyncpg",
             host=self.db_host,

@@ -15,7 +15,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from fastapi_plantilla.db.base import Base
+from fastapi_plantilla.core.database import Base
 
 
 class User(Base):
