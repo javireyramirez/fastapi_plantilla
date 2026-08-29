@@ -19,32 +19,37 @@ class LogLevel(enum.StrEnum):
     FATAL = "FATAL"
 
 
+class EmailBackend(enum.StrEnum):
+    """Supported email backends."""
+
+    SMTP = "smtp"
+    RESEND = "resend"
+
+
 class Settings(BaseSettings):
     """
     Application settings.
 
-    These parameters can be configured
-    with environment variables.
+    All configurations are loaded from environment variables (.env).
     """
 
+    # Server / App
     host: str = "127.0.0.1"
     port: int = 8000
-    # quantity of workers for uvicorn
     workers_count: int = 1
-    # Enable uvicorn reloading
     reload: bool = False
-
-    # Current environment
     environment: str = "dev"
-
     log_level: LogLevel = LogLevel.INFO
-    # Variables for the database
-    db_host: str = "localhost"
-    db_port: int = 5432
-    db_user: str = "fastapi_plantilla"
-    db_pass: str = "fastapi_plantilla"  # noqa: S105
-    db_base: str = "fastapi_plantilla"
+
+    # Database
+    db_host: str
+    db_port: int | None = None
+    db_user: str | None = None
+    db_pass: str | None = None
+    db_base: str | None = None
     db_echo: bool = False
+    db_pool_size: int | None = None
+    db_max_overflow: int | None = None
 
     # Authentication & Security
     auth_secret: str
@@ -53,6 +58,23 @@ class Settings(BaseSettings):
     session_cookie_name: str = "fastapi_session"
     session_expire_days: int = 7
     cookie_secure: bool = False
+
+    # Email
+    email_backend: EmailBackend | None = None
+    emails_from_email: str | None = None
+    emails_from_name: str | None = None
+    frontend_url: str | None = None
+
+    # Email - SMTP
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_tls: bool | None = None
+    smtp_ssl: bool | None = None
+
+    # Email - Resend
+    resend_api_key: str | None = None
 
     @property
     def db_url(self) -> URL:
@@ -67,13 +89,14 @@ class Settings(BaseSettings):
             port=self.db_port,
             user=self.db_user,
             password=self.db_pass,
-            path=f"/{self.db_base}",
+            path=f"/{self.db_base}" if self.db_base else "",
         )
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="FASTAPI_PLANTILLA_",
         env_file_encoding="utf-8",
+        extra="ignore",
     )
 
 

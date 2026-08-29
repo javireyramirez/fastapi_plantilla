@@ -54,6 +54,19 @@ services:
       db:
         condition: service_healthy
 
+  mailpit:
+    image: axllent/mailpit:latest
+    hostname: fastapi_plantilla-mailpit
+    container_name: fastapi_plantilla-mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025" # Puerto SMTP
+      - "8025:8025" # Interfaz Web
+    environment:
+      MP_MAX_MESSAGES: 500
+      MP_DATABASE: "" # Almacenamiento volátil en memoria
+
+
 
 
 volumes:
