@@ -1,6 +1,8 @@
 # fastapi_plantilla
 
-This project was generated using fastapi_template.
+Plantilla de desarrollo backend de alto rendimiento para proyectos empresariales **CRUD + IA** construida con FastAPI, SQLAlchemy 2.0 (Async), PostgreSQL y Pydantic v2.
+
+> 🗺️ **Documentación de Arquitectura y Roadmap:** Consulta [ROADMAP.md](ROADMAP.md) para ver la hoja de ruta completa de las 10 fases de desarrollo, modelos de datos y decisiones técnicas.
 
 ## UV
 
