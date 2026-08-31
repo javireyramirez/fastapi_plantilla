@@ -18,12 +18,18 @@ from fastapi_plantilla.modules.auth.dependencies import (
 )
 from fastapi_plantilla.modules.auth.schema import (
     AuthResponse,
+    ChangeEmailInput,
+    DeleteAccountInput,
     ForgotPasswordRequest,
     PasswordChange,
     ResetPasswordInput,
+    RevokeSessionInput,
+    SendVerificationEmailRequest,
+    SessionDetailResponse,
     UserCreate,
     UserLogin,
     UserResponse,
+    VerifyEmailInput,
 )
 from fastapi_plantilla.modules.auth.service import AuthService
 
@@ -128,6 +134,41 @@ async def get_session(
     return session
 
 
+@router.get("/list-sessions", response_model=list[SessionDetailResponse])
+async def list_sessions(
+    service: AuthService = Depends(),
+    session: AuthResponse = Depends(get_current_session),
+) -> list[SessionDetailResponse]:
+    """
+    List all active sessions for the authenticated user.
+
+    Identifies the current active device and returns metadata for each session.
+    """
+    if not session.session:
+        return []
+    return await service.list_sessions(
+        user_id=session.user.id,
+        current_token=session.session.token,
+    )
+
+
+@router.post("/revoke-session", response_model=bool)
+async def revoke_session(
+    schema: RevokeSessionInput,
+    service: AuthService = Depends(),
+    session: AuthResponse = Depends(get_current_session),
+) -> bool:
+    """
+    Revoke a specific active session by its ID.
+
+    Terminates the specified device session for the authenticated user.
+    """
+    return await service.revoke_session(
+        user_id=session.user.id,
+        schema=schema,
+    )
+
+
 @router.post("/revoke-sessions", response_model=bool)
 async def revoke_sessions(
     response: Response,
@@ -165,6 +206,44 @@ async def change_password(
     return True
 
 
+@router.post("/change-email", response_model=bool)
+async def change_email(
+    schema: ChangeEmailInput,
+    service: AuthService = Depends(),
+    session: AuthResponse = Depends(get_current_session),
+) -> bool:
+    """
+    Change the email address for the authenticated user.
+
+    Updates the user's email and re-triggers email verification if configured.
+    """
+    return await service.change_email(
+        user_id=session.user.id,
+        schema=schema,
+    )
+
+
+@router.post("/delete-user", response_model=bool)
+async def delete_user(
+    response: Response,
+    schema: DeleteAccountInput,
+    service: AuthService = Depends(),
+    session: AuthResponse = Depends(get_current_session),
+) -> bool:
+    """
+    Permanently delete the authenticated user's account.
+
+    Deletes the user, cascade removes sessions and accounts,
+    and clears the session cookie.
+    """
+    await service.delete_user(
+        user_id=session.user.id,
+        schema=schema,
+    )
+    delete_session_cookie(response=response)
+    return True
+
+
 @router.post("/forget-password", response_model=bool)
 async def forget_password(
     schema: ForgotPasswordRequest,
@@ -191,6 +270,32 @@ async def reset_password(
     """
     await service.reset_password(schema=schema)
     return True
+
+
+@router.post("/send-verification-email", response_model=bool)
+async def send_verification_email(
+    schema: SendVerificationEmailRequest,
+    service: AuthService = Depends(),
+) -> bool:
+    """
+    Send an email verification link.
+
+    Generates a single-use verification token and sends the verification email.
+    """
+    return await service.send_verification_email(email=schema.email)
+
+
+@router.post("/verify-email", response_model=bool)
+async def verify_email(
+    schema: VerifyEmailInput,
+    service: AuthService = Depends(),
+) -> bool:
+    """
+    Verify user email with a verification token.
+
+    Marks the user's email as verified and consumes the one-time token.
+    """
+    return await service.verify_email(token=schema.token)
 
 
 @router.get("/sign-in/social/google", response_class=RedirectResponse)

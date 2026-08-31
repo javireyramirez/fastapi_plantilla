@@ -2,7 +2,6 @@ import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 
-import httpx
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import Depends, HTTPException, status
@@ -10,19 +9,26 @@ from yarl import URL
 
 from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.modules.auth.models import User
+from fastapi_plantilla.modules.auth.oauth import GoogleOAuthClient
 from fastapi_plantilla.modules.auth.repository import AuthRepository
 from fastapi_plantilla.modules.auth.schema import (
     AuthResponse,
+    ChangeEmailInput,
+    DeleteAccountInput,
     ForgotPasswordRequest,
     OAuthUserInfo,
     PasswordChange,
     ResetPasswordInput,
+    RevokeSessionInput,
+    SessionDetailResponse,
     SessionResponse,
     UserCreate,
     UserLogin,
     UserResponse,
 )
 from fastapi_plantilla.modules.auth.utils import sign_token, unsign_token
+from fastapi_plantilla.modules.email.dependencies import get_email_service
+from fastapi_plantilla.modules.email.service import EmailService
 
 ph = PasswordHasher()
 
@@ -30,8 +36,13 @@ ph = PasswordHasher()
 class AuthService:
     """Service for authentication and session management business logic."""
 
-    def __init__(self, repository: AuthRepository = Depends()) -> None:
+    def __init__(
+        self,
+        repository: AuthRepository = Depends(),
+        email_service: EmailService = Depends(get_email_service),
+    ) -> None:
         self.repository = repository
+        self.email_service = email_service
 
     async def _create_user_session(
         self,
@@ -132,25 +143,9 @@ class AuthService:
 
     def get_google_auth_url(self, redirect_uri: str, state: str) -> str:
         """Generate Google OAuth authorization URL."""
-        if not settings.google_client_id:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Google OAuth no está configurado",
-            )
-
-        query_params = {
-            "client_id": settings.google_client_id,
-            "redirect_uri": redirect_uri,
-            "response_type": "code",
-            "scope": "openid email profile",
-            "state": state,
-            "access_type": "offline",
-            "prompt": "consent",
-        }
-        return str(
-            URL("https://accounts.google.com/o/oauth2/v2/auth").with_query(
-                query_params,
-            ),
+        return GoogleOAuthClient.get_authorization_url(
+            redirect_uri=redirect_uri,
+            state=state,
         )
 
     async def authenticate_google(
@@ -161,56 +156,10 @@ class AuthService:
         user_agent: str | None = None,
     ) -> AuthResponse:
         """Authenticate user via Google OAuth authorization code."""
-        if not settings.google_client_id or not settings.google_client_secret:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Google OAuth no está configurado en el servidor",
-            )
-
-        async with httpx.AsyncClient() as client:
-            token_response = await client.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "client_id": settings.google_client_id,
-                    "client_secret": settings.google_client_secret,
-                    "code": code,
-                    "grant_type": "authorization_code",
-                    "redirect_uri": redirect_uri,
-                },
-            )
-            if token_response.status_code != 200:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Error al validar la autorización con Google",
-                )
-            tokens = token_response.json()
-
-            userinfo_response = await client.get(
-                "https://openidconnect.googleapis.com/v1/userinfo",
-                headers={"Authorization": f"Bearer {tokens['access_token']}"},
-            )
-            if userinfo_response.status_code != 200:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Error al obtener el perfil de usuario de Google",
-                )
-            profile = userinfo_response.json()
-
-        user_info = OAuthUserInfo(
-            provider_id="google",
-            account_id=profile["sub"],
-            email=profile["email"],
-            name=profile.get("name", profile["email"]),
-            image=profile.get("picture"),
-            email_verified=profile.get("email_verified", True),
+        user_info, tokens, expires_at = await GoogleOAuthClient.fetch_user_and_tokens(
+            code=code,
+            redirect_uri=redirect_uri,
         )
-
-        expires_at = (
-            datetime.now(UTC) + timedelta(seconds=tokens["expires_in"])
-            if "expires_in" in tokens
-            else None
-        )
-
         return await self._handle_oauth_user(
             user_info=user_info,
             access_token=tokens.get("access_token"),
@@ -245,6 +194,8 @@ class AuthService:
             account_id=schema.email,
             password_hash=ph.hash(schema.password),
         )
+        if settings.frontend_url:
+            await self.send_verification_email(email=user.email)
         return await self._create_user_session(user, ip_address, user_agent)
 
     async def login(
@@ -371,15 +322,57 @@ class AuthService:
             )
         return True
 
+    async def _send_reset_password_email(self, user: User, token: str) -> None:
+        """Render and dispatch password reset email."""
+        if not settings.frontend_url:
+            return
+
+        reset_link = str(
+            (URL(settings.frontend_url) / "reset-password").with_query(token=token)
+        )
+        email_msg = (
+            self.email_service.create_builder()
+            .to(user.email)
+            .subject("Restablecer tu contraseña")
+            .template(
+                "auth/reset_password.html",
+                name=user.name,
+                reset_link=reset_link,
+            )
+        )
+        await self.email_service.send(email_msg)
+
+    async def _send_verification_email(self, user: User, token: str) -> None:
+        """Render and dispatch email verification link."""
+        if not settings.frontend_url:
+            return
+
+        verify_link = str(
+            (URL(settings.frontend_url) / "verify-email").with_query(token=token)
+        )
+        email_msg = (
+            self.email_service.create_builder()
+            .to(user.email)
+            .subject("Verifica tu correo electrónico")
+            .template(
+                "auth/verify_email.html",
+                name=user.name,
+                verify_link=verify_link,
+            )
+        )
+        await self.email_service.send(email_msg)
+
     async def forget_password(self, schema: ForgotPasswordRequest) -> bool:
         """Generate password reset token (safe against user enumeration)."""
         user = await self.repository.get_user_by_email(schema.email)
         if user and user.is_active:
+            token = secrets.token_urlsafe(32)
             await self.repository.create_verification(
                 identifier=schema.email,
-                value=secrets.token_urlsafe(32),
+                value=token,
                 expires_at=datetime.now(UTC) + timedelta(minutes=30),
             )
+            await self._send_reset_password_email(user, token)
         return True
 
     async def reset_password(self, schema: ResetPasswordInput) -> bool:
@@ -413,6 +406,48 @@ class AuthService:
         await self.repository.invalidate_all_user_sessions(user_id=user.id)
         return True
 
+    async def send_verification_email(self, email: str) -> bool:
+        """Generate verification token and send verification email."""
+        user = await self.repository.get_user_by_email(email)
+        if user and not user.email_verified and user.is_active:
+            token = secrets.token_urlsafe(32)
+            await self.repository.create_verification(
+                identifier=user.email,
+                value=token,
+                expires_at=datetime.now(UTC) + timedelta(hours=24),
+            )
+            await self._send_verification_email(user, token)
+
+        return True
+
+    async def verify_email(self, token: str) -> bool:
+        """Verify user email using a valid verification token."""
+        verification = await self.repository.get_valid_verification_by_value(
+            value=token,
+        )
+        if not verification:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El token de verificación es inválido o ha expirado",
+            )
+
+        user = await self.repository.get_user_by_email(verification.identifier)
+        if not user or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Usuario no encontrado o inactivo",
+            )
+
+        await self.repository.update_user_by_id(
+            user_id=user.id,
+            update_data={"email_verified": True},
+        )
+        await self.repository.delete_verification(
+            identifier=verification.identifier,
+            value=verification.value,
+        )
+        return True
+
     async def cleanup_expired_tokens(self) -> dict[str, int]:
         """Delete expired sessions and verification tokens."""
         deleted_sessions = await self.repository.delete_expired_sessions()
@@ -421,3 +456,115 @@ class AuthService:
             "deleted_sessions": deleted_sessions,
             "deleted_verifications": deleted_verifications,
         }
+
+    async def list_sessions(
+        self, user_id: uuid.UUID, current_token: str
+    ) -> list[SessionDetailResponse]:
+        """Fetch all active user sessions and mark the current active device."""
+        raw_token = unsign_token(current_token, settings.auth_secret)
+        sessions = await self.repository.get_active_user_sessions(user_id)
+
+        return [
+            SessionDetailResponse(
+                id=s.id,
+                user_agent=s.user_agent,
+                ip_address=s.ip_address,
+                created_at=s.created_at,
+                expires_at=s.expires_at,
+                is_current=(s.token == raw_token),
+            )
+            for s in sessions
+        ]
+
+    async def revoke_session(
+        self, user_id: uuid.UUID, schema: RevokeSessionInput
+    ) -> bool:
+        """Invalidate a specific user session by its ID."""
+        revoked = await self.repository.invalidate_session_by_id(
+            session_id=schema.session_id, user_id=user_id
+        )
+        if revoked is False:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Sesión no encontrada o ya revocada",
+            )
+        return True
+
+    async def change_email(self, user_id: uuid.UUID, schema: ChangeEmailInput) -> bool:
+        """Update user email address and re-trigger verification flow."""
+        user = await self.repository.get_user_by_id(user_id)
+        if not user or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuario no encontrado o inactivo",
+            )
+
+        existing_user = await self.repository.get_user_by_email(schema.new_email)
+        if existing_user and existing_user.id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El email ya está registrado",
+            )
+
+        account = await self.repository.get_account_by_provider(
+            user_id=user_id, provider_id="credential"
+        )
+
+        if account and account.password:
+            if not schema.current_password:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Se requiere la contraseña actual",
+                )
+            try:
+                ph.verify(account.password, schema.current_password)
+            except VerifyMismatchError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Contraseña actual incorrecta",
+                ) from e
+
+            await self.repository.update_account_by_provider(
+                user_id=user_id,
+                provider_id="credential",
+                update_data={"account_id": schema.new_email},
+            )
+
+        await self.repository.update_user_by_id(
+            user_id=user_id,
+            update_data={"email": schema.new_email, "email_verified": False},
+        )
+
+        if settings.frontend_url:
+            await self.send_verification_email(email=schema.new_email)
+
+        return True
+
+    async def delete_user(self, user_id: uuid.UUID, schema: DeleteAccountInput) -> bool:
+        """Permanently delete user account and invalidate credentials."""
+        user = await self.repository.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuario no encontrado",
+            )
+
+        account = await self.repository.get_account_by_provider(
+            user_id=user_id, provider_id="credential"
+        )
+        if account and account.password:
+            if not schema.password:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Se requiere la contraseña para eliminar la cuenta",
+                )
+            try:
+                ph.verify(account.password, schema.password)
+            except VerifyMismatchError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Contraseña incorrecta",
+                ) from e
+
+        await self.repository.delete_user_by_id(user_id=user_id)
+        return True

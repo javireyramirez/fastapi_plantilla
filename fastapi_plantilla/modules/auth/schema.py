@@ -64,6 +64,12 @@ class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
 
+class SendVerificationEmailRequest(BaseModel):
+    """Send verification email Schema."""
+
+    email: EmailStr
+
+
 class ResetPasswordInput(BaseModel):
     """Reset password Schema."""
 
@@ -132,3 +138,35 @@ class OAuthUserInfo(BaseModel):
     name: str
     image: str | None = None
     email_verified: bool = True
+
+
+class SessionDetailResponse(BaseModel):
+    """Active session detail for device management."""
+
+    id: uuid.UUID
+    ip_address: str | None = None
+    user_agent: str | None = None
+    created_at: datetime
+    expires_at: datetime
+    is_current: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RevokeSessionInput(BaseModel):
+    """Schema to revoke a specific active session."""
+
+    session_id: uuid.UUID
+
+
+class ChangeEmailInput(BaseModel):
+    """Schema to update the user email address."""
+
+    new_email: EmailStr
+    current_password: str | None = None
+
+
+class DeleteAccountInput(BaseModel):
+    """Schema to confirm account deletion."""
+
+    password: str | None = None

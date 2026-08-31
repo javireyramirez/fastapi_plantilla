@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     environment: str = "dev"
     log_level: LogLevel = LogLevel.INFO
 
+    # Frontend
+    frontend_url: str | None
+
     # Database
     db_host: str
     db_port: int | None = None
@@ -59,7 +62,6 @@ class Settings(BaseSettings):
     email_backend: EmailBackend | None = None
     emails_from_email: str | None = None
     emails_from_name: str | None = None
-    frontend_url: str | None = None
 
     # Email - SMTP
     smtp_host: str | None = None
