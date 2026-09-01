@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from fastapi_plantilla.core.lifespan import lifespan_setup
 from fastapi_plantilla.core.logging import configure_logging
+from fastapi_plantilla.core.middlewares import setup_middlewares
 from fastapi_plantilla.router import api_router
 
 
@@ -19,6 +20,9 @@ def get_app() -> FastAPI:
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",
     )
+
+    # Middlewares
+    setup_middlewares(app)
 
     # Main API router
     app.include_router(api_router)

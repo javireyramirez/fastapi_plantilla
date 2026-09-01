@@ -1,4 +1,4 @@
-﻿# 🗺️ Master Roadmap & Arquitectura: `fastapi_plantilla`
+# 🗺️ Master Roadmap & Arquitectura: `fastapi_plantilla`
 
 Este documento define la hoja de ruta, arquitectura de módulos y especificaciones técnicas para el desarrollo completo de `fastapi_plantilla` (backend modular de alto rendimiento para proyectos empresariales CRUD + IA).
 
@@ -23,7 +23,7 @@ Este documento define la hoja de ruta, arquitectura de módulos y especificacion
 
 ```mermaid
 flowchart TD
-    F0["Fase 0: Auth & Email Core (✅ Completado)"] --> F1["Fase 1: Infraestructura, Concurrencia & Observabilidad"]
+    F0["Fase 0: Auth & Email Core (✅ Completado)"] --> F1["Fase 1: Infraestructura, Concurrencia & Observabilidad (✅ Completado)"]
     F1 --> F2["Fase 2: Motor Base CRUD & Paginación Genérica"]
     F2 --> F3["Fase 3: Ingesta & Exportación Masiva CSV/XLSX"]
     F3 --> F4["Fase 4: RBAC, Teams, User Admin & Impersonation"]
@@ -46,16 +46,17 @@ flowchart TD
 
 ---
 
-### 🏗️ FASE 1: Infraestructura Transversal, Observabilidad & Concurrencia
+### 🟢 FASE 1: Infraestructura Transversal, Observabilidad & Concurrencia *(COMPLETADO)*
 * **1.1 Middleware Request ID Tracing (`X-Request-ID`):**
   * *Descripción:* Inyección de UUIDv7 en cada request propagado a logs, auditoría y headers de respuesta.
   * *Problema que soluciona:* Elimina el caos en producción al depurar errores; vincula cualquier fallo HTTP a una traza única de base de datos e IA.
 * **1.2 Healthchecks Inteligentes (Liveness & Readiness Probes):**
-  * *Descripción:* Endpoints `/api/health/live` (proceso vivo) y `/api/health/ready` (ping en paralelo a PostgreSQL, S3 y SMTP).
+  * *Descripción:* Endpoints `/api/health/live` (proceso vivo) y `/api/health/ready` (ping con timeout a PostgreSQL).
   * *Problema que soluciona:* Los orquestadores (Docker / Kubernetes / Render) sabrán exactamente si la app está lista para recibir tráfico o si la base de datos se cayó.
 * **1.3 Mixins Comunes & Concurrencia Optimista:**
-  * *Descripción:* `RecordStatus` enum (`ACTIVE`, `PENDING`, `TRASHED`, `INACTIVE`, `ARCHIVED`, `SUSPENDED`), `AuditFieldsMixin` y campo `version: int` para bloqueo optimista.
-  * *Problema que soluciona:* Evita que dos usuarios modifiquen el mismo registro al mismo tiempo y se pisen cambios sin advertencia (`HTTP 409 Conflict`).
+  * *Descripción:* `RecordStatus` enum (`ACTIVE`, `PENDING`, `TRASHED`, `INACTIVE`, `ARCHIVED`, `SUSPENDED`), `TimestampMixin`, `AuditFieldsMixin`, `OptimisticLockMixin` (`version: int`), `OwnedMixin` y `PolymorphicTargetMixin`.
+  * *Problema que soluciona:* Evita que dos usuarios modifiquen el mismo registro al mismo tiempo y se pisen cambios sin advertencia (`HTTP 409 Conflict`), estandarizando el modelo de datos.
+
 
 ---
 

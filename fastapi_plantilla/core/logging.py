@@ -1,10 +1,32 @@
+from __future__ import annotations
+
 import logging
 import sys
 from types import FrameType
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
+if TYPE_CHECKING:
+    from loguru import Record
+
+
 from fastapi_plantilla.core.config import settings
+from fastapi_plantilla.core.middlewares import get_request_id
+
+LOG_FORMAT = (
+    "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
+    "<level>{level: <8}</level> | "
+    "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+    "<magenta>[{extra[request_id]}]</magenta> - "
+    "<level>{message}</level>"
+)
+
+
+def log_patcher(record: Record) -> None:
+    """Inject the current request ID into the log record extra context."""
+    req_id = get_request_id() or "-"
+    record["extra"]["request_id"] = req_id
 
 
 class InterceptHandler(logging.Handler):
@@ -43,7 +65,9 @@ def configure_logging() -> None:  # pragma: no cover
     logging.getLogger("uvicorn.access").handlers = [intercept_handler]
 
     logger.remove()
+    logger.configure(patcher=log_patcher)
     logger.add(
         sys.stdout,
+        format=LOG_FORMAT,
         level=settings.log_level.value,
     )
