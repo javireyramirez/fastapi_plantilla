@@ -1,0 +1,47 @@
+from fastapi_plantilla.core.crud.repository import BaseRepository
+from fastapi_plantilla.core.crud.schema import (
+    AuditFieldsSchema,
+    BulkIdsRequest,
+    BulkResponse,
+    ExportFormat,
+    ExportRequest,
+    ListItemResponse,
+    ListQueryParams,
+    MessageResponse,
+    PaginatedResponse,
+    PaginationMeta,
+    PaginationParams,
+    ScopeContext,
+    ScopeType,
+    SortOrder,
+    UserReference,
+    WriteOptions,
+)
+from fastapi_plantilla.core.crud.service import (
+    BaseAuditService,
+    BaseCRUDService,
+    BaseOwnedService,
+)
+
+__all__ = [
+    "AuditFieldsSchema",
+    "BaseAuditService",
+    "BaseCRUDService",
+    "BaseOwnedService",
+    "BaseRepository",
+    "BulkIdsRequest",
+    "BulkResponse",
+    "ExportFormat",
+    "ExportRequest",
+    "ListItemResponse",
+    "ListQueryParams",
+    "MessageResponse",
+    "PaginatedResponse",
+    "PaginationMeta",
+    "PaginationParams",
+    "ScopeContext",
+    "ScopeType",
+    "SortOrder",
+    "UserReference",
+    "WriteOptions",
+]

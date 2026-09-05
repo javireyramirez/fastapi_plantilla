@@ -1,7 +1,6 @@
 import uuid
 from datetime import datetime
 
-import uuid_utils
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -16,6 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from fastapi_plantilla.core.database import Base
+from fastapi_plantilla.core.mixins import generate_uuid7
 
 
 class User(Base):
@@ -26,8 +26,9 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
         primary_key=True,
-        default=uuid_utils.uuid7,
+        default=generate_uuid7,
     )
+
     name: Mapped[str] = mapped_column(String(length=200))
     email: Mapped[str] = mapped_column(String(length=200), unique=True, index=True)
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -63,7 +64,7 @@ class Account(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
         primary_key=True,
-        default=uuid_utils.uuid7,
+        default=generate_uuid7,
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
@@ -111,7 +112,7 @@ class Session(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
         primary_key=True,
-        default=uuid_utils.uuid7,
+        default=generate_uuid7,
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
@@ -151,8 +152,9 @@ class Verification(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
         primary_key=True,
-        default=uuid_utils.uuid7,
+        default=generate_uuid7,
     )
+
     identifier: Mapped[str] = mapped_column(String(length=255), nullable=False)
     value: Mapped[str] = mapped_column(String(length=255), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(

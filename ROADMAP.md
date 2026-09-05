@@ -9,13 +9,17 @@ Este documento define la hoja de ruta, arquitectura de módulos y especificacion
 1. **Filosofía Ponytail (Simplicidad Radical & Cero Grasa):** 
    - Biblioteca estándar y capacidades nativas de PostgreSQL primero.
    - Sin sobreingeniería, sin factories innecesarias ni dependencias pesadas.
-2. **Polimorfismo Universal (`entity_type` + `entity_id`):** 
+2. **Código Autoexplicativo & Cero Grasa Documental (No Sobreexplicar):**
+   - El código debe ser limpio, directo y autoexplicativo a través de sus nombres, tipos y estructura.
+   - Evitar comentarios obvios, redundancias y descripciones innecesarias en esquemas y campos cuando el nombre ya es explícito.
+3. **Polimorfismo Universal (`entity_type` + `entity_id`):** 
    - Patrón único y consistente para vincular Documentos S3, Papelera, Logs de Auditoría, Notificaciones y Plantillas de Prompts IA a cualquier entidad de negocio sin acoplamientos rígidos.
-3. **Calidad & Robustez:**
+4. **Calidad & Robustez:**
    - **Tipado estricto:** 100% verificado con Mypy estricto.
    - **Linter & Formatter:** Ruff.
    - **Seguridad:** Hashing Argon2id, HMAC-SHA256 en tiempo constante, sesiones en BD y compatibilidad total con SSR (Cookies `HttpOnly` + Bearer Tokens).
    - **Base de Datos:** SQLAlchemy 2.0 Asíncrono + UUIDv7 nativos + Alembic migrations.
+
 
 ---
 
@@ -61,11 +65,11 @@ flowchart TD
 ---
 
 ### 🧱 FASE 2: Capa Base CRUD & Paginación Genérica (Core Engine)
-* **2.1 Servicios y Repositorios Genéricos:**
-  * *Descripción:* `BaseRepository[T]`, `BaseCRUDService[T]`, `BaseAuditService[T]` y `BaseOwnedService[T]` sobre SQLAlchemy 2.0 asíncrono.
-  * *Problema que soluciona:* Evita escribir el 80% del código boilerplate en nuevos módulos.
-* **2.2 Paginación y Envelopes Estándar:**
-  * *Descripción:* `PaginationParams` y `PaginatedResponse[T]` con metadatos: `{ data: [...], meta: { page, limit, total, totalPages, hasNext, hasPrev } }`.
+* **2.1 Servicios y Repositorios Genéricos:** *(COMPLETADO)*
+  * *Descripción:* `BaseRepository[T]`, `BaseCRUDService[T]`, `BaseAuditService[T]` y `BaseOwnedService[T]` sobre SQLAlchemy 2.0 asíncrono con blindaje de seguridad completo (Fail-closed RBAC, anti-oráculo 404, mitigación DoS y mass assignment).
+  * *Problema que soluciona:* Evita escribir el 80% del código boilerplate en nuevos módulos garantizando aislamiento multitenant.
+* **2.2 Paginación y Envelopes Estándar:** *(COMPLETADO)*
+  * *Descripción:* `PaginationParams` y `PaginatedResponse[T]` con metadatos: `{ data: [...], meta: { page, limit, total, totalPages, hasNext, hasPrev } }` y límites anti-DoS (`page <= 1000`, `search <= 100`).
   * *Problema que soluciona:* Homogeniza todas las respuestas de listas para que los frontends (Next.js, React, Vue, Svelte) consuman una sola estructura predecible.
 * **2.3 Base Router Factory (FastAPI Router Generator):**
   * *Descripción:* Generador dinámico de rutas estándar: CRUD individual, operaciones `/bulk` (crear, soft-delete, restore, permanent) y `/list` ultraligero para dropdowns.

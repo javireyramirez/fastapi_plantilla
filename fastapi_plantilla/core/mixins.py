@@ -24,7 +24,13 @@ __all__ = [
     "RecordStatus",
     "TimestampMixin",
     "UUID7PrimaryKeyMixin",
+    "generate_uuid7",
 ]
+
+
+def generate_uuid7() -> uuid.UUID:
+    """Generate a standard Python UUID object with UUIDv7 timestamp ordering."""
+    return uuid.UUID(str(uuid_utils.uuid7()))
 
 
 class RecordStatus(enum.StrEnum):
@@ -44,7 +50,7 @@ class UUID7PrimaryKeyMixin:
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
         primary_key=True,
-        default=uuid_utils.uuid7,
+        default=generate_uuid7,
     )
 
 
