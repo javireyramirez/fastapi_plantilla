@@ -21,6 +21,8 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
     """Base business service enforcing multi-tenancy and RBAC ownership scopes."""
 
     mask_forbidden_as_not_found: bool = True
+    owner_field: str = "owner_id"
+    team_field: str = "team_id"
 
     # ==========================================
     # 1. RESOLUCIÓN DE SCOPE Y FILTROS
@@ -39,8 +41,8 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
         if scope.is_super_admin or scope_str == ScopeType.GLOBAL:
             return []
 
-        owner_col = self._get_column("owner_id")
-        team_col = self._get_column("team_id")
+        owner_col = self._get_column(self.owner_field)
+        team_col = self._get_column(self.team_field)
 
         if scope_str == ScopeType.OWN:
             return (
@@ -68,12 +70,15 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
     # ==========================================
 
     async def get_by_id(
-        self, id: uuid.UUID, scope: ScopeContext | None = None
+        self,
+        id: uuid.UUID,
+        *where: Any,
+        scope: ScopeContext | None = None,
     ) -> ModelT:
         """Fetch a single record by ID enforcing scope authorization."""
-        scope_filters = self.build_scope_filters(scope)
+        scope_filters = list(where) + self.build_scope_filters(scope)
         if not scope_filters:
-            return await super().get_by_id(id)
+            return await super().get_by_id(id, *where, scope=scope)
 
         item = await self.repository.find_first(
             self.repository.pk == id, *scope_filters
@@ -116,6 +121,44 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
             return target_owner_id in teammate_uuids
         return False
 
+    def _resolve_owner_and_team(
+        self,
+        payload: dict[str, Any],
+        user_id: str | uuid.UUID | None,
+        owner_id: uuid.UUID | None,
+        scope: ScopeContext | None,
+    ) -> None:
+        """Resolve and validate owner_id and team_id for a record payload."""
+        has_owner = self._get_column(self.owner_field) is not None
+        has_team = self._get_column(self.team_field) is not None
+
+        if has_owner:
+            target_owner_id = self._to_uuid(payload.get(self.owner_field))
+            if target_owner_id is not None and self.can_reassign_owner(
+                target_owner_id, scope
+            ):
+                payload[self.owner_field] = target_owner_id
+            else:
+                resolved_owner = owner_id or self._to_uuid(user_id)
+                if resolved_owner is not None:
+                    payload[self.owner_field] = resolved_owner
+                else:
+                    payload.pop(self.owner_field, None)
+
+        if has_team:
+            target_team_id = self._to_uuid(payload.get(self.team_field))
+            if target_team_id is not None:
+                if scope is not None and not self.can_assign_team(
+                    target_team_id, scope
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Forbidden: cannot assign record to the specified team",
+                    )
+                payload[self.team_field] = target_team_id
+            elif scope and len(scope.team_ids) == 1:
+                payload[self.team_field] = scope.team_ids[0]
+
     async def create(
         self,
         data: BaseModel | dict[str, Any],
@@ -126,36 +169,9 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
     ) -> ModelT:
         """Create a record assigning owner and team stamping."""
         payload = data.model_dump() if isinstance(data, BaseModel) else dict(data)
-        has_owner = self._get_column("owner_id") is not None
-        has_team = self._get_column("team_id") is not None
-
-        if has_owner:
-            target_owner_id = self._to_uuid(payload.get("owner_id"))
-            if target_owner_id is not None and self.can_reassign_owner(
-                target_owner_id, scope
-            ):
-                payload["owner_id"] = target_owner_id
-            else:
-                resolved_owner = owner_id or self._to_uuid(user_id)
-                if resolved_owner is not None:
-                    payload["owner_id"] = resolved_owner
-                else:
-                    payload.pop("owner_id", None)
-
-        if has_team:
-            target_team_id = self._to_uuid(payload.get("team_id"))
-            if target_team_id is not None:
-                if scope is not None and not self.can_assign_team(
-                    target_team_id, scope
-                ):
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Forbidden: cannot assign record to the specified team",
-                    )
-                payload["team_id"] = target_team_id
-            elif scope and len(scope.team_ids) == 1:
-                payload["team_id"] = scope.team_ids[0]
-
+        self._resolve_owner_and_team(
+            payload, user_id=user_id, owner_id=owner_id, scope=scope
+        )
         return await super().create(
             data=payload,
             user_id=user_id,
@@ -181,16 +197,16 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
             else dict(data)
         )
 
-        has_owner = self._get_column("owner_id") is not None
-        if has_owner and "owner_id" in payload:
-            target_owner_id = self._to_uuid(payload["owner_id"])
+        has_owner = self._get_column(self.owner_field) is not None
+        if has_owner and self.owner_field in payload:
+            target_owner_id = self._to_uuid(payload[self.owner_field])
             if target_owner_id is not None:
                 if not self.can_reassign_owner(target_owner_id, scope):
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Forbidden: cannot transfer ownership to this user",
                     )
-                payload["owner_id"] = target_owner_id
+                payload[self.owner_field] = target_owner_id
             else:
                 is_admin = bool(
                     scope
@@ -205,9 +221,9 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
                         detail="Forbidden: cannot unassign record owner",
                     )
 
-        has_team = self._get_column("team_id") is not None
-        if has_team and "team_id" in payload:
-            target_team_id = self._to_uuid(payload["team_id"])
+        has_team = self._get_column(self.team_field) is not None
+        if has_team and self.team_field in payload:
+            target_team_id = self._to_uuid(payload[self.team_field])
             if target_team_id is not None:
                 if scope is not None and not self.can_assign_team(
                     target_team_id, scope
@@ -216,7 +232,7 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Forbidden: cannot assign record to the specified team",
                     )
-                payload["team_id"] = target_team_id
+                payload[self.team_field] = target_team_id
             else:
                 is_admin = bool(
                     scope
@@ -250,47 +266,17 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
         allow_immutable: bool = False,
     ) -> BulkResponse:
         """Bulk create multiple records assigning actor, owner, and team stamping."""
-        resolved_owner = owner_id or self._to_uuid(user_id)
-        has_owner = self._get_column("owner_id") is not None
-        has_team = self._get_column("team_id") is not None
-
-        if has_owner or has_team:
-            stamped_items: list[dict[str, Any]] = []
-            default_team = (
-                scope.team_ids[0] if (scope and len(scope.team_ids) == 1) else None
+        stamped_items: list[dict[str, Any]] = []
+        for item in items:
+            d = item.model_dump() if isinstance(item, BaseModel) else dict(item)
+            self._resolve_owner_and_team(
+                d, user_id=user_id, owner_id=owner_id, scope=scope
             )
-            for item in items:
-                d = item.model_dump() if isinstance(item, BaseModel) else dict(item)
-                if has_owner:
-                    target_owner_id = self._to_uuid(d.get("owner_id"))
-                    if target_owner_id is not None and self.can_reassign_owner(
-                        target_owner_id, scope
-                    ):
-                        d["owner_id"] = target_owner_id
-                    elif resolved_owner is not None:
-                        d["owner_id"] = resolved_owner
-
-                if has_team:
-                    target_team_id = self._to_uuid(d.get("team_id"))
-                    if target_team_id is not None:
-                        if scope is not None and not self.can_assign_team(
-                            target_team_id, scope
-                        ):
-                            raise HTTPException(
-                                status_code=status.HTTP_403_FORBIDDEN,
-                                detail=(
-                                    "Forbidden: cannot assign record to the "
-                                    "specified team"
-                                ),
-                            )
-                        d["team_id"] = target_team_id
-                    elif default_team is not None:
-                        d["team_id"] = default_team
-
-                stamped_items.append(d)
-            return await super().bulk_create(
-                stamped_items, user_id=user_id, allow_immutable=allow_immutable
-            )
+            stamped_items.append(d)
         return await super().bulk_create(
-            items, user_id=user_id, allow_immutable=allow_immutable
+            stamped_items,
+            user_id=user_id,
+            owner_id=owner_id,
+            scope=scope,
+            allow_immutable=allow_immutable,
         )

@@ -174,24 +174,12 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
     ) -> BulkResponse:
         """Bulk create multiple records with actor stamping."""
         payload: list[dict[str, Any]] = []
-        uid_str = str(user_id) if user_id else None
-        has_created = self._get_column("created_by") is not None
-        has_updated = self._get_column("updated_by") is not None
         has_status = self._get_column("status") is not None
         for data in items:
             d = data.model_dump() if isinstance(data, BaseModel) else dict(data)
             if not allow_immutable and has_status:
                 d["status"] = RecordStatus.ACTIVE
-            if has_created:
-                if uid_str:
-                    d["created_by"] = uid_str
-                elif not allow_immutable:
-                    d.pop("created_by", None)
-            if has_updated:
-                if uid_str:
-                    d["updated_by"] = uid_str
-                elif not allow_immutable:
-                    d.pop("updated_by", None)
+            self._stamp_actors(d, user_id, is_create=True)
             payload.append(d)
         return await super().bulk_create(
             payload,
@@ -314,7 +302,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             if not await self.repository.exists(self.repository.pk == id):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"{self.model.__name__} not found",
+                    detail=f"{self.resource_name} not found",
                 )
             if (where or scope_clauses) and not await self.repository.exists(
                 self.repository.pk == id, *where, *scope_clauses

@@ -1,5 +1,11 @@
+from fastapi_plantilla.core.crud.dependencies import (
+    get_scope_context,
+    get_write_options,
+)
 from fastapi_plantilla.core.crud.repository import BaseRepository
+from fastapi_plantilla.core.crud.router import create_crud_router
 from fastapi_plantilla.core.crud.schema import (
+    DEFAULT_MAX_BULK_LIMIT,
     AuditFieldsSchema,
     BulkIdsRequest,
     BulkResponse,
@@ -24,6 +30,7 @@ from fastapi_plantilla.core.crud.service import (
 )
 
 __all__ = [
+    "DEFAULT_MAX_BULK_LIMIT",
     "AuditFieldsSchema",
     "BaseAuditService",
     "BaseCRUDService",
@@ -44,4 +51,7 @@ __all__ = [
     "SortOrder",
     "UserReference",
     "WriteOptions",
+    "create_crud_router",
+    "get_scope_context",
+    "get_write_options",
 ]

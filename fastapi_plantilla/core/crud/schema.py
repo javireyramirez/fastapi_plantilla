@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from fastapi_plantilla.core.mixins import RecordStatus
 
 __all__ = [
+    "DEFAULT_MAX_BULK_LIMIT",
     "AuditFieldsSchema",
     "BulkIdsRequest",
     "BulkResponse",
@@ -28,6 +29,8 @@ __all__ = [
     "UserReference",
     "WriteOptions",
 ]
+
+DEFAULT_MAX_BULK_LIMIT: int = 1000
 
 
 class ScopeType(enum.StrEnum):
@@ -122,7 +125,7 @@ class ListItemResponse(BaseModel):
 class BulkIdsRequest(BaseModel):
     """Payload containing a list of item IDs for bulk operations."""
 
-    ids: list[uuid.UUID] = Field(..., min_length=1, max_length=1000)
+    ids: list[uuid.UUID] = Field(..., min_length=1, max_length=DEFAULT_MAX_BULK_LIMIT)
 
 
 class BulkResponse(BaseModel):
@@ -192,7 +195,7 @@ class ScopeContext(BaseModel):
 class WriteOptions(BaseModel):
     """Execution options passed to repository and service write operations."""
 
-    user_id: str | None = None
+    user_id: str | uuid.UUID | None = None
     scope: ScopeContext | None = None
     ip_address: str | None = None
     user_agent: str | None = None

@@ -9,6 +9,7 @@ from sqlalchemy import inspect, or_
 
 from fastapi_plantilla.core.crud.repository import BaseRepository
 from fastapi_plantilla.core.crud.schema import (
+    DEFAULT_MAX_BULK_LIMIT,
     BulkIdsRequest,
     BulkResponse,
     ListItemResponse,
@@ -28,8 +29,9 @@ class BaseCRUDService[ModelT: Base]:
     """Base business service orchestrating generic CRUD repository operations."""
 
     display_field: str = "name"
+    resource_name: str = "Resource"
     mask_forbidden_as_not_found: bool = False
-    MAX_BULK_LIMIT: int = 1000
+    MAX_BULK_LIMIT: int = DEFAULT_MAX_BULK_LIMIT
 
     IMMUTABLE_FIELDS: frozenset[str] = frozenset(
         {
@@ -116,7 +118,7 @@ class BaseCRUDService[ModelT: Base]:
         ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"{self.model.__name__} not found",
+                detail=f"{self.resource_name} not found",
             )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -263,13 +265,24 @@ class BaseCRUDService[ModelT: Base]:
     # 3. LECTURAS
     # ==========================================
 
-    async def get_by_id(self, id: uuid.UUID) -> ModelT:
+    async def get_by_id(
+        self,
+        id: uuid.UUID,
+        *where: Any,
+        scope: ScopeContext | None = None,
+    ) -> ModelT:
         """Retrieve a single record by primary key ID or raise 404."""
-        item = await self.repository.get_by_id(id)
+        where_clauses = list(where) + self.build_scope_filters(scope)
+        if not where_clauses:
+            item = await self.repository.get_by_id(id)
+        else:
+            item = await self.repository.find_first(
+                self.repository.pk == id, *where_clauses
+            )
         if item is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"{self.model.__name__} not found",
+                detail=f"{self.resource_name} not found",
             )
         return item
 
@@ -359,6 +372,7 @@ class BaseCRUDService[ModelT: Base]:
         data: BaseModel | dict[str, Any],
         *where: Any,
         expected_version: int | None = None,
+        user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
         allow_immutable: bool = False,
     ) -> ModelT:
@@ -382,7 +396,7 @@ class BaseCRUDService[ModelT: Base]:
                 if not await self.repository.exists(self.repository.pk == id):
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"{self.model.__name__} not found",
+                        detail=f"{self.resource_name} not found",
                     )
                 await self._raise_not_found_or_forbidden(id)
             if (
@@ -406,7 +420,7 @@ class BaseCRUDService[ModelT: Base]:
             if not await self.repository.exists(self.repository.pk == id):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"{self.model.__name__} not found",
+                    detail=f"{self.resource_name} not found",
                 )
             if where_clauses and not await self.repository.exists(
                 self.repository.pk == id, *where_clauses
