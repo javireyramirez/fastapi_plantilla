@@ -10,24 +10,17 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
-    func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from fastapi_plantilla.core.database import Base
-from fastapi_plantilla.core.mixins import generate_uuid7
+from fastapi_plantilla.core.mixins import TimestampMixin, UUID7PrimaryKeyMixin
 
 
-class User(Base):
+class User(UUID7PrimaryKeyMixin, TimestampMixin, Base):
     """User model."""
 
     __tablename__ = "auth_users"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid,
-        primary_key=True,
-        default=generate_uuid7,
-    )
 
     name: Mapped[str] = mapped_column(String(length=200))
     email: Mapped[str] = mapped_column(String(length=200), unique=True, index=True)
@@ -36,16 +29,6 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
     is_super_admin: Mapped[bool] = mapped_column(Boolean, default=False)
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
 
     # Relaciones
     accounts: Mapped[list["Account"]] = relationship(
@@ -56,16 +39,11 @@ class User(Base):
     )
 
 
-class Account(Base):
+class Account(UUID7PrimaryKeyMixin, TimestampMixin, Base):
     """Account model for OAuth & Credentials providers."""
 
     __tablename__ = "auth_accounts"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid,
-        primary_key=True,
-        default=generate_uuid7,
-    )
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
         ForeignKey("auth_users.id", ondelete="CASCADE"),
@@ -86,16 +64,6 @@ class Account(Base):
     scope: Mapped[str | None] = mapped_column(String(length=500), nullable=True)
     password: Mapped[str | None] = mapped_column(String(length=255), nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
     # Relación inversa
     user: Mapped["User"] = relationship(back_populates="accounts")
 
@@ -104,16 +72,11 @@ class Account(Base):
     )
 
 
-class Session(Base):
+class Session(UUID7PrimaryKeyMixin, TimestampMixin, Base):
     """Session model."""
 
     __tablename__ = "auth_sessions"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid,
-        primary_key=True,
-        default=generate_uuid7,
-    )
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
         ForeignKey("auth_users.id", ondelete="CASCADE"),
@@ -130,45 +93,19 @@ class Session(Base):
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_valid: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
     # Relación inversa
     user: Mapped["User"] = relationship(back_populates="sessions")
 
 
-class Verification(Base):
+class Verification(UUID7PrimaryKeyMixin, TimestampMixin, Base):
     """Verification model for magic links, OTPs and email confirmations."""
 
     __tablename__ = "auth_verifications"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid,
-        primary_key=True,
-        default=generate_uuid7,
-    )
 
     identifier: Mapped[str] = mapped_column(String(length=255), nullable=False)
     value: Mapped[str] = mapped_column(String(length=255), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
     )
 
     __table_args__ = (
