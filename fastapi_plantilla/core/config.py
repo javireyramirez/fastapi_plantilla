@@ -26,6 +26,15 @@ class EmailBackend(enum.StrEnum):
     RESEND = "resend"
 
 
+class StorageBackend(enum.StrEnum):
+    """Supported storage backends."""
+
+    LOCAL = "local"
+    S3 = "s3"
+    AZURE = "azure"
+    GCS = "gcs"
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
@@ -73,6 +82,33 @@ class Settings(BaseSettings):
 
     # Email - Resend
     resend_api_key: str | None = None
+
+    # Storage
+    storage_backend: StorageBackend = StorageBackend.LOCAL
+    storage_bucket: str = "fastapi-plantilla-bucket"
+    storage_local_path: Path = TEMP_DIR / "fastapi_plantilla_storage"
+    storage_local_base_url: str | None = None
+
+    # Storage - S3 / MinIO
+    storage_s3_endpoint_url: str | None = None
+    storage_s3_access_key: str | None = None
+    storage_s3_secret_key: str | None = None
+    storage_s3_region: str = "us-east-1"
+
+    # Storage - Azure Blob
+    storage_azure_connection_string: str | None = None
+    storage_azure_account_name: str | None = None
+    storage_azure_account_key: str | None = None
+    storage_azure_container: str | None = None
+
+    # Storage - Google Cloud Storage
+    storage_gcs_credentials_file: str | None = None
+    storage_gcs_project: str | None = None
+
+    # Trash & Retention
+    trash_retention_days: int = 30
+    trash_purge_interval_hours: int = 24
+    trash_purge_enabled: bool = True
 
     @property
     def db_url(self) -> URL:

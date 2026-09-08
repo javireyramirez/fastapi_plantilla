@@ -1,10 +1,12 @@
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Coroutine, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
+from loguru import logger
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.schema import (
     BulkIdsRequest,
@@ -18,7 +20,32 @@ from fastapi_plantilla.core.crud.service_base import BaseCRUDService
 from fastapi_plantilla.core.database import Base
 from fastapi_plantilla.core.mixins import RecordStatus
 
-__all__ = ["BaseAuditService"]
+TrashSyncHook = Callable[
+    [AsyncSession, Any, bool, str | uuid.UUID | None], Coroutine[Any, Any, None]
+]
+PurgeSyncHook = Callable[[AsyncSession, str, uuid.UUID], Coroutine[Any, Any, None]]
+
+_TRASH_SYNC_HOOKS: list[TrashSyncHook] = []
+_PURGE_SYNC_HOOKS: list[PurgeSyncHook] = []
+
+
+def register_trash_sync_hook(hook: TrashSyncHook) -> None:
+    """Register a hook to be called on soft-delete or restore."""
+    _TRASH_SYNC_HOOKS.append(hook)
+
+
+def register_purge_sync_hook(hook: PurgeSyncHook) -> None:
+    """Register a hook to be called on permanent delete/purge."""
+    _PURGE_SYNC_HOOKS.append(hook)
+
+
+__all__ = [
+    "BaseAuditService",
+    "PurgeSyncHook",
+    "TrashSyncHook",
+    "register_purge_sync_hook",
+    "register_trash_sync_hook",
+]
 
 
 class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
@@ -253,7 +280,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         scope: ScopeContext | None = None,
     ) -> ModelT:
         """Move a single record to the trash bin (soft delete)."""
-        return await self._transition_status(
+        item = await self._transition_status(
             id,
             RecordStatus.TRASHED,
             RecordStatus.ACTIVE,
@@ -264,6 +291,8 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             user_id=user_id,
             scope=scope,
         )
+        await self.on_after_trash(item, user_id=user_id)
+        return item
 
     async def restore(
         self,
@@ -273,7 +302,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         scope: ScopeContext | None = None,
     ) -> ModelT:
         """Restore a single record from the trash bin."""
-        return await self._transition_status(
+        item = await self._transition_status(
             id,
             RecordStatus.ACTIVE,
             RecordStatus.TRASHED,
@@ -284,6 +313,8 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             user_id=user_id,
             scope=scope,
         )
+        await self.on_after_restore(item, user_id=user_id)
+        return item
 
     async def permanent_delete(
         self,
@@ -312,6 +343,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot permanently delete a record that is not in the trash",
             )
+        await self.on_after_permanent_delete(id)
         return deleted
 
     async def _bulk_transition_status(
@@ -340,9 +372,74 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
                 timestamp_field: datetime.now(UTC),
             },
         )
+        if count > 0:
+            if target_status == RecordStatus.TRASHED:
+                await self.on_after_bulk_trash(req.ids, user_id=user_id)
+            elif target_status == RecordStatus.ACTIVE:
+                await self.on_after_bulk_restore(req.ids, user_id=user_id)
+
         return BulkResponse(
             count=count, message=f"Successfully {action_verb} {count} records"
         )
+
+    # ==========================================
+    # 4. HOOKS DE SINCRONIZACIÓN CON PAPELERA
+    # ==========================================
+
+    async def on_after_trash(
+        self,
+        item: ModelT,
+        user_id: str | uuid.UUID | None = None,
+    ) -> None:
+        """Hook executed after soft-deleting an item."""
+        for hook in _TRASH_SYNC_HOOKS:
+            try:
+                await hook(self.repository.session, item, True, user_id)
+            except Exception as err:
+                logger.warning(f"Trash sync hook failed on trash: {err}")
+
+    async def on_after_restore(
+        self,
+        item: ModelT,
+        user_id: str | uuid.UUID | None = None,
+    ) -> None:
+        """Hook executed after restoring an item."""
+        for hook in _TRASH_SYNC_HOOKS:
+            try:
+                await hook(self.repository.session, item, False, user_id)
+            except Exception as err:
+                logger.warning(f"Trash sync hook failed on restore: {err}")
+
+    async def on_after_permanent_delete(self, id: uuid.UUID) -> None:
+        """Hook executed after permanently deleting an item."""
+        entity_type = getattr(self.model, "__tablename__", self.resource_name).lower()
+        if entity_type.startswith("sys_"):
+            entity_type = entity_type.removeprefix("sys_").rstrip("s")
+        for hook in _PURGE_SYNC_HOOKS:
+            try:
+                await hook(self.repository.session, entity_type, id)
+            except Exception as err:
+                logger.warning(f"Purge sync hook failed on delete: {err}")
+
+    async def on_after_bulk_trash(
+        self,
+        ids: list[uuid.UUID],
+        user_id: str | uuid.UUID | None = None,
+    ) -> None:
+        """Hook executed after bulk soft-deleting items."""
+        for item_id in ids:
+            item = await self.repository.get_by_id(item_id)
+            if item is not None:
+                await self.on_after_trash(item, user_id=user_id)
+
+    async def on_after_bulk_restore(
+        self,
+        ids: list[uuid.UUID],
+        user_id: str | uuid.UUID | None = None,
+    ) -> None:
+        """Hook executed after bulk restoring items."""
+        for item_id in ids:
+            await self.on_after_permanent_delete(item_id)
 
     async def bulk_trash(
         self,
