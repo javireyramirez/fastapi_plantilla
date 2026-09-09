@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 __all__ = [
     "AuditAction",
@@ -65,11 +65,34 @@ class AuditLogCreate(BaseModel):
 class AuditFilterParams(BaseModel):
     """Query filters for retrieving paginated audit logs."""
 
-    entity_type: str | None = None
-    entity_id: uuid.UUID | None = None
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    entity_type: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "entity_type", "entityType", "module_slug", "moduleSlug"
+        ),
+    )
+    entity_id: uuid.UUID | None = Field(
+        default=None,
+        validation_alias=AliasChoices("entity_id", "entityId"),
+    )
     action: str | None = None
-    actor_id: uuid.UUID | None = None
-    from_date: datetime | None = None
-    to_date: datetime | None = None
+    actor_id: uuid.UUID | None = Field(
+        default=None,
+        validation_alias=AliasChoices("actor_id", "actorId", "user_id", "userId"),
+    )
+    from_date: datetime | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "from_date", "fromDate", "createdAtFrom", "created_at_from"
+        ),
+    )
+    to_date: datetime | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "to_date", "toDate", "createdAtTo", "created_at_to"
+        ),
+    )
     page: int = Field(default=1, ge=1, le=1000)
     limit: int = Field(default=20, ge=1, le=100)

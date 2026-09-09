@@ -15,44 +15,81 @@ __all__ = [
 ]
 
 
-class SystemModuleDefinition(TypedDict):
+class SystemModuleDefinition(TypedDict, total=False):
     """Metadata definition of a core system module."""
 
     code: str
     name: str
     description: str
+    category: str
+    icon: str | None
+    sort_order: int
 
 
 CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
     {
         "code": "users",
         "name": "Usuarios",
-        "description": "Gestión de usuarios, perfiles y estados de cuenta",
+        "description": "Gestión de usuarios",
+        "category": "security",
+        "icon": "users",
+        "sort_order": 0,
     },
     {
         "code": "teams",
         "name": "Equipos",
-        "description": "Organizaciones, membresías y jerarquías de equipos",
+        "description": "Gestión de equipos",
+        "category": "security",
+        "icon": "users-round",
+        "sort_order": 1,
     },
     {
-        "code": "rbac",
-        "name": "Roles y Permisos",
-        "description": "Control de acceso, roles y asignación de permisos",
+        "code": "roles",
+        "name": "Roles",
+        "description": "Gestión de roles y permisos",
+        "category": "security",
+        "icon": "shield",
+        "sort_order": 2,
     },
     {
-        "code": "audit",
-        "name": "Auditoría",
-        "description": "Trazabilidad de cambios, historial de eventos y accesos",
+        "code": "companies",
+        "name": "Empresas",
+        "description": "Gestión de empresas / clientes",
+        "category": "business",
+        "icon": "briefcase",
+        "sort_order": 3,
+    },
+    {
+        "code": "documents",
+        "name": "Documentos",
+        "description": "Gestión de documentos",
+        "category": "files",
+        "icon": "file",
+        "sort_order": 4,
     },
     {
         "code": "storage",
         "name": "Almacenamiento",
-        "description": "Gestión de documentos, adjuntos y archivos multi-cloud",
+        "description": "Gestión de archivos",
+        "category": "files",
+        "icon": "hard-drive",
+        "sort_order": 5,
     },
     {
-        "code": "companies",
-        "name": "Compañías",
-        "description": "Gestión de empresas y entidades corporativas",
+        "code": "audit",
+        "name": "Auditoría",
+        "description": "Logs y auditoría",
+        "category": "system",
+        "icon": "activity",
+        "sort_order": 6,
+    },
+    {
+        "code": "trash",
+        "name": "Papelera",
+        "description": "Papelera de reciclaje y recuperación",
+        "category": "system",
+        "icon": "trash-2",
+        "sort_order": 7,
     },
 ]
 
@@ -64,8 +101,8 @@ async def sync_system_modules(
     """Idempotently register and update system modules in the database.
 
     Ensures that all core system modules exist in `sys_modules`. If a module
-    already exists by code, updates its human-readable name and description
-    while preserving the primary key and foreign key integrity.
+    already exists by code, updates its human-readable name, description,
+    category, icon and sort_order.
     """
     target_modules = modules or CORE_SYSTEM_MODULES
     synced: list[SystemModule] = []
@@ -75,22 +112,29 @@ async def sync_system_modules(
         result = await session.execute(query)
         existing = result.scalar_one_or_none()
 
+        cat = str(item.get("category", "system"))
+        ico = item.get("icon")
+        icon_val = str(ico) if ico is not None else None
+        sort_val = int(item.get("sort_order", 0))
+
         if existing is None:
             new_mod = SystemModule(
                 code=item["code"],
                 name=item["name"],
-                description=item["description"],
+                description=item.get("description"),
+                category=cat,
+                icon=icon_val,
+                sort_order=sort_val,
                 is_active=True,
             )
             session.add(new_mod)
             synced.append(new_mod)
         else:
-            if (
-                existing.name != item["name"]
-                or existing.description != item["description"]
-            ):
-                existing.name = item["name"]
-                existing.description = item["description"]
+            existing.name = item["name"]
+            existing.description = item.get("description")
+            existing.category = cat
+            existing.icon = icon_val
+            existing.sort_order = sort_val
             synced.append(existing)
 
     await session.flush()

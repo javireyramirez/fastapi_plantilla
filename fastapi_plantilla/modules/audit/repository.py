@@ -11,7 +11,41 @@ from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.modules.audit.models import AuditLog
 from fastapi_plantilla.modules.audit.schema import AuditFilterParams
 
-__all__ = ["AuditRepository"]
+__all__ = ["AuditRepository", "normalize_entity_types"]
+
+
+def normalize_entity_types(raw_type: str) -> list[str]:
+    """Return candidate entity_type strings covering singular and plural variations."""
+    raw = raw_type.strip().lower()
+    candidates = {raw}
+
+    known_pairs = {
+        "user": "users",
+        "company": "companies",
+        "team": "teams",
+        "role": "roles",
+        "document": "documents",
+        "storage": "storages",
+        "audit": "audits",
+        "trash": "trash",
+    }
+    for sing, plur in known_pairs.items():
+        if raw == sing:
+            candidates.add(plur)
+        elif raw == plur:
+            candidates.add(sing)
+
+    if raw.endswith("ies"):
+        candidates.add(raw[:-3] + "y")
+    elif raw.endswith("es"):
+        candidates.add(raw[:-2])
+        candidates.add(raw[:-1])
+    elif raw.endswith("s"):
+        candidates.add(raw[:-1])
+    else:
+        candidates.add(raw + "s")
+
+    return list(candidates)
 
 
 class AuditRepository(BaseRepository[AuditLog]):
@@ -43,7 +77,12 @@ class AuditRepository(BaseRepository[AuditLog]):
         conditions: list[Any] = []
 
         if params.entity_type:
-            conditions.append(AuditLog.entity_type == params.entity_type)
+            candidates = normalize_entity_types(params.entity_type)
+            if len(candidates) == 1:
+                conditions.append(AuditLog.entity_type == candidates[0])
+            else:
+                conditions.append(AuditLog.entity_type.in_(candidates))
+
         if params.entity_id:
             conditions.append(AuditLog.entity_id == params.entity_id)
         if params.action:
@@ -66,8 +105,14 @@ class AuditRepository(BaseRepository[AuditLog]):
         self, entity_type: str, entity_id: uuid.UUID
     ) -> list[AuditLog]:
         """Fetch all chronological audit logs for a specific entity."""
+        candidates = normalize_entity_types(entity_type)
+        cond = (
+            AuditLog.entity_type == candidates[0]
+            if len(candidates) == 1
+            else AuditLog.entity_type.in_(candidates)
+        )
         return await self.find_many(
-            AuditLog.entity_type == entity_type,
+            cond,
             AuditLog.entity_id == entity_id,
             limit=500,
             order_by=desc(AuditLog.created_at),

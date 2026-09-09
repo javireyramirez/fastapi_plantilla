@@ -42,6 +42,9 @@ class ModuleCreate(BaseModel):
     code: str = Field(..., min_length=2, max_length=50)
     name: str = Field(..., min_length=2, max_length=100)
     description: str | None = Field(default=None, max_length=255)
+    category: str = Field(default="system", max_length=50)
+    icon: str | None = Field(default=None, max_length=50)
+    sort_order: int = 0
     is_active: bool = True
 
 
@@ -50,6 +53,9 @@ class ModuleUpdate(BaseModel):
 
     name: str | None = Field(default=None, min_length=2, max_length=100)
     description: str | None = Field(default=None, max_length=255)
+    category: str | None = Field(default=None, max_length=50)
+    icon: str | None = Field(default=None, max_length=50)
+    sort_order: int | None = None
     is_active: bool | None = None
 
 
@@ -62,6 +68,9 @@ class ModuleResponse(BaseModel):
     code: str
     name: str
     description: str | None = None
+    category: str = "system"
+    icon: str | None = None
+    sort_order: int = 0
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -101,6 +110,8 @@ class RoleCreate(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
     slug: str = Field(..., min_length=2, max_length=100)
     description: str | None = Field(default=None, max_length=255)
+    color: str | None = Field(default=None, max_length=50)
+    icon: str | None = Field(default=None, max_length=50)
     permissions: list[RolePermissionItem] = Field(default_factory=list)
 
 
@@ -110,6 +121,8 @@ class RoleUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=100)
     slug: str | None = Field(default=None, min_length=2, max_length=100)
     description: str | None = Field(default=None, max_length=255)
+    color: str | None = Field(default=None, max_length=50)
+    icon: str | None = Field(default=None, max_length=50)
 
 
 class RoleResponse(BaseModel):
@@ -121,6 +134,8 @@ class RoleResponse(BaseModel):
     name: str
     slug: str
     description: str | None = None
+    color: str | None = None
+    icon: str | None = None
     is_system: bool
     created_at: datetime
     updated_at: datetime

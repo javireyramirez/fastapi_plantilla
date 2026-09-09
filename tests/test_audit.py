@@ -13,7 +13,7 @@ from fastapi_plantilla.core.crud.audit_diff import (
     serialize_audit_val,
 )
 from fastapi_plantilla.core.crud.repository import BaseRepository
-from fastapi_plantilla.core.crud.schema import AuditLevel, WriteOptions
+from fastapi_plantilla.core.crud.schema import AuditEntry, AuditLevel, WriteOptions
 from fastapi_plantilla.core.crud.service_audit import BaseAuditService
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import generate_uuid7
@@ -392,3 +392,58 @@ def test_audit_diff_pure_functions() -> None:
     assert "name" not in update_diff
     assert update_diff["description"] == {"old": "Old Desc", "new": "New Desc"}
     assert update_diff["password"] == {"old": "[REDACTED]", "new": "[REDACTED]"}
+
+
+@pytest.mark.anyio
+async def test_audit_query_singular_plural_normalization(
+    test_app: FastAPI,
+    dbsession: AsyncSession,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify audit queries accept singular/plural entity_type and camel aliases."""
+    admin, _ = audit_users
+    test_app.dependency_overrides[get_current_active_superuser] = lambda: admin
+
+    repo = AuditRepository(dbsession)
+    target_id = generate_uuid7()
+
+    # Create log with singular entity_type="user"
+    await repo.record_entry(
+        AuditEntry(
+            entity_type="user",
+            entity_id=target_id,
+            action="UPDATE",
+            actor_id=admin.id,
+            details="Test user update",
+        )
+    )
+    await dbsession.commit()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://test"
+    ) as client:
+        # 1. Query with plural entity_type="users" (as sent by frontend)
+        res_plural = await client.get(
+            f"/api/audit?page=1&limit=10&entity_type=users&entity_id={target_id}"
+        )
+        assert res_plural.status_code == 200
+        data_plural = res_plural.json()["data"]
+        assert len(data_plural) == 1
+        assert data_plural[0]["entity_type"] == "user"
+        assert data_plural[0]["entity_id"] == str(target_id)
+
+        # 2. Query with camelCase aliases: entityType=users&entityId=...
+        res_camel = await client.get(
+            f"/api/audit?page=1&limit=10&entityType=users&entityId={target_id}"
+        )
+        assert res_camel.status_code == 200
+        data_camel = res_camel.json()["data"]
+        assert len(data_camel) == 1
+        assert data_camel[0]["entity_id"] == str(target_id)
+
+        # 3. Query entity history endpoint with plural "/api/audit/entity/users/..."
+        res_history = await client.get(f"/api/audit/entity/users/{target_id}")
+        assert res_history.status_code == 200
+        data_history = res_history.json()
+        assert len(data_history) == 1
+        assert data_history[0]["entity_type"] == "user"

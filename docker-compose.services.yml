@@ -1,0 +1,87 @@
+﻿name: fastapi_plantilla
+
+services:
+  db:
+    image: postgres:18.3-trixie
+    hostname: fastapi_plantilla-db
+    container_name: fastapi_plantilla-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: "fastapi_plantilla"
+      POSTGRES_USER: "fastapi_plantilla"
+      POSTGRES_DB: "fastapi_plantilla"
+    volumes:
+      - fastapi_plantilla-db-data:/var/lib/postgresql
+    restart: always
+    healthcheck:
+      test: pg_isready -U fastapi_plantilla
+      interval: 2s
+      timeout: 3s
+      retries: 40
+
+  mailpit:
+    image: axllent/mailpit:latest
+    hostname: fastapi_plantilla-mailpit
+    container_name: fastapi_plantilla-mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # Web UI
+    environment:
+      MP_MAX_MESSAGES: 500
+      MP_DATABASE: "" # In-memory storage
+
+  dbgate:
+    image: dbgate/dbgate:latest
+    hostname: fastapi_plantilla-dbgate
+    container_name: fastapi_plantilla-dbgate
+    restart: unless-stopped
+    ports:
+      - "3005:3000" # DbGate Web UI en http://localhost:3005
+    environment:
+      CONNECTIONS: db_local
+      CONNECTION_db_local_ENGINE: postgres@dbgate-plugin-postgres
+      CONNECTION_db_local_SERVER: fastapi_plantilla-db
+      CONNECTION_db_local_PORT: 5432
+      CONNECTION_db_local_USER: fastapi_plantilla
+      CONNECTION_db_local_PASSWORD: fastapi_plantilla
+      CONNECTION_db_local_DATABASE: fastapi_plantilla
+      CONNECTION_db_local_LABEL: "FastAPI Plantilla DB"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  minio:
+    image: minio/minio:latest
+    hostname: fastapi_plantilla-minio
+    container_name: fastapi_plantilla-minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000" # S3 API endpoint
+      - "9001:9001" # MinIO Console Web UI en http://localhost:9001
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - fastapi_plantilla-minio-data:/data
+
+  minio-create-bucket:
+    image: minio/mc:latest
+    container_name: fastapi_plantilla-minio-init
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 2;
+      /usr/bin/mc alias set localminio http://fastapi_plantilla-minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb localminio/fastapi-plantilla-bucket --ignore-existing;
+      exit 0;
+      "
+
+volumes:
+  fastapi_plantilla-db-data:
+    name: fastapi_plantilla-db-data
+  fastapi_plantilla-minio-data:
+    name: fastapi_plantilla-minio-data

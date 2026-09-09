@@ -1,0 +1,43 @@
+name: fastapi_plantilla
+
+include:
+  - path: docker-compose.services.yml
+
+services:
+  api: &main_app
+    build:
+      context: .
+      target: dev
+      dockerfile: ./Dockerfile
+    image: fastapi_plantilla:${FASTAPI_PLANTILLA_VERSION:-latest}
+    restart: always
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    environment:
+      FASTAPI_PLANTILLA_HOST: 0.0.0.0
+      FASTAPI_PLANTILLA_RELOAD: "True"
+      FASTAPI_PLANTILLA_DB_HOST: fastapi_plantilla-db
+      FASTAPI_PLANTILLA_DB_PORT: 5432
+      FASTAPI_PLANTILLA_DB_USER: fastapi_plantilla
+      FASTAPI_PLANTILLA_DB_PASS: fastapi_plantilla
+      FASTAPI_PLANTILLA_DB_BASE: fastapi_plantilla
+      FASTAPI_PLANTILLA_SMTP_HOST: fastapi_plantilla-mailpit
+      FASTAPI_PLANTILLA_STORAGE_S3_ENDPOINT_URL: http://fastapi_plantilla-minio:9000
+    volumes:
+      - .:/app/src/
+
+  migrator:
+    <<: *main_app
+    restart: "no"
+    command: sh -c "alembic upgrade head && python -m scripts.seed"
+    depends_on:
+      db:
+        condition: service_healthy

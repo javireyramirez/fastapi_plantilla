@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     session_cookie_name: str = "fastapi_session"
     session_expire_days: int = 7
     cookie_secure: bool = False
+    initial_superadmin_email: str | None = None
+    initial_superadmin_password: str | None = None
+    initial_superadmin_name: str = "Super Admin"
 
     # Email
     email_backend: EmailBackend | None = None

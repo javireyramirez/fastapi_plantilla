@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import (
     Boolean,
     ForeignKey,
+    Integer,
     String,
     UniqueConstraint,
     Uuid,
@@ -35,6 +36,13 @@ class SystemModule(UUID7PrimaryKeyMixin, TimestampMixin, Base):
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    category: Mapped[str] = mapped_column(
+        String(50), default="system", server_default="system", nullable=False
+    )
+    icon: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    sort_order: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, index=True, nullable=False
     )
@@ -42,6 +50,11 @@ class SystemModule(UUID7PrimaryKeyMixin, TimestampMixin, Base):
     permissions: Mapped[list["RolePermission"]] = relationship(
         back_populates="module", cascade="all, delete-orphan"
     )
+
+    @property
+    def slug(self) -> str:
+        """Slug alias for code."""
+        return self.code
 
 
 class Role(UUID7PrimaryKeyMixin, AuditFieldsMixin, OptimisticLockMixin, Base):
@@ -54,6 +67,8 @@ class Role(UUID7PrimaryKeyMixin, AuditFieldsMixin, OptimisticLockMixin, Base):
         String(100), unique=True, index=True, nullable=False
     )
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    color: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    icon: Mapped[str | None] = mapped_column(String(50), nullable=True)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     permissions: Mapped[list["RolePermission"]] = relationship(

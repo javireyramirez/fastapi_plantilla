@@ -305,3 +305,51 @@ async def test_assign_roles_and_resend_invitation(
     # Resend invitation
     invite_res = await users_client.post(f"/api/users/{target1.id}/resend-invitation")
     assert invite_res.status_code == status.HTTP_200_OK
+
+
+@pytest.mark.anyio
+async def test_seed_initial_superadmin(dbsession: AsyncSession) -> None:
+    """Verify bootstrap superadmin seeding and idempotency."""
+    from argon2 import PasswordHasher
+
+    from fastapi_plantilla.core.config import settings
+    from fastapi_plantilla.modules.auth.models import Account, User
+    from scripts.seeds.superadmin import seed_superadmin
+
+    test_email = f"bootstrap_{uuid.uuid4().hex[:6]}@example.com"
+    test_pass = "SuperSecure1996*"  # noqa: S105
+
+    orig_email = settings.initial_superadmin_email
+    orig_pass = settings.initial_superadmin_password
+    orig_name = settings.initial_superadmin_name
+    try:
+        settings.initial_superadmin_email = test_email
+        settings.initial_superadmin_password = test_pass
+        settings.initial_superadmin_name = "Bootstrap Admin"
+
+        # 1. First run seeds the user
+        await seed_superadmin(dbsession)
+        await dbsession.commit()
+
+        user_repo = BaseRepository(User, dbsession)
+        user = await user_repo.find_first(User.email == test_email)
+        assert user is not None
+        assert user.is_super_admin is True
+        assert user.is_active is True
+        assert user.name == "Bootstrap Admin"
+
+        acc_repo = BaseRepository(Account, dbsession)
+        account = await acc_repo.find_first(Account.user_id == user.id)
+        assert account is not None
+        assert account.provider_id == "credential"
+        assert account.password is not None
+        ph = PasswordHasher()
+        ph.verify(account.password, test_pass)
+
+        # 2. Second run is idempotent
+        await seed_superadmin(dbsession)
+        await dbsession.commit()
+    finally:
+        settings.initial_superadmin_email = orig_email
+        settings.initial_superadmin_password = orig_pass
+        settings.initial_superadmin_name = orig_name
