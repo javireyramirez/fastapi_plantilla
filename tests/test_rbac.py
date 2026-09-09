@@ -17,6 +17,10 @@ from fastapi_plantilla.modules.auth.dependencies import (
 )
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.auth.schema import UserResponse
+from fastapi_plantilla.modules.rbac.catalog import (
+    CORE_SYSTEM_MODULES,
+    sync_system_modules,
+)
 from fastapi_plantilla.modules.rbac.dependencies import require_permission
 from fastapi_plantilla.modules.rbac.models import SystemModule
 from fastapi_plantilla.modules.rbac.routes import router as rbac_router
@@ -348,3 +352,45 @@ async def test_require_permission_dependency_and_hierarchy(
     assert matrix_res.status_code == status.HTTP_200_OK
     matrix = matrix_res.json()
     assert matrix["permissions"]["test_module"]["READ"] == "TEAM"
+
+
+@pytest.mark.anyio
+async def test_sync_system_modules_idempotency_and_api(
+    dbsession: AsyncSession,
+    rbac_client: AsyncClient,
+    rbac_auth: RbacAuthContext,
+    rbac_test_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify sync_system_modules registers core modules and updates idempotently."""
+    _, regular = rbac_test_users
+
+    # 1. Sync core modules
+    synced = await sync_system_modules(dbsession)
+    assert len(synced) >= len(CORE_SYSTEM_MODULES)
+    core_codes = {m["code"] for m in CORE_SYSTEM_MODULES}
+    synced_codes = {m.code for m in synced}
+    assert core_codes.issubset(synced_codes)
+
+    # 2. Re-running sync with updated name/description is idempotent and keeps IDs
+    first_users_mod = next(m for m in synced if m.code == "users")
+    original_id = first_users_mod.id
+
+    custom_modules = [
+        {
+            "code": "users",
+            "name": "Gestión de Usuarios",
+            "description": "Usuarios actualizados",
+        }
+    ]
+    updated_synced = await sync_system_modules(dbsession, modules=custom_modules)
+    updated_users_mod = next(m for m in updated_synced if m.code == "users")
+    assert updated_users_mod.id == original_id
+    assert updated_users_mod.name == "Gestión de Usuarios"
+    assert updated_users_mod.description == "Usuarios actualizados"
+
+    # 3. GET /api/rbac/modules returns the modules for authenticated user
+    rbac_auth.user = regular
+    res = await rbac_client.get("/api/rbac/modules")
+    assert res.status_code == status.HTTP_200_OK
+    modules_data = res.json()
+    assert any(m["code"] == "users" for m in modules_data)

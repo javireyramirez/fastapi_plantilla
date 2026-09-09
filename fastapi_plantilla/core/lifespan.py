@@ -3,9 +3,11 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
+from loguru import logger
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from fastapi_plantilla.core.config import settings
+from fastapi_plantilla.modules.rbac.catalog import sync_system_modules
 from fastapi_plantilla.modules.trash.tasks import run_periodic_trash_purge
 
 
@@ -32,6 +34,13 @@ async def lifespan_setup(
     trash_task: asyncio.Task[None] | None = None
     if settings.trash_purge_enabled:
         trash_task = asyncio.create_task(run_periodic_trash_purge(app))
+
+    session_factory = app.state.db_session_factory
+    try:
+        async with session_factory() as session, session.begin():
+            await sync_system_modules(session)
+    except Exception as exc:
+        logger.warning(f"Could not sync system modules on startup: {exc}")
 
     yield
 
