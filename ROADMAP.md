@@ -31,8 +31,8 @@ Este documento define la hoja de ruta, arquitectura de módulos y especificacion
 flowchart TD
     F0["Fase 0: Auth & Email Core (✅ Completado)"] --> F1["Fase 1: Infraestructura, Concurrencia & Observabilidad (✅ Completado)"]
     F1 --> F2["Fase 2: Motor Base CRUD & Paginación Genérica (✅ Completado)"]
-    F2 --> F3["Fase 3: RBAC, Teams, User Admin & Impersonation"]
-    F3 --> F4["Fase 4: Almacenamiento Multi-Cloud (AWS, Azure, GCP) & Papelera"]
+    F2 --> F3["Fase 3: RBAC, Teams, User Admin & Impersonation (✅ Completado)"]
+    F3 --> F4["Fase 4: Almacenamiento Multi-Cloud & Papelera (✅ Completado)"]
     F4 --> F5["Fase 5: Background Jobs en BD, Ingesta & Exportación Masiva"]
     F5 --> F6["Fase 6: Módulo de Ejemplo 'Companies'"]
     F6 --> F7["Fase 7: Auditoría Centralizada, Settings, Notificaciones & Métricas"]
@@ -82,33 +82,33 @@ flowchart TD
 
 ---
 
-### 🔐 FASE 3: Sistema RBAC, Equipos (Teams), Usuarios & Impersonation
-* **3.1 Catálogo de Módulos & Roles (`sys_modules`, `rbac_roles`, `rbac_role_permissions`):**
-  * *Descripción:* Matriz de permisos con 8 acciones (`CREATE`, `READ`, `UPDATE`, `DELETE`, `RESTORE`, `EXPORT`, `IMPORT`, `SETTINGS`) y 3 scopes jerárquicos (`GLOBAL` > `TEAM` > `OWN`).
+### 🟢 FASE 3: Sistema RBAC, Equipos (Teams), Usuarios & Impersonation *(COMPLETADO)*
+* **3.1 Catálogo de Módulos & Roles (`sys_modules`, `rbac_roles`, `rbac_role_permissions`):** *(COMPLETADO)*
+  * *Descripción:* Matriz de permisos con 8 acciones (`CREATE`, `READ`, `UPDATE`, `DELETE`, `RESTORE`, `EXPORT`, `IMPORT`, `SETTINGS`) y 3 scopes jerárquicos (`GLOBAL` > `TEAM` > `OWN`). Integrado con `BaseAuditService[Role]` y `BaseRepository[Role]`.
   * *Problema que soluciona:* Control de acceso granular empresarial y multitenant dinámico en base de datos.
-* **3.2 Módulo de Equipos (`modules/team`):**
-  * *Descripción:* Modelos `Team` y `TeamUser`. Gestión de miembros y asignación polimórfica de roles a equipos completos.
+* **3.2 Módulo de Equipos (`modules/teams`):** *(COMPLETADO)*
+  * *Descripción:* Modelos `Team` y `TeamUser`. Gestión de miembros y asignación polimórfica de roles a equipos completos con trazabilidad auditada (`BaseAuditService[Team]`).
   * *Problema que soluciona:* Facilita la colaboración corporativa; un usuario hereda automáticamente los permisos de todos sus equipos.
-* **3.3 Gestión Administrativa de Usuarios (`modules/users`):**
-  * *Descripción:* Listado paginado, suspensión/reactivación individual y masiva (`/bulk/suspend`), asignación de roles y reenvío de invitaciones.
+* **3.3 Gestión Administrativa de Usuarios (`modules/users`):** *(COMPLETADO)*
+  * *Descripción:* Listado paginado con resolución de N+1 queries, suspensión/reactivación individual y masiva (`/bulk/suspend`), asignación de roles y soft delete auditado integrado con la papelera global (`BaseAuditService[User]`).
   * *Problema que soluciona:* Panel de control completo para gobernar cuentas de usuario.
-* **3.4 Impersonation ("Login As" para Soporte):**
+* **3.4 Impersonation ("Login As" para Soporte):** *(COMPLETADO)*
   * *Descripción:* Endpoint `POST /api/auth/impersonate/{user_id}` para SuperAdmins con auditoría estricta.
   * *Problema que soluciona:* Permite a soporte técnico ver exactamente lo que ve un usuario para reproducir errores sin pedirle su contraseña.
 
 ---
 
-### 📁 FASE 4: Almacenamiento Multi-Cloud (AWS S3, Azure Blob, Google Cloud Storage) & Papelera Unificada
-* **4.1 Interface Agnóstica de Almacenamiento (`StorageProvider` Protocol):**
+### 🟢 FASE 4: Almacenamiento Multi-Cloud (AWS S3, Azure Blob, Google Cloud Storage) & Papelera Unificada *(COMPLETADO)*
+* **4.1 Interface Agnóstica de Almacenamiento (`StorageProvider` Protocol):** *(COMPLETADO)*
   * *Descripción:* Protocolo/Interface estándar (`upload`, `download`, `get_presigned_url`, `delete`, `exists`) con implementaciones intercambiables e interoperables según conveniencia del cliente o infraestructura disponible (`AWS S3 / MinIO`, `Azure Blob Storage`, `Google Cloud Storage (GCS)` y `Local/Mock` para tests).
   * *Problema que soluciona:* Cero vendor lock-in con proveedores cloud; la aplicación puede ejecutarse indistintamente en Azure, AWS o Google Cloud simplemente ajustando una variable de configuración en `.env` sin cambiar una sola línea de código de negocio.
-* **4.2 Módulo de Documentos Polimórficos (`modules/storage`):**
+* **4.2 Módulo de Documentos Polimórficos (`modules/storage`):** *(COMPLETADO)*
   * *Descripción:* Modelo polimórfico `Document` (`entity_type`, `entity_id`). Generación de Presigned URLs (Upload/Download directo al bucket), confirmación de subida, metadatos MIME/tamaño y descarga empaquetada en ZIP.
   * *Problema que soluciona:* Carga y descarga de archivos de alto rendimiento sin saturar la memoria ni el ancho de banda del servidor FastAPI.
-* **4.3 Papelera de Reciclaje Centralizada (`modules/trash`):**
+* **4.3 Papelera de Reciclaje Centralizada (`modules/trash`):** *(COMPLETADO)*
   * *Descripción:* Modelo `sys_trash_bin` con retención temporal (`expires_at`, ej. 30 días), vista unificada de elementos borrados en cualquier módulo, restauración individual/masiva y purga definitiva.
   * *Problema que soluciona:* Recuperación uniforme de desastres ante borrados accidentales de usuarios.
-* **4.4 Background Trash Purge Job:**
+* **4.4 Background Trash Purge Job:** *(COMPLETADO)*
   * *Descripción:* Lifespan scheduler periódico (cada 24h) para purga automática de registros caducados.
   * *Problema que soluciona:* Mantenimiento automático de la base de datos sin acumular basura residual.
 

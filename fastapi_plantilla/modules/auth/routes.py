@@ -1,4 +1,5 @@
 import secrets
+import uuid
 
 from fastapi import (
     APIRouter,
@@ -12,7 +13,9 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 
 from fastapi_plantilla.core.config import settings
+from fastapi_plantilla.core.crud.schema import MessageResponse
 from fastapi_plantilla.modules.auth.dependencies import (
+    get_current_active_superuser,
     get_current_session,
     get_current_user,
 )
@@ -372,4 +375,43 @@ async def callback_google(
         set_session_cookie(response, auth_data.session.token)
     response.delete_cookie("oauth_state", path="/")
     response.delete_cookie("oauth_callback_url", path="/")
+    return auth_data
+
+
+@router.post("/impersonate/exit", response_model=MessageResponse)
+async def exit_impersonation(
+    response: Response,
+    current_session: AuthResponse = Depends(get_current_session),
+    service: AuthService = Depends(),
+) -> MessageResponse:
+    """Exit impersonated session and revoke it."""
+    if not current_session.session or not current_session.session.token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active session found",
+        )
+    await service.exit_impersonation(current_session.session.token)
+    delete_session_cookie(response)
+    return MessageResponse(message="Impersonación finalizada")
+
+
+@router.post("/impersonate/{user_id}", response_model=AuthResponse)
+async def impersonate_user(
+    user_id: uuid.UUID,
+    request: Request,
+    response: Response,
+    admin: UserResponse = Depends(get_current_active_superuser),
+    service: AuthService = Depends(),
+) -> AuthResponse:
+    """Start an impersonated session as target user (SuperAdmin only)."""
+    ip_address = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    auth_data = await service.impersonate_user(
+        admin_user=admin,
+        target_user_id=user_id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    if auth_data.session:
+        set_session_cookie(response, auth_data.session.token)
     return auth_data

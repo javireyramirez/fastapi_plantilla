@@ -114,6 +114,7 @@ class SessionResponse(BaseModel):
     ip_address: str | None = None
     user_agent: str | None = None
     is_valid: bool
+    impersonated_by: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -149,6 +150,7 @@ class SessionDetailResponse(BaseModel):
     created_at: datetime
     expires_at: datetime
     is_current: bool = False
+    impersonated_by: uuid.UUID | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

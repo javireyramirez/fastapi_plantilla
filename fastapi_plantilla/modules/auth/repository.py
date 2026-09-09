@@ -216,6 +216,7 @@ class AuthRepository:
         expires_at: datetime,
         ip_address: str | None = None,
         user_agent: str | None = None,
+        impersonated_by: uuid.UUID | None = None,
     ) -> Session:
         """Create active session in database."""
         session = Session(
@@ -225,6 +226,7 @@ class AuthRepository:
             ip_address=ip_address,
             user_agent=user_agent,
             is_valid=True,
+            impersonated_by=impersonated_by,
         )
         self.session.add(session)
         await self.session.flush()

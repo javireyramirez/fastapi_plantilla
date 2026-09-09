@@ -14,10 +14,15 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from fastapi_plantilla.core.database import Base
-from fastapi_plantilla.core.mixins import TimestampMixin, UUID7PrimaryKeyMixin
+from fastapi_plantilla.core.mixins import (
+    AuditFieldsMixin,
+    OptimisticLockMixin,
+    TimestampMixin,
+    UUID7PrimaryKeyMixin,
+)
 
 
-class User(UUID7PrimaryKeyMixin, TimestampMixin, Base):
+class User(UUID7PrimaryKeyMixin, AuditFieldsMixin, OptimisticLockMixin, Base):
     """User model."""
 
     __tablename__ = "auth_users"
@@ -35,7 +40,9 @@ class User(UUID7PrimaryKeyMixin, TimestampMixin, Base):
         back_populates="user", cascade="all, delete-orphan"
     )
     sessions: Mapped[list["Session"]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="Session.user_id",
     )
 
 
@@ -92,9 +99,18 @@ class Session(UUID7PrimaryKeyMixin, TimestampMixin, Base):
     ip_address: Mapped[str | None] = mapped_column(String(length=45), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_valid: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    impersonated_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("auth_users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        default=None,
+    )
 
     # Relación inversa
-    user: Mapped["User"] = relationship(back_populates="sessions")
+    user: Mapped["User"] = relationship(
+        back_populates="sessions", foreign_keys=[user_id]
+    )
 
 
 class Verification(UUID7PrimaryKeyMixin, TimestampMixin, Base):

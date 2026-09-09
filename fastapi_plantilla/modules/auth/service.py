@@ -49,6 +49,7 @@ class AuthService:
         user: User,
         ip_address: str | None = None,
         user_agent: str | None = None,
+        impersonated_by: uuid.UUID | None = None,
     ) -> AuthResponse:
         """Helper to create session token and construct AuthResponse."""
         raw_token = secrets.token_urlsafe(32)
@@ -58,6 +59,7 @@ class AuthService:
             expires_at=datetime.now(UTC) + timedelta(days=settings.session_expire_days),
             ip_address=ip_address,
             user_agent=user_agent,
+            impersonated_by=impersonated_by,
         )
         session_dto = SessionResponse.model_validate(session)
         session_dto.token = sign_token(raw_token, settings.auth_secret)
@@ -568,3 +570,62 @@ class AuthService:
 
         await self.repository.delete_user_by_id(user_id=user_id)
         return True
+
+    async def impersonate_user(
+        self,
+        admin_user: UserResponse,
+        target_user_id: uuid.UUID,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> AuthResponse:
+        """Create an impersonated session allowing SuperAdmin to act as target user."""
+        if not admin_user.is_super_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo los superadministradores pueden iniciar impersonación",
+            )
+        if admin_user.id == target_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No puedes impersonarte a ti mismo",
+            )
+
+        target_user = await self.repository.get_user_by_id(target_user_id)
+        if not target_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuario objetivo no encontrado",
+            )
+        if target_user.is_super_admin:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No se permite impersonar a otro superadministrador",
+            )
+        if not target_user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No se puede impersonar a un usuario inactivo o suspendido",
+            )
+
+        return await self._create_user_session(
+            user=target_user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            impersonated_by=admin_user.id,
+        )
+
+    async def exit_impersonation(self, token: str) -> bool:
+        """Terminate the active impersonated session."""
+        raw_token = unsign_token(token, settings.auth_secret)
+        if not raw_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token de sesión inválido",
+            )
+        session = await self.repository.get_session_with_user(token=raw_token)
+        if not session or not session.impersonated_by:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="La sesión actual no es una sesión impersonada",
+            )
+        return await self.repository.invalidate_session(token=raw_token)
