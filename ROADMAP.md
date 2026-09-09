@@ -135,8 +135,8 @@ flowchart TD
 ---
 
 ### 📋 FASE 7: Auditoría Centralizada, Settings Dinámicos, Notificaciones & Métricas Prometheus
-* **7.1 Módulo de Auditoría (`modules/audit`):**
-  * *Descripción:* Tabla `sys_audit_logs` con registro de acciones (`CREATE`, `UPDATE`, `LOGIN`, etc.), diffs `before`/`after`, IP, User-Agent y ofuscación de datos sensibles (`[REDACTED]`).
+* **7.1 Módulo de Auditoría (`modules/audit`):** *(COMPLETADO)*
+  * *Descripción:* Tabla `sys_audit_logs` con registro de acciones (`CREATE`, `UPDATE`, `LOGIN`, etc.), diffs `before`/`after`, IP, User-Agent, ofuscación de datos sensibles (`[REDACTED]`) y niveles configurables (`FULL`, `PARTIAL`, `NONE`).
   * *Problema que soluciona:* Cumplimiento de normativas de seguridad (ISO 27001 / GDPR) y trazabilidad completa de cambios.
 * **7.2 Settings Dinámicos & Feature Flags (`sys_settings`):**
   * *Descripción:* Configuración clave-valor en BD con scopes (`GLOBAL` o por `entity_type`/`entity_id`).

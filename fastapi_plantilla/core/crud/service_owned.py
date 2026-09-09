@@ -10,6 +10,7 @@ from fastapi_plantilla.core.crud.schema import (
     BulkResponse,
     ScopeContext,
     ScopeType,
+    WriteOptions,
 )
 from fastapi_plantilla.core.crud.service_audit import BaseAuditService
 from fastapi_plantilla.core.database import Base
@@ -166,18 +167,21 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
         owner_id: uuid.UUID | None = None,
         scope: ScopeContext | None = None,
         allow_immutable: bool = False,
+        options: WriteOptions | None = None,
     ) -> ModelT:
         """Create a record assigning owner and team stamping."""
+        effective_user_id = (options.user_id if options else None) or user_id
         payload = data.model_dump() if isinstance(data, BaseModel) else dict(data)
         self._resolve_owner_and_team(
-            payload, user_id=user_id, owner_id=owner_id, scope=scope
+            payload, user_id=effective_user_id, owner_id=owner_id, scope=scope
         )
         return await super().create(
             data=payload,
-            user_id=user_id,
+            user_id=effective_user_id,
             owner_id=owner_id,
             scope=scope,
             allow_immutable=allow_immutable,
+            options=options,
         )
 
     async def update(
@@ -189,8 +193,10 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
         allow_immutable: bool = False,
+        options: WriteOptions | None = None,
     ) -> ModelT:
         """Update a record verifying ownership and team assignment permissions."""
+        effective_user_id = (options.user_id if options else None) or user_id
         payload = (
             data.model_dump(exclude_unset=True)
             if isinstance(data, BaseModel)
@@ -252,9 +258,10 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
             payload,
             *where,
             expected_version=expected_version,
-            user_id=user_id,
+            user_id=effective_user_id,
             scope=scope,
             allow_immutable=allow_immutable,
+            options=options,
         )
 
     async def bulk_create(

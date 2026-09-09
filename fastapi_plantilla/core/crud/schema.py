@@ -12,7 +12,9 @@ from fastapi_plantilla.core.mixins import RecordStatus
 
 __all__ = [
     "DEFAULT_MAX_BULK_LIMIT",
+    "AuditEntry",
     "AuditFieldsSchema",
+    "AuditLevel",
     "BulkIdsRequest",
     "BulkResponse",
     "ExportFormat",
@@ -202,3 +204,26 @@ class WriteOptions(BaseModel):
     description: str | None = None
     expected_version: int | None = Field(default=None, ge=1)
     include: dict[str, Any] | None = None
+
+
+class AuditLevel(enum.StrEnum):
+    """Granular audit tracking levels per module/service."""
+
+    FULL = "full"  # Completa: metadata + diffs campo por campo
+    PARTIAL = "partial"  # Parcial: metadata de acción, sin diffs de campos
+    NONE = "none"  # Sin auditoría
+
+
+class AuditEntry(BaseModel):
+    """Decoupled audit log event payload."""
+
+    entity_type: str
+    entity_id: uuid.UUID | None = None
+    action: str
+    actor_id: uuid.UUID | None = None
+    actor_name: str | None = None
+    actor_email: str | None = None
+    ip_address: str | None = None
+    user_agent: str | None = None
+    changes: dict[str, Any] | None = None
+    details: str | None = None

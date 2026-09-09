@@ -8,13 +8,22 @@ from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi_plantilla.core.crud.audit_diff import (
+    compute_create_diff,
+    compute_update_diff,
+    is_sensitive_audit_field,
+    serialize_audit_val,
+)
 from fastapi_plantilla.core.crud.schema import (
+    AuditEntry,
+    AuditLevel,
     BulkIdsRequest,
     BulkResponse,
     ListItemResponse,
     ListQueryParams,
     PaginationParams,
     ScopeContext,
+    WriteOptions,
 )
 from fastapi_plantilla.core.crud.service_base import BaseCRUDService
 from fastapi_plantilla.core.database import Base
@@ -24,9 +33,11 @@ TrashSyncHook = Callable[
     [AsyncSession, Any, bool, str | uuid.UUID | None], Coroutine[Any, Any, None]
 ]
 PurgeSyncHook = Callable[[AsyncSession, str, uuid.UUID], Coroutine[Any, Any, None]]
+AuditSyncHook = Callable[[AsyncSession, AuditEntry], Coroutine[Any, Any, None]]
 
 _TRASH_SYNC_HOOKS: list[TrashSyncHook] = []
 _PURGE_SYNC_HOOKS: list[PurgeSyncHook] = []
+_AUDIT_SYNC_HOOKS: list[AuditSyncHook] = []
 
 
 def register_trash_sync_hook(hook: TrashSyncHook) -> None:
@@ -39,10 +50,17 @@ def register_purge_sync_hook(hook: PurgeSyncHook) -> None:
     _PURGE_SYNC_HOOKS.append(hook)
 
 
+def register_audit_sync_hook(hook: AuditSyncHook) -> None:
+    """Register a hook to be called on audit event emission."""
+    _AUDIT_SYNC_HOOKS.append(hook)
+
+
 __all__ = [
+    "AuditSyncHook",
     "BaseAuditService",
     "PurgeSyncHook",
     "TrashSyncHook",
+    "register_audit_sync_hook",
     "register_purge_sync_hook",
     "register_trash_sync_hook",
 ]
@@ -50,6 +68,8 @@ __all__ = [
 
 class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
     """Base business service for CRUD Audit Service."""
+
+    audit_level: AuditLevel = AuditLevel.FULL
 
     # ==========================================
     # 1. FILTROS Y LECTURAS AUDITADAS
@@ -118,19 +138,29 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         owner_id: uuid.UUID | None = None,
         scope: ScopeContext | None = None,
         allow_immutable: bool = False,
+        options: WriteOptions | None = None,
     ) -> ModelT:
         """Create a record with created_by and updated_by actor stamping."""
+        effective_user_id = (options.user_id if options else None) or user_id
         payload = data.model_dump() if isinstance(data, BaseModel) else dict(data)
         if not allow_immutable and self._get_column("status") is not None:
             payload["status"] = RecordStatus.ACTIVE
-        self._stamp_actors(payload, user_id, is_create=True)
-        return await super().create(
+        self._stamp_actors(payload, effective_user_id, is_create=True)
+        created = await super().create(
             data=payload,
-            user_id=user_id,
+            user_id=effective_user_id,
             owner_id=owner_id,
             scope=scope,
             allow_immutable=allow_immutable,
         )
+        await self._emit_audit(
+            item=created,
+            action="CREATE",
+            options=options,
+            user_id=effective_user_id,
+            new_data=payload,
+        )
+        return created
 
     async def update(
         self,
@@ -141,8 +171,10 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
         allow_immutable: bool = False,
+        options: WriteOptions | None = None,
     ) -> ModelT:
         """Update a record with updated_by actor stamping and trash protection."""
+        effective_user_id = (options.user_id if options else None) or user_id
         payload = (
             data.model_dump(exclude_unset=True)
             if isinstance(data, BaseModel)
@@ -154,10 +186,16 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         if not allow_immutable and status_col is not None:
             extra_where.append(status_col != RecordStatus.TRASHED)
 
-        self._stamp_actors(payload, user_id, is_create=False)
+        self._stamp_actors(payload, effective_user_id, is_create=False)
+
+        snapshot_before: dict[str, Any] | None = None
+        if self.audit_level == AuditLevel.FULL:
+            item_obj = await self.repository.get_by_id(id)
+            if item_obj is not None:
+                snapshot_before = {k: getattr(item_obj, k, None) for k in payload}
 
         try:
-            return await super().update(
+            updated = await super().update(
                 id,
                 payload,
                 *extra_where,
@@ -165,6 +203,15 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
                 scope=scope,
                 allow_immutable=allow_immutable,
             )
+            await self._emit_audit(
+                item=updated,
+                action="UPDATE",
+                options=options,
+                user_id=effective_user_id,
+                snapshot_before=snapshot_before,
+                updated_payload=payload,
+            )
+            return updated
         except HTTPException as exc:
             if (
                 not allow_immutable
@@ -278,8 +325,10 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         *where: Any,
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> ModelT:
         """Move a single record to the trash bin (soft delete)."""
+        effective_user_id = (options.user_id if options else None) or user_id
         item = await self._transition_status(
             id,
             RecordStatus.TRASHED,
@@ -288,10 +337,17 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             "deleted_at",
             "Record is already in the trash bin",
             *where,
-            user_id=user_id,
+            user_id=effective_user_id,
             scope=scope,
         )
-        await self.on_after_trash(item, user_id=user_id)
+        await self.on_after_trash(item, user_id=effective_user_id)
+        await self._emit_audit(
+            item=item,
+            action="TRASH",
+            options=options,
+            user_id=effective_user_id,
+            status_transition=(RecordStatus.ACTIVE.value, RecordStatus.TRASHED.value),
+        )
         return item
 
     async def restore(
@@ -300,8 +356,10 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         *where: Any,
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> ModelT:
         """Restore a single record from the trash bin."""
+        effective_user_id = (options.user_id if options else None) or user_id
         item = await self._transition_status(
             id,
             RecordStatus.ACTIVE,
@@ -310,10 +368,17 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             "restored_at",
             "Record is not in the trash bin",
             *where,
-            user_id=user_id,
+            user_id=effective_user_id,
             scope=scope,
         )
-        await self.on_after_restore(item, user_id=user_id)
+        await self.on_after_restore(item, user_id=effective_user_id)
+        await self._emit_audit(
+            item=item,
+            action="RESTORE",
+            options=options,
+            user_id=effective_user_id,
+            status_transition=(RecordStatus.TRASHED.value, RecordStatus.ACTIVE.value),
+        )
         return item
 
     async def permanent_delete(
@@ -321,6 +386,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         id: uuid.UUID,
         *where: Any,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> ModelT:
         """Permanently delete a record from the trash in a single atomic query."""
         status_filter = self.get_status_filter(is_trash=True)
@@ -344,6 +410,12 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
                 detail="Cannot permanently delete a record that is not in the trash",
             )
         await self.on_after_permanent_delete(id)
+        await self._emit_audit(
+            item=deleted,
+            action="DELETE",
+            options=options,
+            status_transition=(RecordStatus.TRASHED.value, "PURGED"),
+        )
         return deleted
 
     async def _bulk_transition_status(
@@ -498,3 +570,89 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             count=count,
             message=f"Successfully permanently deleted {count} records from trash",
         )
+
+    # ==========================================
+    # 5. EMISIÓN DE AUDITORÍA DESACOPLADA
+    # ==========================================
+
+    @staticmethod
+    def _serialize_audit_val(val: Any) -> Any:
+        """Serialize field value safely for JSON audit storage."""
+        return serialize_audit_val(val)
+
+    def _is_sensitive_audit_field(self, field_name: str) -> bool:
+        """Check if field contains sensitive security credentials."""
+        return is_sensitive_audit_field(field_name, self.SENSITIVE_COLUMNS)
+
+    def _compute_create_diff(self, new_data: dict[str, Any]) -> dict[str, Any]:
+        """Compute field changes dictionary for creation action."""
+        return compute_create_diff(
+            new_data,
+            self.IMMUTABLE_CREATE_FIELDS,
+            self.SENSITIVE_COLUMNS,
+        )
+
+    def _compute_update_diff(
+        self,
+        snapshot_before: dict[str, Any],
+        updated_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Compute field changes dictionary for update action."""
+        return compute_update_diff(
+            snapshot_before,
+            updated_payload,
+            self.IMMUTABLE_FIELDS,
+            self.SENSITIVE_COLUMNS,
+        )
+
+    async def _emit_audit(
+        self,
+        item: Any,
+        action: str,
+        options: WriteOptions | None = None,
+        user_id: str | uuid.UUID | None = None,
+        new_data: dict[str, Any] | None = None,
+        snapshot_before: dict[str, Any] | None = None,
+        updated_payload: dict[str, Any] | None = None,
+        status_transition: tuple[str, str] | None = None,
+        details: str | None = None,
+    ) -> None:
+        """Construct and dispatch an AuditEntry if audit_level is active."""
+        if self.audit_level == AuditLevel.NONE or not _AUDIT_SYNC_HOOKS:
+            return
+
+        entity_type = self.resource_name.lower()
+        entity_id = getattr(item, "id", None) if item else None
+        actor_id_raw = (
+            (options.user_id if options else None)
+            or user_id
+            or getattr(item, "updated_by", None)
+            or getattr(item, "created_by", None)
+        )
+
+        changes: dict[str, Any] | None = None
+        if self.audit_level == AuditLevel.FULL:
+            if action == "CREATE" and new_data:
+                changes = self._compute_create_diff(new_data)
+            elif action == "UPDATE" and updated_payload and snapshot_before:
+                changes = self._compute_update_diff(snapshot_before, updated_payload)
+            elif status_transition:
+                old_s, new_s = status_transition
+                changes = {"status": {"old": old_s, "new": new_s}}
+
+        entry = AuditEntry(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            action=action,
+            actor_id=self._to_uuid(actor_id_raw),
+            ip_address=options.ip_address if options else None,
+            user_agent=options.user_agent if options else None,
+            changes=changes if changes else None,
+            details=details,
+        )
+
+        for hook in _AUDIT_SYNC_HOOKS:
+            try:
+                await hook(self.repository.session, entry)
+            except Exception as err:
+                logger.warning(f"Audit hook execution failed: {err}")

@@ -6,7 +6,9 @@ from fastapi_plantilla.core.crud.repository import BaseRepository
 from fastapi_plantilla.core.crud.router import create_crud_router
 from fastapi_plantilla.core.crud.schema import (
     DEFAULT_MAX_BULK_LIMIT,
+    AuditEntry,
     AuditFieldsSchema,
+    AuditLevel,
     BulkIdsRequest,
     BulkResponse,
     ExportFormat,
@@ -31,7 +33,9 @@ from fastapi_plantilla.core.crud.service import (
 
 __all__ = [
     "DEFAULT_MAX_BULK_LIMIT",
+    "AuditEntry",
     "AuditFieldsSchema",
+    "AuditLevel",
     "BaseAuditService",
     "BaseCRUDService",
     "BaseOwnedService",
