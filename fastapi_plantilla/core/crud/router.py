@@ -3,13 +3,14 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Header, status
+from fastapi import APIRouter, Body, Depends, Header, Response, status
 from pydantic import BaseModel
 
 from fastapi_plantilla.core.crud.dependencies import get_scope_context
 from fastapi_plantilla.core.crud.schema import (
     BulkIdsRequest,
     BulkResponse,
+    ExportRequest,
     ListItemResponse,
     ListQueryParams,
     PaginatedResponse,
@@ -19,6 +20,7 @@ from fastapi_plantilla.core.crud.schema import (
 from fastapi_plantilla.core.crud.service import BaseAuditService, BaseCRUDService
 from fastapi_plantilla.core.database import Base
 from fastapi_plantilla.modules.auth.dependencies import get_current_user
+from fastapi_plantilla.modules.rbac.schema import RbacActions
 
 __all__ = ["create_crud_router"]
 
@@ -35,25 +37,43 @@ def create_crud_router[  # noqa: C901
     schema_update: type[UpdateSchemaT],
     prefix: str = "",
     tags: list[str | Enum] | None = None,
+    resource_name: str | None = None,
+    pagination_params: type[PaginationParams] = PaginationParams,
     max_bulk_limit: int = BaseCRUDService.MAX_BULK_LIMIT,
     current_user_getter: Callable[..., Any] = get_current_user,
     scope_getter: Callable[..., Any] = get_scope_context,
 ) -> APIRouter:
     """Dynamically generate standard CRUD endpoints for a domain resource."""
     router = APIRouter(prefix=prefix, tags=tags)
+
+    def _scope_dep(action: RbacActions) -> Any:
+        if resource_name is not None:
+            # Deferred import to break circular import cycle between core.crud and rbac
+            from fastapi_plantilla.modules.rbac.dependencies import (  # noqa: PLC0415
+                require_permission,
+            )
+
+            return require_permission(resource_name, action)
+        return scope_getter
+
     # ==========================================
-    # 1. SIMPLE OPERATIONS (GET / LIST / CREATE)
+    # 1. SIMPLE OPERATIONS (GET / LIST / EXPORT / CREATE)
     # ==========================================
 
     @router.get(
-        "/",
+        "",
         response_model=PaginatedResponse[schema_out],  # type: ignore[valid-type]
         summary=f"List {schema_out.__name__} records",
     )
+    @router.get(
+        "/",
+        response_model=PaginatedResponse[schema_out],  # type: ignore[valid-type]
+        include_in_schema=False,
+    )
     async def find_paginated(
-        params: PaginationParams = Depends(),
+        params: PaginationParams = Depends(pagination_params),
         service: BaseCRUDService[ModelT] = Depends(service_getter),
-        scope: ScopeContext = Depends(scope_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.READ)),
     ) -> Any:
         return await service.find_paginated(params=params, scope=scope)
 
@@ -65,23 +85,46 @@ def create_crud_router[  # noqa: C901
     async def find_list(
         params: ListQueryParams = Depends(),
         service: BaseCRUDService[ModelT] = Depends(service_getter),
-        scope: ScopeContext = Depends(scope_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.READ)),
     ) -> Any:
         return await service.find_list(params=params, scope=scope)
 
     @router.post(
-        "/",
+        "/export",
+        response_class=Response,
+        summary=f"Export {schema_out.__name__} records",
+    )
+    async def export_data(
+        req: ExportRequest,
+        service: Any = Depends(service_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.EXPORT)),
+    ) -> Response:
+        content, media_type, filename = await service.export_data(req, scope=scope)
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @router.post(
+        "",
         response_model=schema_out,
         status_code=status.HTTP_201_CREATED,
         summary=f"Create {schema_out.__name__}",
+    )
+    @router.post(
+        "/",
+        response_model=schema_out,
+        status_code=status.HTTP_201_CREATED,
+        include_in_schema=False,
     )
     async def create(
         data: schema_create,  # type: ignore[valid-type]
         service: BaseCRUDService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
-        scope: ScopeContext = Depends(scope_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.CREATE)),
     ) -> Any:
-        user_id = getattr(current_user, "id", None)
+        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
         return await service.create(data=data, user_id=user_id, scope=scope)
 
     # ==========================================
@@ -100,9 +143,9 @@ def create_crud_router[  # noqa: C901
         ),
         service: BaseCRUDService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
-        scope: ScopeContext = Depends(scope_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.CREATE)),
     ) -> BulkResponse:
-        user_id = getattr(current_user, "id", None)
+        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
         return await service.bulk_create(items=items, user_id=user_id, scope=scope)
 
     @router.post(
@@ -114,9 +157,9 @@ def create_crud_router[  # noqa: C901
         req: BulkIdsRequest,
         service: BaseAuditService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
-        scope: ScopeContext = Depends(scope_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> BulkResponse:
-        user_id = getattr(current_user, "id", None)
+        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
         return await service.bulk_trash(req=req, user_id=user_id, scope=scope)
 
     @router.post(
@@ -128,9 +171,9 @@ def create_crud_router[  # noqa: C901
         req: BulkIdsRequest,
         service: BaseAuditService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
-        scope: ScopeContext = Depends(scope_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.RESTORE)),
     ) -> BulkResponse:
-        user_id = getattr(current_user, "id", None)
+        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
         return await service.bulk_restore(req=req, user_id=user_id, scope=scope)
 
     @router.delete(
@@ -138,10 +181,15 @@ def create_crud_router[  # noqa: C901
         response_model=BulkResponse,
         summary=f"Bulk permanently delete {schema_out.__name__} records from trash",
     )
+    @router.post(
+        "/bulk/permanent",
+        response_model=BulkResponse,
+        include_in_schema=False,
+    )
     async def bulk_permanent_delete(
         req: BulkIdsRequest,
         service: BaseAuditService[ModelT] = Depends(service_getter),
-        scope: ScopeContext = Depends(scope_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> BulkResponse:
         return await service.bulk_permanent_delete(req=req, scope=scope)
 
@@ -157,7 +205,7 @@ def create_crud_router[  # noqa: C901
     async def get_by_id(
         id: uuid.UUID,
         service: BaseCRUDService[ModelT] = Depends(service_getter),
-        scope: ScopeContext = Depends(scope_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.READ)),
     ) -> Any:
         return await service.get_by_id(id, scope=scope)
 
@@ -173,7 +221,7 @@ def create_crud_router[  # noqa: C901
         expected_version: int | None = None,
         service: BaseCRUDService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
-        scope: ScopeContext = Depends(scope_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.UPDATE)),
     ) -> Any:
         resolved_version = expected_version
         if resolved_version is None and if_match:
@@ -185,7 +233,7 @@ def create_crud_router[  # noqa: C901
             if isinstance(data_version, int):
                 resolved_version = data_version
 
-        user_id = getattr(current_user, "id", None)
+        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
         return await service.update(
             id=id,
             data=data,
@@ -203,9 +251,9 @@ def create_crud_router[  # noqa: C901
         id: uuid.UUID,
         service: BaseAuditService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
-        scope: ScopeContext = Depends(scope_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> Any:
-        user_id = getattr(current_user, "id", None)
+        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
         return await service.delete(id=id, user_id=user_id, scope=scope)
 
     @router.post(
@@ -217,9 +265,9 @@ def create_crud_router[  # noqa: C901
         id: uuid.UUID,
         service: BaseAuditService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
-        scope: ScopeContext = Depends(scope_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.RESTORE)),
     ) -> Any:
-        user_id = getattr(current_user, "id", None)
+        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
         return await service.restore(id=id, user_id=user_id, scope=scope)
 
     @router.delete(
@@ -230,7 +278,7 @@ def create_crud_router[  # noqa: C901
     async def permanent_delete(
         id: uuid.UUID,
         service: BaseAuditService[ModelT] = Depends(service_getter),
-        scope: ScopeContext = Depends(scope_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> Any:
         return await service.permanent_delete(id=id, scope=scope)
 

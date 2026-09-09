@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -40,13 +41,21 @@ async def create_team(
 
 @router.get("", response_model=PaginatedResponse[TeamResponse])
 async def list_teams(
+    created_at_from: datetime | None = Query(default=None),
+    created_at_to: datetime | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=20, ge=1, le=100),
     scope: ScopeContext = Depends(require_permission("teams", RbacActions.READ)),
     service: TeamService = Depends(get_team_service),
 ) -> PaginatedResponse[TeamResponse]:
-    """List teams accessible within caller's scope."""
-    return await service.list_teams(scope=scope, page=page, limit=limit)
+    """List teams accessible within caller's scope with optional date filters."""
+    return await service.list_teams(
+        scope=scope,
+        created_at_from=created_at_from,
+        created_at_to=created_at_to,
+        page=page,
+        limit=limit,
+    )
 
 
 @router.get("/{team_id}", response_model=TeamResponse)

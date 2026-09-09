@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import HTTPException, status
 from loguru import logger
 from pydantic import BaseModel
+from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.audit_diff import (
@@ -14,11 +15,13 @@ from fastapi_plantilla.core.crud.audit_diff import (
     is_sensitive_audit_field,
     serialize_audit_val,
 )
+from fastapi_plantilla.core.crud.exporter import format_export
 from fastapi_plantilla.core.crud.schema import (
     AuditEntry,
     AuditLevel,
     BulkIdsRequest,
     BulkResponse,
+    ExportRequest,
     ListItemResponse,
     ListQueryParams,
     PaginationParams,
@@ -106,6 +109,53 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         extra = (status_clause,) if status_clause is not None else ()
         return await super().find_list(
             params, *where, *extra, scope=scope, display_field=display_field
+        )
+
+    export_limit: int = 1000
+
+    async def export_data(
+        self,
+        req: ExportRequest,
+        *where: Any,
+        scope: ScopeContext | None = None,
+    ) -> tuple[bytes | str, str, str]:
+        """Export records matching filters or IDs to CSV, Excel, or JSON format."""
+        where_clauses: list[Any] = list(where) + self.build_scope_filters(scope)
+        status_filter = self.get_status_filter(req.is_trash)
+        if status_filter is not None:
+            where_clauses.append(status_filter)
+
+        if req.ids:
+            where_clauses.append(self.repository.pk.in_(req.ids))
+        elif req.filters:
+            valid_fields = {
+                k: v
+                for k, v in req.filters.items()
+                if hasattr(PaginationParams, k) and v is not None
+            }
+            if valid_fields:
+                filter_params = PaginationParams(is_trash=req.is_trash, **valid_fields)
+                where_clauses.extend(self.build_where_filters(filter_params))
+
+        order_clause = self.build_order_by(req.sort_by, req.sort_order)
+        items = await self.repository.find_many(
+            *where_clauses,
+            limit=self.export_limit,
+            order_by=order_clause,
+        )
+
+        rows: list[dict[str, Any]] = []
+        for item in items:
+            mapper = inspect(item.__class__)
+            row = {col.key: getattr(item, col.key) for col in mapper.columns}
+            rows.append(row)
+
+        slug = getattr(self, "resource_name", "export").lower()
+        return format_export(
+            format=req.format,
+            data=rows,
+            slug=slug,
+            columns=req.columns,
         )
 
     # ==========================================

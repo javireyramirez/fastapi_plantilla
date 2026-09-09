@@ -1,7 +1,9 @@
 import uuid
+from datetime import datetime
+from typing import Any
 
 from fastapi import Depends
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +13,7 @@ from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.auth.models import Session as AuthSession
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.rbac.models import Role, RoleAssignment
+from fastapi_plantilla.modules.teams.models import Team, TeamUser
 
 __all__ = ["UserAdminRepository"]
 
@@ -23,81 +26,99 @@ class UserAdminRepository(BaseRepository[User]):
 
     async def get_by_id(self, user_id: uuid.UUID) -> User | None:
         """Fetch user by ID."""
-        stmt = select(User).where(
+        return await self.find_first(
             User.id == user_id, User.status != RecordStatus.TRASHED
         )
-        result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
 
     async def get_by_email(self, email: str) -> User | None:
         """Fetch user by email."""
-        stmt = select(User).where(
+        return await self.find_first(
             User.email == email, User.status != RecordStatus.TRASHED
         )
-        result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+
+    def _build_user_query_clauses(
+        self,
+        search: str | None = None,
+        is_active: bool | None = None,
+        is_super_admin: bool | None = None,
+        email_verified: bool | None = None,
+        created_at_from: datetime | None = None,
+        created_at_to: datetime | None = None,
+        updated_at_from: datetime | None = None,
+        updated_at_to: datetime | None = None,
+    ) -> list[Any]:
+        """Build where clauses for user filtering."""
+        clauses: list[Any] = [User.status != RecordStatus.TRASHED]
+        if search:
+            pattern = f"%{search}%"
+            clauses.append(or_(User.name.ilike(pattern), User.email.ilike(pattern)))
+        if is_active is not None:
+            clauses.append(User.is_active == is_active)
+        if is_super_admin is not None:
+            clauses.append(User.is_super_admin == is_super_admin)
+        if email_verified is not None:
+            clauses.append(User.email_verified == email_verified)
+        if created_at_from is not None:
+            clauses.append(User.created_at >= created_at_from)
+        if created_at_to is not None:
+            clauses.append(User.created_at <= created_at_to)
+        if updated_at_from is not None:
+            clauses.append(User.updated_at >= updated_at_from)
+        if updated_at_to is not None:
+            clauses.append(User.updated_at <= updated_at_to)
+        return clauses
 
     async def list_users(
         self,
         search: str | None = None,
         is_active: bool | None = None,
         is_super_admin: bool | None = None,
+        email_verified: bool | None = None,
+        created_at_from: datetime | None = None,
+        created_at_to: datetime | None = None,
+        updated_at_from: datetime | None = None,
+        updated_at_to: datetime | None = None,
         skip: int = 0,
         limit: int = 20,
     ) -> list[User]:
-        """Fetch paginated users with optional search and status filters."""
-        stmt = (
-            select(User)
-            .where(User.status != RecordStatus.TRASHED)
-            .order_by(User.created_at.desc())
-            .offset(skip)
-            .limit(limit)
+        """Fetch paginated users with optional search, status, and temporal filters."""
+        clauses = self._build_user_query_clauses(
+            search=search,
+            is_active=is_active,
+            is_super_admin=is_super_admin,
+            email_verified=email_verified,
+            created_at_from=created_at_from,
+            created_at_to=created_at_to,
+            updated_at_from=updated_at_from,
+            updated_at_to=updated_at_to,
         )
-
-        if search:
-            search_pattern = f"%{search}%"
-            stmt = stmt.where(
-                or_(
-                    User.name.ilike(search_pattern),
-                    User.email.ilike(search_pattern),
-                )
-            )
-        if is_active is not None:
-            stmt = stmt.where(User.is_active == is_active)
-        if is_super_admin is not None:
-            stmt = stmt.where(User.is_super_admin == is_super_admin)
-
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        return await self.find_many(
+            *clauses, skip=skip, limit=limit, order_by=User.created_at.desc()
+        )
 
     async def count_users(
         self,
         search: str | None = None,
         is_active: bool | None = None,
         is_super_admin: bool | None = None,
+        email_verified: bool | None = None,
+        created_at_from: datetime | None = None,
+        created_at_to: datetime | None = None,
+        updated_at_from: datetime | None = None,
+        updated_at_to: datetime | None = None,
     ) -> int:
         """Count users matching filter parameters."""
-        stmt = (
-            select(func.count())
-            .select_from(User)
-            .where(User.status != RecordStatus.TRASHED)
+        clauses = self._build_user_query_clauses(
+            search=search,
+            is_active=is_active,
+            is_super_admin=is_super_admin,
+            email_verified=email_verified,
+            created_at_from=created_at_from,
+            created_at_to=created_at_to,
+            updated_at_from=updated_at_from,
+            updated_at_to=updated_at_to,
         )
-
-        if search:
-            search_pattern = f"%{search}%"
-            stmt = stmt.where(
-                or_(
-                    User.name.ilike(search_pattern),
-                    User.email.ilike(search_pattern),
-                )
-            )
-        if is_active is not None:
-            stmt = stmt.where(User.is_active == is_active)
-        if is_super_admin is not None:
-            stmt = stmt.where(User.is_super_admin == is_super_admin)
-
-        result = await self.session.execute(stmt)
-        return result.scalar() or 0
+        return await self.count(*clauses)
 
     async def invalidate_user_sessions(self, user_id: uuid.UUID) -> int:
         """Invalidate all active sessions for a user."""
@@ -176,3 +197,97 @@ class UserAdminRepository(BaseRepository[User]):
         for uid, slug in res.all():
             roles_map[uid].append(slug)
         return roles_map
+
+    async def get_user_team_assignments(
+        self, user_id: uuid.UUID, skip: int = 0, limit: int = 20
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Fetch paginated teams assigned to a user."""
+        base = (
+            select(Team.id, Team.name, Team.slug, TeamUser.role_id, TeamUser.created_at)
+            .join(TeamUser, TeamUser.team_id == Team.id)
+            .where(TeamUser.user_id == user_id, Team.status != RecordStatus.TRASHED)
+        )
+        total = (
+            await self.session.execute(
+                select(func.count()).select_from(base.subquery())
+            )
+        ).scalar() or 0
+        rows = (
+            await self.session.execute(
+                base.order_by(Team.name.asc()).offset(skip).limit(limit)
+            )
+        ).all()
+        return [
+            {"id": r[0], "name": r[1], "slug": r[2], "role_id": r[3], "joined_at": r[4]}
+            for r in rows
+        ], total
+
+    async def assign_user_teams(
+        self, user_id: uuid.UUID, team_ids: list[uuid.UUID]
+    ) -> int:
+        """Assign multiple teams to a user ignoring existing ones."""
+        if not team_ids:
+            return 0
+        existing_stmt = select(TeamUser.team_id).where(
+            TeamUser.user_id == user_id, TeamUser.team_id.in_(team_ids)
+        )
+        existing = set((await self.session.execute(existing_stmt)).scalars().all())
+        to_add = [tid for tid in team_ids if tid not in existing]
+        for tid in to_add:
+            self.session.add(TeamUser(user_id=user_id, team_id=tid))
+        await self.session.flush()
+        return len(to_add)
+
+    async def remove_user_teams(
+        self, user_id: uuid.UUID, team_ids: list[uuid.UUID]
+    ) -> int:
+        """Remove team memberships for a user."""
+        if not team_ids:
+            return 0
+        stmt = delete(TeamUser).where(
+            TeamUser.user_id == user_id, TeamUser.team_id.in_(team_ids)
+        )
+        res = await self.session.execute(stmt)
+        await self.session.flush()
+        return int(res.rowcount) if isinstance(res, CursorResult) else 0
+
+    async def get_user_role_assignments(
+        self, user_id: uuid.UUID, skip: int = 0, limit: int = 20
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Fetch paginated roles assigned to a user with timestamp."""
+        base = (
+            select(Role.id, Role.name, Role.slug, RoleAssignment.created_at)
+            .join(RoleAssignment, RoleAssignment.role_id == Role.id)
+            .where(
+                RoleAssignment.entity_type == "USER",
+                RoleAssignment.entity_id == user_id,
+            )
+        )
+        total = (
+            await self.session.execute(
+                select(func.count()).select_from(base.subquery())
+            )
+        ).scalar() or 0
+        rows = (
+            await self.session.execute(
+                base.order_by(Role.name.asc()).offset(skip).limit(limit)
+            )
+        ).all()
+        return [
+            {"id": r[0], "name": r[1], "slug": r[2], "assigned_at": r[3]} for r in rows
+        ], total
+
+    async def remove_user_roles_bulk(
+        self, user_id: uuid.UUID, role_ids: list[uuid.UUID]
+    ) -> int:
+        """Remove multiple assigned roles from a user."""
+        if not role_ids:
+            return 0
+        stmt = delete(RoleAssignment).where(
+            RoleAssignment.entity_type == "USER",
+            RoleAssignment.entity_id == user_id,
+            RoleAssignment.role_id.in_(role_ids),
+        )
+        res = await self.session.execute(stmt)
+        await self.session.flush()
+        return int(res.rowcount) if isinstance(res, CursorResult) else 0

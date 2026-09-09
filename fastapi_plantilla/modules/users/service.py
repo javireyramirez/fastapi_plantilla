@@ -1,9 +1,11 @@
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any, ClassVar
 
 from argon2 import PasswordHasher
 from fastapi import Depends, HTTPException, status
+from pydantic import BaseModel
 from yarl import URL
 
 from fastapi_plantilla.core.config import settings
@@ -11,6 +13,9 @@ from fastapi_plantilla.core.crud.schema import (
     BulkResponse,
     PaginatedResponse,
     PaginationMeta,
+    PaginationParams,
+    ScopeContext,
+    WriteOptions,
 )
 from fastapi_plantilla.core.crud.service_audit import BaseAuditService
 from fastapi_plantilla.modules.auth.models import Account, User, Verification
@@ -22,6 +27,9 @@ from fastapi_plantilla.modules.users.schema import (
     UserAdminCreate,
     UserAdminResponse,
     UserAdminUpdate,
+    UserRoleAssignmentResponse,
+    UsersPaginationParams,
+    UserTeamAssignmentResponse,
 )
 
 __all__ = ["UserAdminService"]
@@ -34,6 +42,7 @@ class UserAdminService(BaseAuditService[User]):
 
     resource_name: str = "User"
     display_field: str = "name"
+    search_fields: ClassVar[list[str]] = ["name", "email"]
 
     def __init__(
         self,
@@ -59,7 +68,7 @@ class UserAdminService(BaseAuditService[User]):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
         return user
 
-    async def _serialize_user(
+    async def serialize_user(
         self, user: User, roles: list[str] | None = None
     ) -> UserAdminResponse:
         """Enrich User model with assigned roles."""
@@ -72,42 +81,142 @@ class UserAdminService(BaseAuditService[User]):
         res.roles = user_roles
         return res
 
+    _serialize_user = serialize_user
+
+    async def restore(
+        self,
+        id: uuid.UUID,
+        *where: Any,
+        user_id: str | uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
+    ) -> Any:
+        """Restore user from trash bin and return enriched representation."""
+        user = await super().restore(
+            id, *where, user_id=user_id, scope=scope, options=options
+        )
+        return await self.serialize_user(user)
+
+    async def restore_user(
+        self,
+        user_id: uuid.UUID,
+        actor_id: uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
+    ) -> UserAdminResponse:
+        """Restore user from trash bin (backward compatible alias)."""
+        return await self.restore(user_id, user_id=actor_id, scope=scope)
+
+    async def on_after_trash(
+        self,
+        item: User,
+        user_id: str | uuid.UUID | None = None,
+    ) -> None:
+        """Invalidate active sessions when user is soft-deleted."""
+        await super().on_after_trash(item, user_id=user_id)
+        await self.repository.invalidate_user_sessions(item.id)
+
+    def build_where_filters(self, params: PaginationParams) -> list[Any]:
+        """Build query clauses including email search and boolean status filters."""
+        clauses = super().build_where_filters(params)
+        for bool_field in ("is_active", "is_super_admin", "email_verified"):
+            val = getattr(params, bool_field, None)
+            if val is not None:
+                clause = self.build_boolean_filter(bool_field, val)
+                if clause is not None:
+                    clauses.append(clause)
+        return clauses
+
+    async def find_paginated(
+        self,
+        params: PaginationParams,
+        *where: Any,
+        scope: ScopeContext | None = None,
+        order_by: Any = None,
+    ) -> PaginatedResponse[Any]:
+        """Fetch paginated users enriched with role assignments."""
+        skip = (params.page - 1) * params.limit
+        order_clause = self.build_order_by(params.sort_by, params.sort_order, order_by)
+        where_clauses = (
+            list(where)
+            + self.build_where_filters(params)
+            + self.build_scope_filters(scope)
+        )
+        users, total = await self.repository.find_many_with_count(
+            *where_clauses, skip=skip, limit=params.limit, order_by=order_clause
+        )
+        user_ids = [u.id for u in users]
+        roles_map = await self.repository.get_roles_for_users(user_ids)
+        data = [
+            await self.serialize_user(u, roles=roles_map.get(u.id, [])) for u in users
+        ]
+        meta = PaginationMeta.create(page=params.page, limit=params.limit, total=total)
+        return PaginatedResponse(data=data, meta=meta)
+
     async def list_users(
         self,
         search: str | None = None,
         is_active: bool | None = None,
         is_super_admin: bool | None = None,
+        email_verified: bool | None = None,
+        created_at_from: datetime | None = None,
+        created_at_to: datetime | None = None,
+        updated_at_from: datetime | None = None,
+        updated_at_to: datetime | None = None,
         page: int = 1,
         limit: int = 20,
     ) -> PaginatedResponse[UserAdminResponse]:
         """Fetch paginated list of users for administration."""
-        skip = (page - 1) * limit
-        users = await self.repository.list_users(
-            search=search,
-            is_active=is_active,
-            is_super_admin=is_super_admin,
-            skip=skip,
+        params = UsersPaginationParams(
+            page=page,
             limit=limit,
-        )
-        total = await self.repository.count_users(
             search=search,
             is_active=is_active,
             is_super_admin=is_super_admin,
+            email_verified=email_verified,
+            created_at_from=created_at_from,
+            created_at_to=created_at_to,
+            updated_at_from=updated_at_from,
+            updated_at_to=updated_at_to,
         )
-        user_ids = [u.id for u in users]
-        roles_map = await self.repository.get_roles_for_users(user_ids)
-        data = [
-            await self._serialize_user(u, roles=roles_map.get(u.id, [])) for u in users
-        ]
-        return PaginatedResponse(
-            data=data,
-            meta=PaginationMeta.create(page=page, limit=limit, total=total),
-        )
+        return await self.find_paginated(params)
 
-    async def get_user(self, user_id: uuid.UUID) -> UserAdminResponse:
-        """Fetch user details by ID."""
-        user = await self._get_user_or_404(user_id)
-        return await self._serialize_user(user)
+    async def get_by_id(
+        self,
+        id: uuid.UUID,
+        *where: Any,
+        scope: ScopeContext | None = None,
+    ) -> Any:
+        """Fetch single user enriched with role assignments."""
+        user = await super().get_by_id(id, *where, scope=scope)
+        return await self.serialize_user(user)
+
+    get_user = get_by_id
+
+    async def create(
+        self,
+        data: BaseModel | dict[str, Any],
+        user_id: str | uuid.UUID | None = None,
+        owner_id: uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
+        allow_immutable: bool = False,
+        options: WriteOptions | None = None,
+    ) -> Any:
+        """Create user administratively or via generic CRUD payload."""
+        if isinstance(data, UserAdminCreate):
+            actor_uuid = (
+                uuid.UUID(str(user_id))
+                if user_id
+                else (scope.user_id if scope else None)
+            )
+            return await self.create_user(data, actor_id=actor_uuid)
+        return await super().create(
+            data,
+            user_id=user_id,
+            owner_id=owner_id,
+            scope=scope,
+            allow_immutable=allow_immutable,
+            options=options,
+        )
 
     async def create_user(
         self, data: UserAdminCreate, actor_id: uuid.UUID | None = None
@@ -123,7 +232,7 @@ class UserAdminService(BaseAuditService[User]):
             include={"name", "email", "is_active", "is_super_admin"}
         )
         payload.update(email_verified=False, is_system=False)
-        user = await self.create(payload, user_id=actor_id)
+        user = await super().create(payload, user_id=actor_id)
 
         if data.password:
             self.repository.session.add(
@@ -140,6 +249,36 @@ class UserAdminService(BaseAuditService[User]):
             await self.rbac_repo.assign_role(role_id, "USER", user.id)
 
         return await self._serialize_user(user)
+
+    async def update(
+        self,
+        id: uuid.UUID,
+        data: BaseModel | dict[str, Any],
+        *where: Any,
+        expected_version: int | None = None,
+        user_id: str | uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
+        allow_immutable: bool = False,
+    ) -> Any:
+        """Update user administratively or via generic CRUD payload."""
+        if isinstance(data, UserAdminUpdate):
+            actor_uuid = (
+                uuid.UUID(str(user_id))
+                if user_id
+                else (scope.user_id if scope else None)
+            )
+            return await self.update_user(id, data, actor_id=actor_uuid)
+        return await super().update(
+            id,
+            data,
+            *where,
+            expected_version=expected_version,
+            user_id=user_id,
+            scope=scope,
+            options=options,
+            allow_immutable=allow_immutable,
+        )
 
     async def update_user(
         self,
@@ -165,18 +304,44 @@ class UserAdminService(BaseAuditService[User]):
             await self.repository.invalidate_user_sessions(user.id)
 
         if update_dict:
-            user = await self.update(user_id, update_dict, user_id=actor_id)
+            user = await super().update(user_id, update_dict, user_id=actor_id)
 
         return await self._serialize_user(user)
+
+    async def delete(
+        self,
+        id: uuid.UUID,
+        *where: Any,
+        user_id: str | uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
+    ) -> Any:
+        """Soft-delete user into trash and invalidate active sessions."""
+        user = await self._get_user_or_404(id)
+        self._check_not_system(user, "deleted")
+        item = await super().delete(id, *where, user_id=user_id, scope=scope)
+        return await self.serialize_user(item)
 
     async def delete_user(
         self, user_id: uuid.UUID, actor_id: uuid.UUID | None = None
     ) -> None:
         """Soft-delete user into trash and terminate active sessions."""
-        user = await self._get_user_or_404(user_id)
-        self._check_not_system(user, "deleted")
-        await self.trash(user_id, user_id=actor_id)
-        await self.repository.invalidate_user_sessions(user_id)
+        await self.delete(user_id, user_id=actor_id)
+
+    async def permanent_delete(
+        self,
+        id: uuid.UUID,
+        *where: Any,
+        scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
+    ) -> Any:
+        """Permanently delete user from trash."""
+        user = await self.repository.get_by_id(id)
+        if user and user.is_system:
+            self._check_not_system(user, "permanently deleted")
+        deleted = await super().permanent_delete(
+            id, *where, scope=scope, options=options
+        )
+        return await self.serialize_user(deleted, roles=[])
 
     async def suspend_user(self, user_id: uuid.UUID) -> None:
         """Suspend user and immediately invalidate all their active sessions."""
@@ -239,3 +404,55 @@ class UserAdminService(BaseAuditService[User]):
                 .template("auth/verify_email.html", name=user.name, verify_link=link)
             )
             await self.email_service.send(msg)
+
+    async def get_user_teams(
+        self, user_id: uuid.UUID, page: int = 1, limit: int = 20
+    ) -> PaginatedResponse[UserTeamAssignmentResponse]:
+        """Fetch paginated list of teams assigned to user."""
+        await self._get_user_or_404(user_id)
+        skip = (page - 1) * limit
+        items, total = await self.repository.get_user_team_assignments(
+            user_id, skip=skip, limit=limit
+        )
+        return PaginatedResponse(
+            data=[UserTeamAssignmentResponse.model_validate(it) for it in items],
+            meta=PaginationMeta.create(page=page, limit=limit, total=total),
+        )
+
+    async def assign_teams(
+        self, user_id: uuid.UUID, team_ids: list[uuid.UUID]
+    ) -> BulkResponse:
+        """Assign multiple teams to a user."""
+        await self._get_user_or_404(user_id)
+        count = await self.repository.assign_user_teams(user_id, team_ids)
+        return BulkResponse(count=count, message=f"Successfully assigned {count} teams")
+
+    async def remove_teams(
+        self, user_id: uuid.UUID, team_ids: list[uuid.UUID]
+    ) -> BulkResponse:
+        """Remove multiple teams from a user."""
+        await self._get_user_or_404(user_id)
+        count = await self.repository.remove_user_teams(user_id, team_ids)
+        return BulkResponse(count=count, message=f"Successfully removed {count} teams")
+
+    async def get_user_roles_detailed(
+        self, user_id: uuid.UUID, page: int = 1, limit: int = 20
+    ) -> PaginatedResponse[UserRoleAssignmentResponse]:
+        """Fetch paginated list of roles assigned to user with metadata."""
+        await self._get_user_or_404(user_id)
+        skip = (page - 1) * limit
+        items, total = await self.repository.get_user_role_assignments(
+            user_id, skip=skip, limit=limit
+        )
+        return PaginatedResponse(
+            data=[UserRoleAssignmentResponse.model_validate(it) for it in items],
+            meta=PaginationMeta.create(page=page, limit=limit, total=total),
+        )
+
+    async def remove_roles_bulk(
+        self, user_id: uuid.UUID, role_ids: list[uuid.UUID]
+    ) -> BulkResponse:
+        """Remove multiple roles from a user in bulk."""
+        await self._get_user_or_404(user_id)
+        count = await self.repository.remove_user_roles_bulk(user_id, role_ids)
+        return BulkResponse(count=count, message=f"Successfully removed {count} roles")

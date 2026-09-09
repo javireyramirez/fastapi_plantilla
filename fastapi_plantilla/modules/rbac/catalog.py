@@ -49,6 +49,11 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "name": "Almacenamiento",
         "description": "Gestión de documentos, adjuntos y archivos multi-cloud",
     },
+    {
+        "code": "companies",
+        "name": "Compañías",
+        "description": "Gestión de empresas y entidades corporativas",
+    },
 ]
 
 

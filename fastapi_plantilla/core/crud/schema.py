@@ -56,6 +56,8 @@ class ExportFormat(enum.StrEnum):
     CSV = "csv"
     EXCEL = "excel"
     JSON = "json"
+    TSV = "tsv"
+    GOOGLE_SHEETS = "google_sheets"
 
 
 class PaginationParams(BaseModel):
@@ -69,6 +71,12 @@ class PaginationParams(BaseModel):
     search: str | None = Field(default=None, max_length=100)
     created_at_from: datetime | None = None
     created_at_to: datetime | None = None
+    updated_at_from: datetime | None = None
+    updated_at_to: datetime | None = None
+    deleted_at_from: datetime | None = None
+    deleted_at_to: datetime | None = None
+    restored_at_from: datetime | None = None
+    restored_at_to: datetime | None = None
 
 
 class PaginationMeta(BaseModel):

@@ -1,7 +1,7 @@
 import uuid
 from collections.abc import Sequence
 from datetime import datetime, time
-from typing import Any, NoReturn
+from typing import Any, ClassVar, NoReturn
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel
@@ -248,17 +248,31 @@ class BaseCRUDService[ModelT: Base]:
         """Hook for scope filtering. Base CRUD applies no scope restrictions."""
         return []
 
+    search_fields: ClassVar[list[str]] = ["name"]
+
     def build_where_filters(self, params: PaginationParams) -> list[Any]:
         """Build query filter clauses from pagination parameters."""
         clauses: list[Any] = []
-        search_clause = self.build_string_filter("name", params.search)
-        if search_clause is not None:
-            clauses.append(search_clause)
-        clauses.extend(
-            self.build_date_range_filter(
-                "created_at", params.created_at_from, params.created_at_to
-            )
-        )
+        if params.search:
+            search_clauses = [
+                self.build_string_filter(field, params.search)
+                for field in self.search_fields
+            ]
+            valid_search = [c for c in search_clauses if c is not None]
+            if len(valid_search) == 1:
+                clauses.append(valid_search[0])
+            elif len(valid_search) > 1:
+                clauses.append(or_(*valid_search))
+
+        for col_name, f_from, f_to in (
+            ("created_at", params.created_at_from, params.created_at_to),
+            ("updated_at", params.updated_at_from, params.updated_at_to),
+            ("deleted_at", params.deleted_at_from, params.deleted_at_to),
+            ("restored_at", params.restored_at_from, params.restored_at_to),
+        ):
+            if self._get_column(col_name) is not None:
+                clauses.extend(self.build_date_range_filter(col_name, f_from, f_to))
+
         return clauses
 
     # ==========================================

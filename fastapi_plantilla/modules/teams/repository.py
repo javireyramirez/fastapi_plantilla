@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from fastapi import Depends
 from sqlalchemy import func, select
@@ -41,9 +42,14 @@ class TeamRepository(BaseRepository[Team]):
         return result.scalar_one_or_none()
 
     async def list_teams(
-        self, team_ids: list[uuid.UUID] | None = None, skip: int = 0, limit: int = 20
+        self,
+        team_ids: list[uuid.UUID] | None = None,
+        created_at_from: datetime | None = None,
+        created_at_to: datetime | None = None,
+        skip: int = 0,
+        limit: int = 20,
     ) -> list[Team]:
-        """Fetch paginated list of teams, optionally filtering by permitted IDs."""
+        """Fetch paginated list of teams, filtering by permitted IDs and dates."""
         stmt = (
             select(Team)
             .options(selectinload(Team.members))
@@ -54,11 +60,20 @@ class TeamRepository(BaseRepository[Team]):
         )
         if team_ids is not None:
             stmt = stmt.where(Team.id.in_(team_ids))
+        if created_at_from is not None:
+            stmt = stmt.where(Team.created_at >= created_at_from)
+        if created_at_to is not None:
+            stmt = stmt.where(Team.created_at <= created_at_to)
 
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def count_teams(self, team_ids: list[uuid.UUID] | None = None) -> int:
+    async def count_teams(
+        self,
+        team_ids: list[uuid.UUID] | None = None,
+        created_at_from: datetime | None = None,
+        created_at_to: datetime | None = None,
+    ) -> int:
         """Count teams matching filter."""
         stmt = (
             select(func.count())
@@ -67,6 +82,10 @@ class TeamRepository(BaseRepository[Team]):
         )
         if team_ids is not None:
             stmt = stmt.where(Team.id.in_(team_ids))
+        if created_at_from is not None:
+            stmt = stmt.where(Team.created_at >= created_at_from)
+        if created_at_to is not None:
+            stmt = stmt.where(Team.created_at <= created_at_to)
 
         result = await self.session.execute(stmt)
         return result.scalar() or 0

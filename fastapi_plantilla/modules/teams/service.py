@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from fastapi import Depends, HTTPException, status
 
@@ -75,7 +76,12 @@ class TeamService(BaseAuditService[Team]):
         return TeamResponse.model_validate(refreshed or team)
 
     async def list_teams(
-        self, scope: ScopeContext, page: int = 1, limit: int = 20
+        self,
+        scope: ScopeContext,
+        created_at_from: datetime | None = None,
+        created_at_to: datetime | None = None,
+        page: int = 1,
+        limit: int = 20,
     ) -> PaginatedResponse[TeamResponse]:
         """List teams accessible within the user's scope."""
         filter_team_ids: list[uuid.UUID] | None = None
@@ -84,9 +90,17 @@ class TeamService(BaseAuditService[Team]):
 
         skip = (page - 1) * limit
         teams = await self.repository.list_teams(
-            team_ids=filter_team_ids, skip=skip, limit=limit
+            team_ids=filter_team_ids,
+            created_at_from=created_at_from,
+            created_at_to=created_at_to,
+            skip=skip,
+            limit=limit,
         )
-        total = await self.repository.count_teams(team_ids=filter_team_ids)
+        total = await self.repository.count_teams(
+            team_ids=filter_team_ids,
+            created_at_from=created_at_from,
+            created_at_to=created_at_to,
+        )
 
         return PaginatedResponse(
             data=[TeamResponse.model_validate(t) for t in teams],

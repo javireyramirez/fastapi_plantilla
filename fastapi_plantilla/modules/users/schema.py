@@ -3,12 +3,20 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from fastapi_plantilla.core.crud.schema import PaginationParams
+
 __all__ = [
     "UserAdminCreate",
     "UserAdminResponse",
     "UserAdminUpdate",
     "UserAssignRolesRequest",
+    "UserAssignTeamsRequest",
     "UserBulkActionRequest",
+    "UserRemoveRolesRequest",
+    "UserRemoveTeamsRequest",
+    "UserRoleAssignmentResponse",
+    "UserTeamAssignmentResponse",
+    "UsersPaginationParams",
 ]
 
 
@@ -59,3 +67,52 @@ class UserAssignRolesRequest(BaseModel):
     """Payload to assign a set of roles to a user."""
 
     role_ids: list[uuid.UUID] = Field(..., min_length=1)
+
+
+class UserRemoveRolesRequest(BaseModel):
+    """Payload to remove a set of roles from a user in bulk."""
+
+    role_ids: list[uuid.UUID] = Field(..., min_length=1)
+
+
+class UserAssignTeamsRequest(BaseModel):
+    """Payload to assign a set of teams to a user."""
+
+    team_ids: list[uuid.UUID] = Field(..., min_length=1)
+
+
+class UserRemoveTeamsRequest(BaseModel):
+    """Payload to remove a set of teams from a user."""
+
+    team_ids: list[uuid.UUID] = Field(..., min_length=1)
+
+
+class UserTeamAssignmentResponse(BaseModel):
+    """Representation of a team assigned to a user."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    slug: str
+    role_id: uuid.UUID | None = None
+    joined_at: datetime
+
+
+class UserRoleAssignmentResponse(BaseModel):
+    """Representation of a role assigned to a user."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    slug: str
+    assigned_at: datetime
+
+
+class UsersPaginationParams(PaginationParams):
+    """Query parameters for user administration listing."""
+
+    is_active: bool | None = None
+    is_super_admin: bool | None = None
+    email_verified: bool | None = None
