@@ -1,4 +1,3 @@
-import asyncio
 import io
 import uuid
 from collections.abc import Generator
@@ -34,10 +33,7 @@ from fastapi_plantilla.modules.storage.providers import LocalStorageProvider
 from fastapi_plantilla.modules.storage.routes import router as storage_router
 from fastapi_plantilla.modules.trash.repository import TrashRepository
 from fastapi_plantilla.modules.trash.routes import router as trash_router
-from fastapi_plantilla.modules.trash.tasks import (
-    purge_expired_trash,
-    run_periodic_trash_purge,
-)
+from fastapi_plantilla.modules.trash.service import purge_expired_trash
 
 
 def user_to_response(user: User) -> UserResponse:
@@ -509,11 +505,10 @@ async def test_trash_rbac_scoping(
 
 
 @pytest.mark.anyio
-async def test_periodic_trash_purge_task(
-    app: FastAPI,
+async def test_purge_expired_trash_function(
     dbsession: AsyncSession,
 ) -> None:
-    """Verify background task logic and clean shutdown on cancellation."""
+    """Verify purge_expired_trash directly cleans expired items."""
     trash_repo = TrashRepository(dbsession)
 
     # Insert expired item
@@ -530,13 +525,6 @@ async def test_periodic_trash_purge_task(
     purged_count = await purge_expired_trash(dbsession)
     assert purged_count >= 1
     assert await trash_repo.get_by_id(expired.id) is None
-
-    # Test background loop task cancellation
-    task = asyncio.create_task(run_periodic_trash_purge(app))
-    await asyncio.sleep(0.01)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
 
 
 @pytest.mark.anyio
@@ -670,3 +658,67 @@ async def test_trash_purge_emits_audit(
     assert purge_log.actor_id == test_user.id
     assert purge_log.details is not None
     assert "Acme Purged Corp" in purge_log.details
+
+
+@pytest.mark.anyio
+async def test_document_trash_includes_module_principal_entity(
+    client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify document trash items populate module_principal_entity."""
+    from fastapi_plantilla.modules.companies.models import Company
+
+    # 1. Create a company in the DB
+    comp_repo = BaseRepository(Company, dbsession)
+    company = await comp_repo.create(
+        {
+            "id": generate_uuid7(),
+            "name": "Acme Aerospace Corp",
+            "nif": f"B{uuid.uuid4().hex[:8].upper()}",
+            "sector": "Aerospace",
+        }
+    )
+
+    # 2. Upload a document attached to that company
+    res = await client.post(
+        "/api/storage/documents/upload",
+        files={
+            "file": (
+                "blueprint.pdf",
+                io.BytesIO(b"top secret"),
+                "application/pdf",
+            )
+        },
+        data={"entity_type": "company", "entity_id": str(company.id)},
+    )
+    assert res.status_code == 201
+    doc_id = res.json()["id"]
+
+    # 3. Soft-delete the document
+    del_res = await client.delete(f"/api/storage/documents/{doc_id}")
+    assert del_res.status_code == 200
+
+    # 4. Query single trash item
+    trash_repo = TrashRepository(dbsession)
+    trash_item = await trash_repo.get_by_entity("document", uuid.UUID(doc_id))
+    assert trash_item is not None
+
+    get_res = await client.get(f"/api/trash/{trash_item.id}")
+    assert get_res.status_code == 200
+    data = get_res.json()
+
+    # 5. Check module_principal_entity
+    principal = data.get("module_principal_entity")
+    assert principal is not None
+    assert principal["code"] == "companies"
+    assert principal["name"] == "Empresas"
+    assert principal["entity_name"] == "Acme Aerospace Corp"
+    assert principal["entity_id"] == str(company.id)
+
+    # 6. Also check list endpoint
+    list_res = await client.get("/api/trash?q=blueprint")
+    assert list_res.status_code == 200
+    items = list_res.json()["data"]
+    assert len(items) == 1
+    assert items[0]["module_principal_entity"]["code"] == "companies"
+    assert items[0]["module_principal_entity"]["entity_name"] == "Acme Aerospace Corp"

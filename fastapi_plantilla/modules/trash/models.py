@@ -1,10 +1,8 @@
 import uuid
 from datetime import datetime
-from typing import Any
 
 from sqlalchemy import (
     DateTime,
-    ForeignKey,
     Index,
     String,
     Text,
@@ -12,12 +10,11 @@ from sqlalchemy import (
     Uuid,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.types import JSON
 
 from fastapi_plantilla.core.database import Base
 from fastapi_plantilla.core.mixins import (
+    OwnedMixin,
     PolymorphicTargetMixin,
     TimestampMixin,
     UUID7PrimaryKeyMixin,
@@ -29,6 +26,7 @@ __all__ = ["TrashItem"]
 class TrashItem(
     UUID7PrimaryKeyMixin,
     PolymorphicTargetMixin,
+    OwnedMixin,
     TimestampMixin,
     Base,
 ):
@@ -44,12 +42,6 @@ class TrashItem(
         Uuid, nullable=True, index=True
     )
     target_entity_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    owner_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid,
-        ForeignKey("auth_users.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
     deleted_by: Mapped[str | None] = mapped_column(
         String(255),
         nullable=True,
@@ -63,10 +55,6 @@ class TrashItem(
         DateTime(timezone=True),
         nullable=False,
         index=True,
-    )
-    data_backup: Mapped[dict[str, Any] | None] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=True,
     )
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
 

@@ -6,21 +6,26 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.service_audit import (
+    _TRASH_SYNC_HOOKS,
     register_purge_sync_hook,
     register_trash_sync_hook,
 )
 from fastapi_plantilla.modules.trash.repository import TrashRepository
-from fastapi_plantilla.modules.trash.service import TrashService
+from fastapi_plantilla.modules.trash.service import (
+    TrashService,
+    resolve_entity_name,
+)
 
 __all__ = ["setup_trash_listeners"]
 
 
 def _extract_entity_type(item: Any) -> str:
-    """Derive normalized entity type from model class."""
-    tablename = getattr(type(item), "__tablename__", type(item).__name__.lower())
-    if tablename.startswith("sys_"):
-        return tablename.removeprefix("sys_").rstrip("s")
-    return tablename.rstrip("s")
+    """Derive normalized entity type from model class or table name."""
+    cls_name = getattr(item, "__class__", type(item)).__name__.lower()
+    if cls_name not in ("object", "model", "base"):
+        return cls_name
+    tablename = getattr(type(item), "__tablename__", "").lower()
+    return tablename or cls_name
 
 
 def _extract_name(item: Any, entity_id: uuid.UUID) -> str:
@@ -59,13 +64,18 @@ async def _handle_trash_sync(
 
         target_entity_type: str | None = None
         target_entity_id: uuid.UUID | None = None
-        if entity_type in ("document", "documents"):
-            tet = getattr(item, "entity_type", None)
-            tei = getattr(item, "entity_id", None)
-            if isinstance(tet, str) and tet:
-                target_entity_type = tet
-            if isinstance(tei, uuid.UUID):
-                target_entity_id = tei
+        tet = getattr(item, "entity_type", None)
+        tei = getattr(item, "entity_id", None)
+        if isinstance(tet, str) and tet.strip():
+            target_entity_type = tet.strip().lower()
+        if isinstance(tei, uuid.UUID):
+            target_entity_id = tei
+
+        target_entity_name: str | None = None
+        if target_entity_type and target_entity_id:
+            target_entity_name = await resolve_entity_name(
+                session, target_entity_type, target_entity_id
+            )
 
         await service.record_trash(
             entity_type=entity_type,
@@ -76,6 +86,7 @@ async def _handle_trash_sync(
             details=str(details) if details else None,
             target_entity_type=target_entity_type,
             target_entity_id=target_entity_id,
+            target_entity_name=target_entity_name,
         )
     else:
         await repo.delete_by_entity(entity_type, entity_id)
@@ -92,6 +103,8 @@ async def _handle_purge_sync(
 
 
 def setup_trash_listeners() -> None:
-    """Register trash synchronization hooks with BaseAuditService."""
+    """Register trash synchronization hooks with BaseAuditService idempotently."""
+    if _handle_trash_sync in _TRASH_SYNC_HOOKS:
+        return
     register_trash_sync_hook(_handle_trash_sync)
     register_purge_sync_hook(_handle_purge_sync)

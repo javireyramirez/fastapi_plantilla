@@ -21,7 +21,6 @@ from fastapi_plantilla.modules.auth.dependencies import (
     get_current_user,
 )
 from fastapi_plantilla.modules.auth.schema import UserResponse
-from fastapi_plantilla.modules.trash.dependencies import get_trash_service
 from fastapi_plantilla.modules.trash.schema import (
     DEFAULT_TRASH_PURGE_LIMIT,
     BulkTrashActionRequest,
@@ -29,7 +28,7 @@ from fastapi_plantilla.modules.trash.schema import (
     TrashItemResponse,
     TrashPurgeResponse,
 )
-from fastapi_plantilla.modules.trash.service import TrashService
+from fastapi_plantilla.modules.trash.service import TrashService, get_trash_service
 
 router = APIRouter(prefix="/trash", tags=["Trash"])
 
@@ -107,8 +106,7 @@ async def get_trash_item(
     scope: ScopeContext = Depends(get_scope_context),
 ) -> TrashItemResponse:
     """Fetch metadata of an item in the trash bin by primary key ID."""
-    item = await service.get_by_id(id, scope=scope)
-    return TrashItemResponse.model_validate(item)
+    return await service.get_by_id(id, scope=scope)
 
 
 @router.post(
@@ -123,8 +121,7 @@ async def restore_trash_item(
     current_user: UserResponse = Depends(get_current_user),
 ) -> TrashItemResponse:
     """Restore soft-deleted entity to ACTIVE status and clear trash entry."""
-    item = await service.restore_item(id, scope=scope, user_id=current_user.id)
-    return TrashItemResponse.model_validate(item)
+    return await service.restore_item(id, scope=scope, user_id=current_user.id)
 
 
 @router.delete(
