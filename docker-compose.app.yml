@@ -37,6 +37,7 @@ services:
   migrator:
     <<: *main_app
     restart: "no"
+    ports: []
     command: sh -c "alembic upgrade head && python -m scripts.seed"
     depends_on:
       db:

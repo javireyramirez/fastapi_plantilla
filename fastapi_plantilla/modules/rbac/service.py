@@ -10,6 +10,7 @@ from fastapi_plantilla.core.crud.schema import (
 )
 from fastapi_plantilla.core.crud.service_audit import BaseAuditService
 from fastapi_plantilla.modules.auth.models import User
+from fastapi_plantilla.modules.rbac.catalog import MODULE_CATEGORIES
 from fastapi_plantilla.modules.rbac.models import Role, RoleAssignment
 from fastapi_plantilla.modules.rbac.repository import RbacRepository
 from fastapi_plantilla.modules.rbac.schema import (
@@ -22,6 +23,7 @@ from fastapi_plantilla.modules.rbac.schema import (
     RoleAssignmentQueryParams,
     RoleAssignmentResponse,
     RoleCreate,
+    RoleDetailResponse,
     RolePermissionItem,
     RoleResponse,
     RoleUpdate,
@@ -61,11 +63,26 @@ class RbacService(BaseAuditService[Role]):
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Module with code '{data.code}' already exists",
             )
+        cat_meta = MODULE_CATEGORIES.get(data.category, {})
+        cat_name = data.category_name or cat_meta.get("name")
+        cat_icon = data.category_icon or cat_meta.get("icon")
+        cat_order = (
+            data.category_order
+            if data.category_order != 0
+            else int(cat_meta.get("order", 0))
+        )
         module = await self.repository.create_module(
             code=data.code,
             name=data.name,
             description=data.description,
+            category=data.category,
+            category_name=cat_name,
+            category_icon=cat_icon,
+            category_order=cat_order,
+            icon=data.icon,
+            sort_order=data.sort_order,
             is_active=data.is_active,
+            is_trasheable=data.is_trasheable,
         )
         return ModuleResponse.model_validate(module)
 
@@ -83,18 +100,18 @@ class RbacService(BaseAuditService[Role]):
         return role
 
     async def list_roles(self) -> list[RoleResponse]:
-        """List all roles with their assigned permissions."""
-        roles = await self.repository.list_roles()
+        """List all roles without permissions for table/listing view."""
+        roles = await self.repository.list_roles(load_permissions=False)
         return [RoleResponse.model_validate(r) for r in roles]
 
-    async def get_role(self, role_id: uuid.UUID) -> RoleResponse:
-        """Get role by ID."""
-        role = await self._get_role_or_404(role_id)
-        return RoleResponse.model_validate(role)
+    async def get_role(self, role_id: uuid.UUID) -> RoleDetailResponse:
+        """Get role by ID with all assigned permissions."""
+        role = await self._get_role_or_404(role_id, load_permissions=True)
+        return RoleDetailResponse.model_validate(role)
 
     async def create_role(
         self, data: RoleCreate, user_id: uuid.UUID | None = None
-    ) -> RoleResponse:
+    ) -> RoleDetailResponse:
         """Create new role and optionally attach initial permissions."""
         existing = await self.repository.get_role_by_slug(data.slug)
         if existing:
@@ -107,18 +124,20 @@ class RbacService(BaseAuditService[Role]):
         role = await self.create(payload, user_id=user_id)
         if data.permissions:
             await self.set_role_permissions(role.id, data.permissions)
-            role = await self._get_role_or_404(role.id)
+            role = await self._get_role_or_404(role.id, load_permissions=True)
+        else:
+            role = await self._get_role_or_404(role.id, load_permissions=True)
 
-        return RoleResponse.model_validate(role)
+        return RoleDetailResponse.model_validate(role)
 
     async def update_role(
         self,
         role_id: uuid.UUID,
         data: RoleUpdate,
         user_id: uuid.UUID | None = None,
-    ) -> RoleResponse:
+    ) -> RoleDetailResponse:
         """Update role name and description."""
-        role = await self._get_role_or_404(role_id)
+        role = await self._get_role_or_404(role_id, load_permissions=False)
         if data.slug is not None and data.slug != role.slug and role.is_system:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -127,14 +146,14 @@ class RbacService(BaseAuditService[Role]):
         update_dict = data.model_dump(exclude_unset=True)
         if update_dict:
             await self.update(role_id, update_dict, user_id=user_id)
-        refreshed = await self._get_role_or_404(role_id)
-        return RoleResponse.model_validate(refreshed)
+        refreshed = await self._get_role_or_404(role_id, load_permissions=True)
+        return RoleDetailResponse.model_validate(refreshed)
 
     async def delete_role(
         self, role_id: uuid.UUID, user_id: uuid.UUID | None = None
     ) -> None:
         """Delete role (soft delete into trash) preventing removal of system roles."""
-        role = await self._get_role_or_404(role_id)
+        role = await self._get_role_or_404(role_id, load_permissions=False)
         if role.is_system:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -144,7 +163,7 @@ class RbacService(BaseAuditService[Role]):
 
     async def set_role_permissions(
         self, role_id: uuid.UUID, permissions: list[RolePermissionItem]
-    ) -> RoleResponse:
+    ) -> RoleDetailResponse:
         """Replace all permissions for a role."""
         await self._get_role_or_404(role_id, load_permissions=False)
         items: list[dict[str, Any]] = []
@@ -160,8 +179,8 @@ class RbacService(BaseAuditService[Role]):
             )
 
         await self.repository.set_role_permissions(role_id, items)
-        refreshed = await self._get_role_or_404(role_id)
-        return RoleResponse.model_validate(refreshed)
+        refreshed = await self._get_role_or_404(role_id, load_permissions=True)
+        return RoleDetailResponse.model_validate(refreshed)
 
     async def assign_role(
         self, role_id: uuid.UUID, entity_type: str, entity_id: uuid.UUID

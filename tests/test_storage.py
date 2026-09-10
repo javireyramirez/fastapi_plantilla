@@ -557,3 +557,48 @@ async def test_presigned_upload_with_filename_aliases(
     data = res.json()
     assert "upload_url" in data
     assert "document_id" in data
+
+
+@pytest.mark.anyio
+async def test_documents_entity_id_filtering_isolation(
+    storage_client: AsyncClient,
+) -> None:
+    """Verify documents for company A and company B are strictly isolated."""
+    comp_a_id = uuid.uuid4()
+    comp_b_id = uuid.uuid4()
+
+    # Upload doc A to Company A
+    res_a = await storage_client.post(
+        "/api/storage/documents/upload",
+        files={"file": ("doc_a.pdf", io.BytesIO(b"content a"), "application/pdf")},
+        data={"entity_type": "companies", "entity_id": str(comp_a_id)},
+    )
+    assert res_a.status_code == 201
+    doc_a_id = res_a.json()["id"]
+
+    # Upload doc B to Company B
+    res_b = await storage_client.post(
+        "/api/storage/documents/upload",
+        files={"file": ("doc_b.pdf", io.BytesIO(b"content b"), "application/pdf")},
+        data={"entityType": "companies", "entityId": str(comp_b_id)},
+    )
+    assert res_b.status_code == 201
+    doc_b_id = res_b.json()["id"]
+
+    # 1. Query for Company A (snake_case)
+    list_a = await storage_client.get(
+        f"/api/storage/documents?entity_type=companies&entity_id={comp_a_id}"
+    )
+    assert list_a.status_code == 200
+    docs_a = list_a.json()["data"]
+    assert any(d["id"] == doc_a_id for d in docs_a)
+    assert not any(d["id"] == doc_b_id for d in docs_a)
+
+    # 2. Query for Company B (camelCase)
+    list_b = await storage_client.get(
+        f"/api/storage/documents?entityType=companies&entityId={comp_b_id}"
+    )
+    assert list_b.status_code == 200
+    docs_b = list_b.json()["data"]
+    assert any(d["id"] == doc_b_id for d in docs_b)
+    assert not any(d["id"] == doc_a_id for d in docs_b)

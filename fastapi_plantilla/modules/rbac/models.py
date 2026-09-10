@@ -7,6 +7,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy import (
     Enum as SQLEnum,
@@ -39,12 +40,20 @@ class SystemModule(UUID7PrimaryKeyMixin, TimestampMixin, Base):
     category: Mapped[str] = mapped_column(
         String(50), default="system", server_default="system", nullable=False
     )
+    category_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    category_icon: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    category_order: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
     icon: Mapped[str | None] = mapped_column(String(50), nullable=True)
     sort_order: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, index=True, nullable=False
+    )
+    is_trasheable: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
     )
 
     permissions: Mapped[list["RolePermission"]] = relationship(

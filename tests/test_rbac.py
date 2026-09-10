@@ -144,6 +144,11 @@ async def test_module_catalog_flow(rbac_client: AsyncClient) -> None:
     data = res.json()
     assert data["code"] == "test_module"
     assert data["name"] == "Test Module"
+    assert data["is_trasheable"] is True
+    assert data["category"] == "system"
+    assert data["category_name"] == "Sistema"
+    assert data["category_icon"] == "cpu"
+    assert data["category_order"] == 4
 
     # Duplicate code conflict
     conflict_res = await rbac_client.post(
@@ -152,11 +157,26 @@ async def test_module_catalog_flow(rbac_client: AsyncClient) -> None:
     )
     assert conflict_res.status_code == status.HTTP_409_CONFLICT
 
+    # Create non-trasheable module
+    notrash_res = await rbac_client.post(
+        "/api/rbac/modules",
+        json={
+            "code": "test_notrash",
+            "name": "No Trash Module",
+            "is_trasheable": False,
+        },
+    )
+    assert notrash_res.status_code == status.HTTP_201_CREATED
+    assert notrash_res.json()["is_trasheable"] is False
+
     # List modules
     list_res = await rbac_client.get("/api/rbac/modules")
     assert list_res.status_code == status.HTTP_200_OK
     modules = list_res.json()
     assert any(m["code"] == "test_module" for m in modules)
+    assert any(
+        m["code"] == "test_notrash" and m["is_trasheable"] is False for m in modules
+    )
 
 
 @pytest.mark.anyio

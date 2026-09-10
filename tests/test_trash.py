@@ -711,7 +711,7 @@ async def test_document_trash_includes_module_principal_entity(
     principal = data.get("module_principal_entity")
     assert principal is not None
     assert principal["code"] == "companies"
-    assert principal["name"] == "Empresas"
+    assert principal["name"] == "Compañías"
     assert principal["entity_name"] == "Acme Aerospace Corp"
     assert principal["entity_id"] == str(company.id)
 

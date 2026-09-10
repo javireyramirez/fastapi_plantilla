@@ -17,6 +17,7 @@ from fastapi_plantilla.modules.rbac.schema import (
     RoleAssignmentRequest,
     RoleAssignmentResponse,
     RoleCreate,
+    RoleDetailResponse,
     RolePermissionsUpdate,
     RoleResponse,
     RoleUpdate,
@@ -67,33 +68,35 @@ async def list_roles(
     return await service.list_roles()
 
 
-@router.post("/roles", response_model=RoleResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/roles", response_model=RoleDetailResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_role(
     data: RoleCreate,
     current_user: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
-) -> RoleResponse:
+) -> RoleDetailResponse:
     """Create a new role with optional initial permissions (SuperAdmin only)."""
     return await service.create_role(data, user_id=current_user.id)
 
 
-@router.get("/roles/{role_id}", response_model=RoleResponse)
+@router.get("/roles/{role_id}", response_model=RoleDetailResponse)
 async def get_role(
     role_id: uuid.UUID,
     _: UserResponse = Depends(get_current_user),
     service: RbacService = Depends(get_rbac_service),
-) -> RoleResponse:
-    """Get role details by ID."""
+) -> RoleDetailResponse:
+    """Get role details by ID with assigned permissions."""
     return await service.get_role(role_id)
 
 
-@router.patch("/roles/{role_id}", response_model=RoleResponse)
+@router.patch("/roles/{role_id}", response_model=RoleDetailResponse)
 async def update_role(
     role_id: uuid.UUID,
     data: RoleUpdate,
     current_user: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
-) -> RoleResponse:
+) -> RoleDetailResponse:
     """Update role metadata (SuperAdmin only)."""
     return await service.update_role(role_id, data, user_id=current_user.id)
 
@@ -109,13 +112,13 @@ async def delete_role(
     return MessageResponse(message="Role deleted successfully")
 
 
-@router.put("/roles/{role_id}/permissions", response_model=RoleResponse)
+@router.put("/roles/{role_id}/permissions", response_model=RoleDetailResponse)
 async def set_role_permissions(
     role_id: uuid.UUID,
     data: RolePermissionsUpdate,
     _: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
-) -> RoleResponse:
+) -> RoleDetailResponse:
     """Replace all permissions for a role (SuperAdmin only)."""
     return await service.set_role_permissions(role_id, data.permissions)
 

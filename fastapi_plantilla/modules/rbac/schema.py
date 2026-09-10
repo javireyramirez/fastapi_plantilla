@@ -18,6 +18,7 @@ __all__ = [
     "RoleAssignmentRequest",
     "RoleAssignmentResponse",
     "RoleCreate",
+    "RoleDetailResponse",
     "RolePermissionItem",
     "RolePermissionResponse",
     "RolePermissionsUpdate",
@@ -47,9 +48,13 @@ class ModuleCreate(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
     description: str | None = Field(default=None, max_length=255)
     category: str = Field(default="system", max_length=50)
+    category_name: str | None = Field(default=None, max_length=100)
+    category_icon: str | None = Field(default=None, max_length=50)
+    category_order: int = 0
     icon: str | None = Field(default=None, max_length=50)
     sort_order: int = 0
     is_active: bool = True
+    is_trasheable: bool = True
 
 
 class ModuleUpdate(BaseModel):
@@ -58,13 +63,17 @@ class ModuleUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=100)
     description: str | None = Field(default=None, max_length=255)
     category: str | None = Field(default=None, max_length=50)
+    category_name: str | None = Field(default=None, max_length=100)
+    category_icon: str | None = Field(default=None, max_length=50)
+    category_order: int | None = None
     icon: str | None = Field(default=None, max_length=50)
     sort_order: int | None = None
     is_active: bool | None = None
+    is_trasheable: bool | None = None
 
 
 class ModuleResponse(BaseModel):
-    """System module response representation."""
+    """System module response representation matching catalog JSON."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -73,11 +82,13 @@ class ModuleResponse(BaseModel):
     name: str
     description: str | None = None
     category: str = "system"
+    category_name: str | None = None
+    category_icon: str | None = None
+    category_order: int = 0
     icon: str | None = None
     sort_order: int = 0
     is_active: bool
-    created_at: datetime
-    updated_at: datetime
+    is_trasheable: bool = True
 
 
 class RolePermissionItem(BaseModel):
@@ -130,7 +141,7 @@ class RoleUpdate(BaseModel):
 
 
 class RoleResponse(BaseModel):
-    """Security role response representation."""
+    """Security role response representation without permissions."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -143,6 +154,11 @@ class RoleResponse(BaseModel):
     is_system: bool
     created_at: datetime
     updated_at: datetime
+
+
+class RoleDetailResponse(RoleResponse):
+    """Security role detailed response including full assigned permissions."""
+
     permissions: list[RolePermissionItem] = Field(default_factory=list)
 
 

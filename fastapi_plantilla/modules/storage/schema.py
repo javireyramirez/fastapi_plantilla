@@ -120,9 +120,31 @@ class DocumentResponse(AuditFieldsSchema):
 class DocumentFilterParams(PaginationParams):
     """Pagination and filter parameters for documents list."""
 
-    entity_type: str | None = Field(default=None, max_length=50)
-    entity_id: uuid.UUID | None = None
-    is_uploaded: bool | None = None
+    entity_type: str | None = Field(default=None, max_length=50, alias="entity_type")
+    entity_type_camel: str | None = Field(
+        default=None, max_length=50, alias="entityType"
+    )
+    entity_id: uuid.UUID | None = Field(default=None, alias="entity_id")
+    entity_id_camel: uuid.UUID | None = Field(default=None, alias="entityId")
+    is_uploaded: bool | None = Field(default=None, alias="is_uploaded")
+    is_uploaded_camel: bool | None = Field(default=None, alias="isUploaded")
+
+    @property
+    def target_entity_id(self) -> uuid.UUID | None:
+        """Resolve entity_id regardless of snake_case or camelCase."""
+        return self.entity_id or self.entity_id_camel
+
+    @property
+    def target_entity_type(self) -> str | None:
+        """Resolve entity_type regardless of snake_case or camelCase."""
+        return self.entity_type or self.entity_type_camel
+
+    @property
+    def target_is_uploaded(self) -> bool | None:
+        """Resolve is_uploaded regardless of snake_case or camelCase."""
+        return (
+            self.is_uploaded if self.is_uploaded is not None else self.is_uploaded_camel
+        )
 
 
 class ZipDownloadRequest(BaseModel):

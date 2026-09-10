@@ -67,10 +67,6 @@ class TrashItemResponse(BaseModel):
     entity_type: str
     entity_id: uuid.UUID
     name: str
-    target_entity_type: str | None = None
-    target_entity_id: uuid.UUID | None = None
-    target_entity_name: str | None = None
-    module: TrashModuleResponse | dict[str, Any] | None = None
     module_principal_entity: PrincipalEntityModule | dict[str, Any] | None = None
     owner_id: uuid.UUID | None = None
     deleted_by: str | None = None

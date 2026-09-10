@@ -46,8 +46,12 @@ class RbacRepository(BaseRepository[Role]):
         return result.scalar_one_or_none()
 
     async def list_modules(self) -> list[SystemModule]:
-        """Fetch all registered modules ordered by code."""
-        stmt = select(SystemModule).order_by(SystemModule.code.asc())
+        """Fetch all registered modules ordered by category order and sort order."""
+        stmt = select(SystemModule).order_by(
+            SystemModule.category_order.asc(),
+            SystemModule.sort_order.asc(),
+            SystemModule.code.asc(),
+        )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -56,11 +60,28 @@ class RbacRepository(BaseRepository[Role]):
         code: str,
         name: str,
         description: str | None = None,
+        category: str = "system",
+        category_name: str | None = None,
+        category_icon: str | None = None,
+        category_order: int = 0,
+        icon: str | None = None,
+        sort_order: int = 0,
         is_active: bool = True,
+        is_trasheable: bool = True,
     ) -> SystemModule:
         """Create and persist a new system module."""
         module = SystemModule(
-            code=code, name=name, description=description, is_active=is_active
+            code=code,
+            name=name,
+            description=description,
+            category=category,
+            category_name=category_name,
+            category_icon=category_icon,
+            category_order=category_order,
+            icon=icon,
+            sort_order=sort_order,
+            is_active=is_active,
+            is_trasheable=is_trasheable,
         )
         self.session.add(module)
         await self.session.flush()
@@ -95,7 +116,7 @@ class RbacRepository(BaseRepository[Role]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def list_roles(self, load_permissions: bool = True) -> list[Role]:
+    async def list_roles(self, load_permissions: bool = False) -> list[Role]:
         """Fetch all active roles ordered by slug."""
         stmt = self._role_query(load_permissions).order_by(Role.slug.asc())
         result = await self.session.execute(stmt)

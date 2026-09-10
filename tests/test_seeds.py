@@ -15,16 +15,16 @@ from fastapi_plantilla.modules.teams.models import Team, TeamUser
 from scripts.seed import run_all_seeds
 
 
-async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:
+async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:  # noqa: PLR0915
     """Verify that running all modular seeds creates records and is idempotent."""
     # Run 1
     await run_all_seeds(dbsession)
     await dbsession.commit()
 
-    # 1. Verify 8 modules
+    # 1. Verify 9 modules
     mod_res = await dbsession.execute(select(SystemModule))
     modules = mod_res.scalars().all()
-    assert len(modules) >= 8
+    assert len(modules) >= 9
     mod_codes = {m.code for m in modules}
     expected_codes = {
         "users",
@@ -33,16 +33,41 @@ async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:
         "companies",
         "documents",
         "storage",
+        "rbac",
         "audit",
         "trash",
     }
     assert expected_codes.issubset(mod_codes)
 
-    # Check that category, icon, sort_order are populated
+    # Check that metadata and category fields are populated
     users_mod = next(m for m in modules if m.code == "users")
     assert users_mod.category == "security"
+    assert users_mod.category_name == "Seguridad"
+    assert users_mod.category_icon == "shield"
+    assert users_mod.category_order == 3
     assert users_mod.icon == "users"
     assert users_mod.sort_order == 0
+    assert users_mod.is_trasheable is True
+
+    comp_mod = next(m for m in modules if m.code == "companies")
+    assert comp_mod.name == "Compañías"
+    assert comp_mod.category == "business"
+    assert comp_mod.category_name == "Negocio"
+    assert comp_mod.category_icon == "briefcase"
+    assert comp_mod.category_order == 1
+
+    rbac_mod = next(m for m in modules if m.code == "rbac")
+    assert rbac_mod.name == "Roles y Permisos"
+    assert rbac_mod.category == "system"
+    assert rbac_mod.category_name == "Sistema"
+    assert rbac_mod.category_icon == "cpu"
+    assert rbac_mod.category_order == 4
+
+    audit_mod = next(m for m in modules if m.code == "audit")
+    assert audit_mod.is_trasheable is False
+
+    trash_mod = next(m for m in modules if m.code == "trash")
+    assert trash_mod.is_trasheable is False
 
     # 2. Verify 3 roles
     role_res = await dbsession.execute(select(Role))
