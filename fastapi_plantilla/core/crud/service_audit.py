@@ -284,9 +284,12 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         *where: Any,
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> ModelT:
         """Safely soft-delete (trash) record instead of physical delete."""
-        return await self.trash(id, *where, user_id=user_id, scope=scope)
+        return await self.trash(
+            id, *where, user_id=user_id, scope=scope, options=options
+        )
 
     async def bulk_create(
         self,
@@ -295,22 +298,25 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         owner_id: uuid.UUID | None = None,
         scope: ScopeContext | None = None,
         allow_immutable: bool = False,
+        options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Bulk create multiple records with actor stamping."""
+        effective_user_id = (options.user_id if options else None) or user_id
         payload: list[dict[str, Any]] = []
         has_status = self._get_column("status") is not None
         for data in items:
             d = data.model_dump() if isinstance(data, BaseModel) else dict(data)
             if not allow_immutable and has_status:
                 d["status"] = RecordStatus.ACTIVE
-            self._stamp_actors(d, user_id, is_create=True)
+            self._stamp_actors(d, effective_user_id, is_create=True)
             payload.append(d)
         return await super().bulk_create(
             payload,
-            user_id=user_id,
+            user_id=effective_user_id,
             owner_id=owner_id,
             scope=scope,
             allow_immutable=allow_immutable,
+            options=options,
         )
 
     async def bulk_delete(
@@ -462,9 +468,10 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         await self.on_after_permanent_delete(id)
         await self._emit_audit(
             item=deleted,
-            action="DELETE",
+            action="PERMANENT_DELETE",
             options=options,
             status_transition=(RecordStatus.TRASHED.value, "PURGED"),
+            details=f"Permanently deleted {self.resource_name}",
         )
         return deleted
 
@@ -608,6 +615,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         req: BulkIdsRequest,
         *where: Any,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Permanently delete records from the trash in a single atomic query."""
         status_filter = self.get_status_filter(is_trash=True)
@@ -615,7 +623,22 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         extra: list[Any] = [status_filter] if status_filter is not None else []
         extra.extend(where)
         extra.extend(scope_clauses)
+        items_to_delete = await self.repository.find_many(
+            self.repository.pk.in_(req.ids), *extra
+        )
+        item_map = {getattr(it, "id", None): it for it in items_to_delete}
         count = await self.repository.delete_many(req.ids, *extra)
+        for item_id in req.ids:
+            it = item_map.get(item_id)
+            await self.on_after_permanent_delete(item_id)
+            await self._emit_audit(
+                item=it,
+                action="PERMANENT_DELETE",
+                options=options,
+                entity_id=item_id,
+                status_transition=(RecordStatus.TRASHED.value, "PURGED"),
+                details=f"Permanently deleted {self.resource_name} via bulk action",
+            )
         return BulkResponse(
             count=count,
             message=f"Successfully permanently deleted {count} records from trash",
@@ -655,12 +678,35 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             self.SENSITIVE_COLUMNS,
         )
 
+    def _extract_entity_name(
+        self,
+        item: Any = None,
+        data: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Extract a readable entity name from an instance or dictionary."""
+        if item is not None:
+            for attr in ("name", "title", "filename", "username", "code", "email"):
+                val = getattr(item, attr, None)
+                if val is not None and str(val).strip():
+                    return str(val).strip()
+        if data is not None and isinstance(data, dict):
+            for key in ("name", "title", "filename", "username", "code", "email"):
+                val = data.get(key)
+                if isinstance(val, dict) and ("new" in val or "old" in val):
+                    val = val.get("new") or val.get("old")
+                if val is not None and str(val).strip():
+                    return str(val).strip()
+        return None
+
     async def _emit_audit(
         self,
         item: Any,
         action: str,
         options: WriteOptions | None = None,
         user_id: str | uuid.UUID | None = None,
+        entity_id: uuid.UUID | None = None,
+        entity_name: str | None = None,
+        changes: dict[str, Any] | None = None,
         new_data: dict[str, Any] | None = None,
         snapshot_before: dict[str, Any] | None = None,
         updated_payload: dict[str, Any] | None = None,
@@ -672,7 +718,15 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             return
 
         entity_type = self.resource_name.lower()
-        entity_id = getattr(item, "id", None) if item else None
+        effective_entity_id = entity_id or (getattr(item, "id", None) if item else None)
+        effective_entity_name = (
+            entity_name
+            or self._extract_entity_name(item)
+            or self._extract_entity_name(data=new_data)
+            or self._extract_entity_name(data=updated_payload)
+            or self._extract_entity_name(data=snapshot_before)
+            or self._extract_entity_name(data=changes)
+        )
         actor_id_raw = (
             (options.user_id if options else None)
             or user_id
@@ -680,24 +734,32 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             or getattr(item, "created_by", None)
         )
 
-        changes: dict[str, Any] | None = None
-        if self.audit_level == AuditLevel.FULL:
+        computed_changes: dict[str, Any] | None = changes
+        if computed_changes is None and self.audit_level == AuditLevel.FULL:
             if action == "CREATE" and new_data:
-                changes = self._compute_create_diff(new_data)
+                computed_changes = self._compute_create_diff(new_data)
             elif action == "UPDATE" and updated_payload and snapshot_before:
-                changes = self._compute_update_diff(snapshot_before, updated_payload)
+                computed_changes = self._compute_update_diff(
+                    snapshot_before, updated_payload
+                )
             elif status_transition:
                 old_s, new_s = status_transition
-                changes = {"status": {"old": old_s, "new": new_s}}
+                computed_changes = {"status": {"old": old_s, "new": new_s}}
+
+        actor_name = options.actor_name if options else None
+        actor_email = options.actor_email if options else None
 
         entry = AuditEntry(
             entity_type=entity_type,
-            entity_id=entity_id,
+            entity_id=effective_entity_id,
+            entity_name=effective_entity_name,
             action=action,
             actor_id=self._to_uuid(actor_id_raw),
+            actor_name=actor_name,
+            actor_email=actor_email,
             ip_address=options.ip_address if options else None,
             user_agent=options.user_agent if options else None,
-            changes=changes if changes else None,
+            changes=computed_changes if computed_changes else None,
             details=details,
         )
 

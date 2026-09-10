@@ -72,9 +72,10 @@ async def bulk_purge_trash(
     request: BulkTrashActionRequest,
     service: TrashService = Depends(get_trash_service),
     scope: ScopeContext = Depends(get_scope_context),
+    current_user: UserResponse = Depends(get_current_user),
 ) -> BulkResponse:
     """Permanently delete multiple items from their modules, storage, and trash."""
-    return await service.bulk_purge(request, scope=scope)
+    return await service.bulk_purge(request, scope=scope, user_id=current_user.id)
 
 
 @router.post(
@@ -135,6 +136,7 @@ async def purge_trash_item(
     id: uuid.UUID,
     service: TrashService = Depends(get_trash_service),
     scope: ScopeContext = Depends(get_scope_context),
+    current_user: UserResponse = Depends(get_current_user),
 ) -> None:
     """Permanently delete entity record and its associated storage files."""
-    await service.purge_item(id, scope=scope)
+    await service.purge_item(id, scope=scope, user_id=current_user.id)

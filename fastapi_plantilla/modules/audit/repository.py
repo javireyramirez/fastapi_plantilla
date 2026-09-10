@@ -48,6 +48,46 @@ def normalize_entity_types(raw_type: str) -> list[str]:
     return list(candidates)
 
 
+def _resolve_action_filter(action: str) -> Any:
+    """Resolve action filter clause handling grouped actions."""
+    act = action.strip().upper()
+    if act in ("DELETE", "PERMANENT_DELETE", "PURGE"):
+        return AuditLog.action.in_(["DELETE", "PERMANENT_DELETE", "PURGE"])
+    if act in ("REACTIVATE", "ACTIVATE"):
+        return AuditLog.action.in_(["REACTIVATE", "ACTIVATE"])
+    return AuditLog.action == act
+
+
+def _build_audit_conditions(params: AuditFilterParams) -> list[Any]:
+    """Construct SQLAlchemy query filters from AuditFilterParams."""
+    conditions: list[Any] = []
+    if params.entity_type:
+        raw_types = [t.strip() for t in params.entity_type.split(",") if t.strip()]
+        all_candidates: set[str] = set()
+        for rt in raw_types:
+            all_candidates.update(normalize_entity_types(rt))
+        if all_candidates:
+            candidates = list(all_candidates)
+            conditions.append(
+                AuditLog.entity_type == candidates[0]
+                if len(candidates) == 1
+                else AuditLog.entity_type.in_(candidates)
+            )
+    if params.entity_id:
+        conditions.append(AuditLog.entity_id == params.entity_id)
+    if params.entity_name:
+        conditions.append(AuditLog.entity_name.ilike(f"%{params.entity_name.strip()}%"))
+    if params.action:
+        conditions.append(_resolve_action_filter(params.action))
+    if params.actor_id:
+        conditions.append(AuditLog.actor_id == params.actor_id)
+    if params.from_date:
+        conditions.append(AuditLog.created_at >= params.from_date)
+    if params.to_date:
+        conditions.append(AuditLog.created_at <= params.to_date)
+    return conditions
+
+
 class AuditRepository(BaseRepository[AuditLog]):
     """Repository handling persistence and filtering of immutable audit log entries."""
 
@@ -59,6 +99,7 @@ class AuditRepository(BaseRepository[AuditLog]):
         log = AuditLog(
             entity_type=entry.entity_type,
             entity_id=entry.entity_id,
+            entity_name=entry.entity_name,
             action=entry.action,
             actor_id=entry.actor_id,
             actor_name=entry.actor_name,
@@ -74,26 +115,7 @@ class AuditRepository(BaseRepository[AuditLog]):
 
     async def list_logs(self, params: AuditFilterParams) -> tuple[list[AuditLog], int]:
         """Query paginated audit logs applying optional filters."""
-        conditions: list[Any] = []
-
-        if params.entity_type:
-            candidates = normalize_entity_types(params.entity_type)
-            if len(candidates) == 1:
-                conditions.append(AuditLog.entity_type == candidates[0])
-            else:
-                conditions.append(AuditLog.entity_type.in_(candidates))
-
-        if params.entity_id:
-            conditions.append(AuditLog.entity_id == params.entity_id)
-        if params.action:
-            conditions.append(AuditLog.action == params.action)
-        if params.actor_id:
-            conditions.append(AuditLog.actor_id == params.actor_id)
-        if params.from_date:
-            conditions.append(AuditLog.created_at >= params.from_date)
-        if params.to_date:
-            conditions.append(AuditLog.created_at <= params.to_date)
-
+        conditions = _build_audit_conditions(params)
         return await self.find_many_with_count(
             *conditions,
             skip=(params.page - 1) * params.limit,

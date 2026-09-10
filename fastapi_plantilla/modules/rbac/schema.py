@@ -2,15 +2,19 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from fastapi_plantilla.core.crud.schema import ScopeType
 
 __all__ = [
+    "AssignedRoleBasic",
+    "AssignedTeamBasic",
+    "AssignedUserBasic",
     "ModuleCreate",
     "ModuleResponse",
     "ModuleUpdate",
     "RbacActions",
+    "RoleAssignmentQueryParams",
     "RoleAssignmentRequest",
     "RoleAssignmentResponse",
     "RoleCreate",
@@ -145,21 +149,138 @@ class RoleResponse(BaseModel):
 class RoleAssignmentRequest(BaseModel):
     """Payload to assign a role to a user or a team."""
 
-    role_id: uuid.UUID
-    entity_type: str = Field(..., min_length=2, max_length=50)  # USER or TEAM
-    entity_id: uuid.UUID
+    role_id: uuid.UUID = Field(..., validation_alias=AliasChoices("role_id", "roleId"))
+    entity_type: str = Field(
+        ...,
+        min_length=2,
+        max_length=50,
+        validation_alias=AliasChoices("entity_type", "entityType"),
+    )  # USER or TEAM
+    entity_id: uuid.UUID = Field(
+        ..., validation_alias=AliasChoices("entity_id", "entityId")
+    )
+
+
+class AssignedRoleBasic(BaseModel):
+    """Basic role summary for assignment payload."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    slug: str
+
+
+class AssignedUserBasic(BaseModel):
+    """Basic user summary for assignment payload."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str | None = None
+    email: str | None = None
+
+
+class AssignedTeamBasic(BaseModel):
+    """Basic team summary for assignment payload."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    slug: str | None = None
+
+
+class RoleAssignmentQueryParams(BaseModel):
+    """Query filters for retrieving paginated role assignments."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    page: int = Field(default=1, ge=1, le=1000)
+    limit: int = Field(default=10, ge=1, le=100)
+    sort_by: str = Field(
+        default="assignedAt",
+        validation_alias=AliasChoices("sort_by", "sortBy"),
+    )
+    sort_order: str = Field(
+        default="desc",
+        validation_alias=AliasChoices("sort_order", "sortOrder"),
+    )
+    role_id: uuid.UUID | None = Field(
+        default=None,
+        validation_alias=AliasChoices("role_id", "roleId"),
+    )
+    user_id: uuid.UUID | None = Field(
+        default=None,
+        validation_alias=AliasChoices("user_id", "userId"),
+    )
+    team_id: uuid.UUID | None = Field(
+        default=None,
+        validation_alias=AliasChoices("team_id", "teamId"),
+    )
+    entity_type: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("entity_type", "entityType"),
+    )
+    assigned_from: datetime | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "assigned_from", "assignedFrom", "created_at_from", "createdAtFrom"
+        ),
+    )
+    assigned_to: datetime | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "assigned_to", "assignedTo", "created_at_to", "createdAtTo"
+        ),
+    )
 
 
 class RoleAssignmentResponse(BaseModel):
     """Representation of an active role assignment."""
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: uuid.UUID
-    role_id: uuid.UUID
-    entity_type: str
-    entity_id: uuid.UUID
-    created_at: datetime
+    role_id: uuid.UUID = Field(..., validation_alias=AliasChoices("role_id", "roleId"))
+    roleId: uuid.UUID | None = Field(default=None)  # noqa: N815
+    entity_type: str = Field(
+        ..., validation_alias=AliasChoices("entity_type", "entityType")
+    )
+    entityType: str | None = Field(default=None)  # noqa: N815
+    entity_id: uuid.UUID = Field(
+        ..., validation_alias=AliasChoices("entity_id", "entityId")
+    )
+    entityId: uuid.UUID | None = Field(default=None)  # noqa: N815
+    created_at: datetime = Field(
+        ...,
+        validation_alias=AliasChoices(
+            "created_at", "createdAt", "assigned_at", "assignedAt"
+        ),
+    )
+    assigned_at: datetime | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "assigned_at", "assignedAt", "created_at", "createdAt"
+        ),
+    )
+    assignedAt: datetime | None = Field(default=None)  # noqa: N815
+    user_id: uuid.UUID | None = Field(
+        default=None, validation_alias=AliasChoices("user_id", "userId")
+    )
+    userId: uuid.UUID | None = Field(default=None)  # noqa: N815
+    team_id: uuid.UUID | None = Field(
+        default=None, validation_alias=AliasChoices("team_id", "teamId")
+    )
+    teamId: uuid.UUID | None = Field(default=None)  # noqa: N815
+
+    role: AssignedRoleBasic | None = None
+    user: AssignedUserBasic | None = None
+    assigned_user: AssignedUserBasic | None = None
+    assignedUser: AssignedUserBasic | None = Field(default=None)  # noqa: N815
+    team: AssignedTeamBasic | None = None
+    assigned_team: AssignedTeamBasic | None = None
+    assignedTeam: AssignedTeamBasic | None = Field(default=None)  # noqa: N815
 
 
 class UserPermissionsMatrixResponse(BaseModel):

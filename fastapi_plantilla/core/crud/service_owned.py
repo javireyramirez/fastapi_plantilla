@@ -271,19 +271,22 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
         owner_id: uuid.UUID | None = None,
         scope: ScopeContext | None = None,
         allow_immutable: bool = False,
+        options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Bulk create multiple records assigning actor, owner, and team stamping."""
+        effective_user_id = (options.user_id if options else None) or user_id
         stamped_items: list[dict[str, Any]] = []
         for item in items:
             d = item.model_dump() if isinstance(item, BaseModel) else dict(item)
             self._resolve_owner_and_team(
-                d, user_id=user_id, owner_id=owner_id, scope=scope
+                d, user_id=effective_user_id, owner_id=owner_id, scope=scope
             )
             stamped_items.append(d)
         return await super().bulk_create(
             stamped_items,
-            user_id=user_id,
+            user_id=effective_user_id,
             owner_id=owner_id,
             scope=scope,
             allow_immutable=allow_immutable,
+            options=options,
         )

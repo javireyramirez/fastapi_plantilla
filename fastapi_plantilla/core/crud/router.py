@@ -16,6 +16,7 @@ from fastapi_plantilla.core.crud.schema import (
     PaginatedResponse,
     PaginationParams,
     ScopeContext,
+    WriteOptions,
 )
 from fastapi_plantilla.core.crud.service import BaseAuditService, BaseCRUDService
 from fastapi_plantilla.core.database import Base
@@ -23,6 +24,18 @@ from fastapi_plantilla.modules.auth.dependencies import get_current_user
 from fastapi_plantilla.modules.rbac.schema import RbacActions
 
 __all__ = ["create_crud_router"]
+
+
+def _build_write_options(
+    current_user: Any, scope: ScopeContext | None = None
+) -> WriteOptions:
+    user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
+    return WriteOptions(
+        user_id=user_id,
+        actor_name=getattr(current_user, "name", None),
+        actor_email=getattr(current_user, "email", None),
+        scope=scope,
+    )
 
 
 def create_crud_router[  # noqa: C901
@@ -124,8 +137,10 @@ def create_crud_router[  # noqa: C901
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.CREATE)),
     ) -> Any:
-        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
-        return await service.create(data=data, user_id=user_id, scope=scope)
+        options = _build_write_options(current_user, scope)
+        return await service.create(
+            data=data, user_id=options.user_id, scope=scope, options=options
+        )
 
     # ==========================================
     # 2. BULK OPERATIONS (Static paths before /{id})
@@ -145,8 +160,10 @@ def create_crud_router[  # noqa: C901
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.CREATE)),
     ) -> BulkResponse:
-        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
-        return await service.bulk_create(items=items, user_id=user_id, scope=scope)
+        options = _build_write_options(current_user, scope)
+        return await service.bulk_create(
+            items=items, user_id=options.user_id, scope=scope, options=options
+        )
 
     @router.post(
         "/bulk/trash",
@@ -189,9 +206,13 @@ def create_crud_router[  # noqa: C901
     async def bulk_permanent_delete(
         req: BulkIdsRequest,
         service: BaseAuditService[ModelT] = Depends(service_getter),
+        current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> BulkResponse:
-        return await service.bulk_permanent_delete(req=req, scope=scope)
+        options = _build_write_options(current_user, scope)
+        return await service.bulk_permanent_delete(
+            req=req, scope=scope, options=options
+        )
 
     # ==========================================
     # 3. SINGLE RECORD OPERATIONS (Parameterized by ID)
@@ -233,13 +254,14 @@ def create_crud_router[  # noqa: C901
             if isinstance(data_version, int):
                 resolved_version = data_version
 
-        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
+        options = _build_write_options(current_user, scope)
         return await service.update(
             id=id,
             data=data,
             expected_version=resolved_version,
-            user_id=user_id,
+            user_id=options.user_id,
             scope=scope,
+            options=options,
         )
 
     @router.delete(
@@ -253,8 +275,10 @@ def create_crud_router[  # noqa: C901
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> Any:
-        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
-        return await service.delete(id=id, user_id=user_id, scope=scope)
+        options = _build_write_options(current_user, scope)
+        return await service.delete(
+            id=id, user_id=options.user_id, scope=scope, options=options
+        )
 
     @router.post(
         "/{id}/restore",
@@ -267,8 +291,10 @@ def create_crud_router[  # noqa: C901
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.RESTORE)),
     ) -> Any:
-        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
-        return await service.restore(id=id, user_id=user_id, scope=scope)
+        options = _build_write_options(current_user, scope)
+        return await service.restore(
+            id=id, user_id=options.user_id, scope=scope, options=options
+        )
 
     @router.delete(
         "/{id}/permanent",
@@ -278,8 +304,10 @@ def create_crud_router[  # noqa: C901
     async def permanent_delete(
         id: uuid.UUID,
         service: BaseAuditService[ModelT] = Depends(service_getter),
+        current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> Any:
-        return await service.permanent_delete(id=id, scope=scope)
+        options = _build_write_options(current_user, scope)
+        return await service.permanent_delete(id=id, scope=scope, options=options)
 
     return router

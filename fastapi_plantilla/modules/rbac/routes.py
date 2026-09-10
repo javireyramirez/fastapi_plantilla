@@ -1,8 +1,9 @@
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
-from fastapi_plantilla.core.crud.schema import MessageResponse
+from fastapi_plantilla.core.crud.schema import MessageResponse, PaginatedResponse
 from fastapi_plantilla.modules.auth.dependencies import (
     get_current_active_superuser,
     get_current_user,
@@ -12,7 +13,9 @@ from fastapi_plantilla.modules.rbac.dependencies import get_rbac_service
 from fastapi_plantilla.modules.rbac.schema import (
     ModuleCreate,
     ModuleResponse,
+    RoleAssignmentQueryParams,
     RoleAssignmentRequest,
+    RoleAssignmentResponse,
     RoleCreate,
     RolePermissionsUpdate,
     RoleResponse,
@@ -117,9 +120,58 @@ async def set_role_permissions(
     return await service.set_role_permissions(role_id, data.permissions)
 
 
+@router.get(
+    "/roles/{role_id}/assignments",
+    response_model=PaginatedResponse[RoleAssignmentResponse],
+)
+async def list_role_assignments(
+    role_id: uuid.UUID,
+    params: Annotated[RoleAssignmentQueryParams, Depends()],
+    _: UserResponse = Depends(get_current_user),
+    service: RbacService = Depends(get_rbac_service),
+) -> PaginatedResponse[RoleAssignmentResponse]:
+    """List paginated assignments specifically for a given role."""
+    params.role_id = role_id
+    return await service.list_assignments(params)
+
+
+@router.get(
+    "/roles/{role_id}/assignments/{assignment_id}",
+    response_model=RoleAssignmentResponse,
+)
+async def get_role_assignment(
+    role_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+    _: UserResponse = Depends(get_current_user),
+    service: RbacService = Depends(get_rbac_service),
+) -> RoleAssignmentResponse:
+    """Get specific assignment details scoped to a given role."""
+    return await service.get_assignment(assignment_id, role_id=role_id)
+
+
 # ==========================================
 # 3. Polymorphic Assignments & Effective Permissions
 # ==========================================
+
+
+@router.get("/assignments", response_model=PaginatedResponse[RoleAssignmentResponse])
+async def list_assignments(
+    params: Annotated[RoleAssignmentQueryParams, Depends()],
+    _: UserResponse = Depends(get_current_user),
+    service: RbacService = Depends(get_rbac_service),
+) -> PaginatedResponse[RoleAssignmentResponse]:
+    """List paginated role assignments with filtering and sorting."""
+    return await service.list_assignments(params)
+
+
+@router.get("/assignments/{assignment_id}", response_model=RoleAssignmentResponse)
+async def get_assignment(
+    assignment_id: uuid.UUID,
+    _: UserResponse = Depends(get_current_user),
+    service: RbacService = Depends(get_rbac_service),
+) -> RoleAssignmentResponse:
+    """Get specific role assignment details by assignment ID."""
+    return await service.get_assignment(assignment_id)
 
 
 @router.post("/assignments", response_model=MessageResponse)

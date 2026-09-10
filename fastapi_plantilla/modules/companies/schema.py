@@ -1,10 +1,8 @@
 import uuid
-from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from fastapi_plantilla.core.crud.schema import PaginationParams
-from fastapi_plantilla.core.mixins import RecordStatus
+from fastapi_plantilla.core.crud.schema import AuditFieldsSchema, PaginationParams
 
 __all__ = [
     "CompaniesPaginationParams",
@@ -25,7 +23,7 @@ class CompanyOwnerResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class CompanyResponse(BaseModel):
+class CompanyResponse(AuditFieldsSchema):
     """Detailed response schema for a company."""
 
     id: uuid.UUID
@@ -36,18 +34,6 @@ class CompanyResponse(BaseModel):
     description: str | None = None
     owner_id: uuid.UUID | None = None
     owner: CompanyOwnerResponse | None = None
-    status: RecordStatus = RecordStatus.ACTIVE
-    created_at: datetime
-    updated_at: datetime
-    deleted_at: datetime | None = None
-    restored_at: datetime | None = None
-    created_by: str | None = None
-    updated_by: str | None = None
-    deleted_by: str | None = None
-    restored_by: str | None = None
-    version: int = 1
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class CompanyCreate(BaseModel):

@@ -30,7 +30,7 @@ services:
       FASTAPI_PLANTILLA_DB_PASS: fastapi_plantilla
       FASTAPI_PLANTILLA_DB_BASE: fastapi_plantilla
       FASTAPI_PLANTILLA_SMTP_HOST: fastapi_plantilla-mailpit
-      FASTAPI_PLANTILLA_STORAGE_S3_ENDPOINT_URL: http://fastapi_plantilla-minio:9000
+      FASTAPI_PLANTILLA_STORAGE_S3_ENDPOINT_URL: http://minio:9000
     volumes:
       - .:/app/src/
 

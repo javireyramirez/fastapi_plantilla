@@ -57,6 +57,16 @@ async def _handle_trash_sync(
         )
         deleted_by = str(user_id) if user_id else getattr(item, "deleted_by", None)
 
+        target_entity_type: str | None = None
+        target_entity_id: uuid.UUID | None = None
+        if entity_type in ("document", "documents"):
+            tet = getattr(item, "entity_type", None)
+            tei = getattr(item, "entity_id", None)
+            if isinstance(tet, str) and tet:
+                target_entity_type = tet
+            if isinstance(tei, uuid.UUID):
+                target_entity_id = tei
+
         await service.record_trash(
             entity_type=entity_type,
             entity_id=entity_id,
@@ -64,6 +74,8 @@ async def _handle_trash_sync(
             owner_id=owner_id,
             deleted_by=deleted_by,
             details=str(details) if details else None,
+            target_entity_type=target_entity_type,
+            target_entity_id=target_entity_id,
         )
     else:
         await repo.delete_by_entity(entity_type, entity_id)

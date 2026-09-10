@@ -314,11 +314,14 @@ class UserAdminService(BaseAuditService[User]):
         *where: Any,
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> Any:
         """Soft-delete user into trash and invalidate active sessions."""
         user = await self._get_user_or_404(id)
         self._check_not_system(user, "deleted")
-        item = await super().delete(id, *where, user_id=user_id, scope=scope)
+        item = await super().delete(
+            id, *where, user_id=user_id, scope=scope, options=options
+        )
         return await self.serialize_user(item)
 
     async def delete_user(
@@ -343,29 +346,99 @@ class UserAdminService(BaseAuditService[User]):
         )
         return await self.serialize_user(deleted, roles=[])
 
-    async def suspend_user(self, user_id: uuid.UUID) -> None:
+    async def suspend_user(
+        self,
+        user_id: uuid.UUID,
+        user_id_actor: str | uuid.UUID | None = None,
+        options: WriteOptions | None = None,
+    ) -> None:
         """Suspend user and immediately invalidate all their active sessions."""
         user = await self._get_user_or_404(user_id)
         self._check_not_system(user, "suspended")
+        old_active = user.is_active
         user.is_active = False
         await self.repository.invalidate_user_sessions(user.id)
         await self.repository.session.flush()
 
-    async def reactivate_user(self, user_id: uuid.UUID) -> None:
+        effective_actor = (options.user_id if options else None) or user_id_actor
+        await self._emit_audit(
+            item=user,
+            action="SUSPEND",
+            options=options,
+            user_id=effective_actor,
+            changes={"is_active": {"old": old_active, "new": False}},
+            details=f"User {user.email} suspended and active sessions invalidated",
+        )
+
+    async def reactivate_user(
+        self,
+        user_id: uuid.UUID,
+        user_id_actor: str | uuid.UUID | None = None,
+        options: WriteOptions | None = None,
+    ) -> None:
         """Reactivate suspended user account."""
         user = await self._get_user_or_404(user_id)
+        old_active = user.is_active
         user.is_active = True
         await self.repository.session.flush()
 
-    async def bulk_suspend(self, user_ids: list[uuid.UUID]) -> BulkResponse:
+        effective_actor = (options.user_id if options else None) or user_id_actor
+        await self._emit_audit(
+            item=user,
+            action="REACTIVATE",
+            options=options,
+            user_id=effective_actor,
+            changes={"is_active": {"old": old_active, "new": True}},
+            details=f"User {user.email} reactivated",
+        )
+
+    async def bulk_suspend(
+        self,
+        user_ids: list[uuid.UUID],
+        user_id_actor: str | uuid.UUID | None = None,
+        options: WriteOptions | None = None,
+    ) -> BulkResponse:
         """Suspend multiple users in bulk and terminate their active sessions."""
+        users = await self.repository.find_many(User.id.in_(user_ids))
+        user_map = {u.id: u for u in users}
         count = await self.repository.bulk_set_active_status(user_ids, is_active=False)
         await self.repository.invalidate_bulk_sessions(user_ids)
+        effective_actor = (options.user_id if options else None) or user_id_actor
+        for uid in user_ids:
+            u = user_map.get(uid)
+            await self._emit_audit(
+                item=u,
+                action="SUSPEND",
+                options=options,
+                user_id=effective_actor,
+                entity_id=uid,
+                changes={"is_active": {"old": True, "new": False}},
+                details="User account suspended via bulk action",
+            )
         return BulkResponse(count=count, message=f"Suspended {count} users")
 
-    async def bulk_reactivate(self, user_ids: list[uuid.UUID]) -> BulkResponse:
+    async def bulk_reactivate(
+        self,
+        user_ids: list[uuid.UUID],
+        user_id_actor: str | uuid.UUID | None = None,
+        options: WriteOptions | None = None,
+    ) -> BulkResponse:
         """Reactivate multiple users in bulk."""
+        users = await self.repository.find_many(User.id.in_(user_ids))
+        user_map = {u.id: u for u in users}
         count = await self.repository.bulk_set_active_status(user_ids, is_active=True)
+        effective_actor = (options.user_id if options else None) or user_id_actor
+        for uid in user_ids:
+            u = user_map.get(uid)
+            await self._emit_audit(
+                item=u,
+                action="REACTIVATE",
+                options=options,
+                user_id=effective_actor,
+                entity_id=uid,
+                changes={"is_active": {"old": False, "new": True}},
+                details="User account reactivated via bulk action",
+            )
         return BulkResponse(count=count, message=f"Reactivated {count} users")
 
     async def assign_roles(

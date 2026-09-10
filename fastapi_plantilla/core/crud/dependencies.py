@@ -28,6 +28,8 @@ async def get_write_options(
     user_agent = request.headers.get("user-agent")
     return WriteOptions(
         user_id=current_user.id,
+        actor_name=current_user.name,
+        actor_email=current_user.email,
         scope=scope,
         user_agent=user_agent,
         ip_address=ip_address,

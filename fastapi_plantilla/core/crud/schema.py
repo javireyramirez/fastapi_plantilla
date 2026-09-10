@@ -157,6 +157,17 @@ class ExportRequest(BaseModel):
     is_trash: bool = False
 
 
+class UserReference(BaseModel):
+    """Safe public representation of an associated user or owner."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID | None = None
+    name: str | None = None
+    email: str | None = None
+    image: str | None = None
+
+
 class AuditFieldsSchema(BaseModel):
     """Base schema providing audit timestamps, actor references, and record status."""
 
@@ -171,18 +182,15 @@ class AuditFieldsSchema(BaseModel):
     updated_by: str | None = None
     deleted_by: str | None = None
     restored_by: str | None = None
+    created_by_name: str | None = None
+    updated_by_name: str | None = None
+    deleted_by_name: str | None = None
+    restored_by_name: str | None = None
+    creator: UserReference | None = None
+    updater: UserReference | None = None
+    deletor: UserReference | None = None
+    restorer: UserReference | None = None
     version: int = Field(default=1, ge=1)
-
-
-class UserReference(BaseModel):
-    """Safe public representation of an associated user or owner."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    name: str
-    email: str
-    image: str | None = None
 
 
 class MessageResponse(BaseModel):
@@ -206,6 +214,8 @@ class WriteOptions(BaseModel):
     """Execution options passed to repository and service write operations."""
 
     user_id: str | uuid.UUID | None = None
+    actor_name: str | None = None
+    actor_email: str | None = None
     scope: ScopeContext | None = None
     ip_address: str | None = None
     user_agent: str | None = None
@@ -227,6 +237,7 @@ class AuditEntry(BaseModel):
 
     entity_type: str
     entity_id: uuid.UUID | None = None
+    entity_name: str | None = None
     action: str
     actor_id: uuid.UUID | None = None
     actor_name: str | None = None

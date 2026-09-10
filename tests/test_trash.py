@@ -537,3 +537,136 @@ async def test_periodic_trash_purge_task(
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.anyio
+async def test_trash_deletor_info_populated(
+    client: AsyncClient,
+    auth_state: AuthContextState,
+) -> None:
+    """Verify trash items return deletor user name, email, and deletor object."""
+    entity_id = uuid.uuid4()
+    upload_res = await client.post(
+        "/api/storage/documents/upload",
+        files={"file": ("deletor_test.pdf", io.BytesIO(b"content"), "application/pdf")},
+        data={"entity_type": "invoice", "entity_id": str(entity_id)},
+    )
+    doc_id = upload_res.json()["id"]
+
+    # Soft delete the document as the current admin user
+    del_res = await client.delete(f"/api/storage/documents/{doc_id}")
+    assert del_res.status_code == 200
+
+    # List trash items and find the deleted document
+    list_res = await client.get("/api/trash?q=deletor_test")
+    assert list_res.status_code == 200
+    items = list_res.json()["data"]
+    assert len(items) == 1
+    item = items[0]
+
+    expected_name = auth_state.user.name
+    expected_email = auth_state.user.email
+    assert item["deleted_by"] == str(auth_state.user.id)
+    assert item["deleted_by_name"] == expected_name
+    assert item["deleted_by_email"] == expected_email
+    assert item["deletor"] == {"name": expected_name, "email": expected_email}
+
+    # Verify single item endpoint returns the exact same deletor fields
+    get_res = await client.get(f"/api/trash/{item['id']}")
+    assert get_res.status_code == 200
+    single = get_res.json()
+    assert single["deleted_by_name"] == expected_name
+    assert single["deleted_by_email"] == expected_email
+    assert single["deletor"] == {"name": expected_name, "email": expected_email}
+
+
+@pytest.mark.anyio
+async def test_trash_expires_at_filters(
+    client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify filtering trash items by expires_at_from and expires_at_to."""
+    trash_repo = TrashRepository(dbsession)
+    now = datetime.now(UTC)
+
+    # Item expiring in 3 days
+    item_3d = await trash_repo.create(
+        {
+            "entity_type": "invoice",
+            "entity_id": uuid.uuid4(),
+            "name": "expire_3d.pdf",
+            "expires_at": now + timedelta(days=3),
+        }
+    )
+
+    # Item expiring in 10 days
+    item_10d = await trash_repo.create(
+        {
+            "entity_type": "invoice",
+            "entity_id": uuid.uuid4(),
+            "name": "expire_10d.pdf",
+            "expires_at": now + timedelta(days=10),
+        }
+    )
+
+    # Filter with epoch milliseconds (like frontend: +2 days to +5 days)
+    ts_from_ms = int((now + timedelta(days=2)).timestamp() * 1000)
+    ts_to_ms = int((now + timedelta(days=5)).timestamp() * 1000)
+    res_ms = await client.get(
+        "/api/trash",
+        params={"expires_at_from": str(ts_from_ms), "expires_at_to": str(ts_to_ms)},
+    )
+    assert res_ms.status_code == 200
+    ids_ms = [i["id"] for i in res_ms.json()["data"]]
+    assert str(item_3d.id) in ids_ms
+    assert str(item_10d.id) not in ids_ms
+
+    # Filter with ISO date strings (+8 days to +12 days)
+    iso_from = (now + timedelta(days=8)).isoformat()
+    iso_to = (now + timedelta(days=12)).isoformat()
+    res_iso = await client.get(
+        "/api/trash",
+        params={"expires_at_from": iso_from, "expires_at_to": iso_to},
+    )
+    assert res_iso.status_code == 200
+    ids_iso = [i["id"] for i in res_iso.json()["data"]]
+    assert str(item_10d.id) in ids_iso
+    assert str(item_3d.id) not in ids_iso
+
+
+@pytest.mark.anyio
+async def test_trash_purge_emits_audit(
+    client: AsyncClient,
+    dbsession: AsyncSession,
+    auth_state: AuthContextState,
+    test_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify purging trash items records PERMANENT_DELETE audit log."""
+    from fastapi_plantilla.modules.audit.repository import AuditRepository
+
+    test_user = test_users[0]
+    auth_state.user = test_user
+    trash_repo = TrashRepository(dbsession)
+    entity_id = uuid.uuid4()
+    item = await trash_repo.create(
+        {
+            "entity_type": "company",
+            "entity_id": entity_id,
+            "name": "Acme Purged Corp",
+            "expires_at": datetime.now(UTC) + timedelta(days=30),
+        }
+    )
+
+    purge_res = await client.delete(f"/api/trash/{item.id}/purge")
+    assert purge_res.status_code == 204
+
+    audit_repo = AuditRepository(dbsession)
+    logs = await audit_repo.get_entity_history("company", entity_id)
+    assert len(logs) >= 1
+    purge_log = next(
+        (entry for entry in logs if entry.action == "PERMANENT_DELETE"), None
+    )
+    assert purge_log is not None
+    assert purge_log.actor_id == test_user.id
+    assert purge_log.details is not None
+    assert "Acme Purged Corp" in purge_log.details

@@ -3,20 +3,31 @@ from typing import Any
 
 from fastapi import Depends, HTTPException, status
 
-from fastapi_plantilla.core.crud.schema import ScopeType
+from fastapi_plantilla.core.crud.schema import (
+    PaginatedResponse,
+    PaginationMeta,
+    ScopeType,
+)
 from fastapi_plantilla.core.crud.service_audit import BaseAuditService
-from fastapi_plantilla.modules.rbac.models import Role
+from fastapi_plantilla.modules.auth.models import User
+from fastapi_plantilla.modules.rbac.models import Role, RoleAssignment
 from fastapi_plantilla.modules.rbac.repository import RbacRepository
 from fastapi_plantilla.modules.rbac.schema import (
+    AssignedRoleBasic,
+    AssignedTeamBasic,
+    AssignedUserBasic,
     ModuleCreate,
     ModuleResponse,
     RbacActions,
+    RoleAssignmentQueryParams,
+    RoleAssignmentResponse,
     RoleCreate,
     RolePermissionItem,
     RoleResponse,
     RoleUpdate,
     UserPermissionsMatrixResponse,
 )
+from fastapi_plantilla.modules.teams.models import Team
 
 __all__ = ["SCOPE_PRIORITY", "RbacService"]
 
@@ -164,6 +175,78 @@ class RbacService(BaseAuditService[Role]):
     ) -> None:
         """Remove role assignment from user or team."""
         await self.repository.unassign_role(role_id, entity_type, entity_id)
+
+    def _serialize_assignment_row(
+        self, row: tuple[RoleAssignment, Role, User | None, Team | None]
+    ) -> RoleAssignmentResponse:
+        assignment, role, user, team = row
+        is_user = assignment.entity_type.upper() == "USER"
+        is_team = assignment.entity_type.upper() == "TEAM"
+
+        user_basic = None
+        if is_user and user:
+            user_basic = AssignedUserBasic(id=user.id, name=user.name, email=user.email)
+
+        team_basic = None
+        if is_team and team:
+            team_basic = AssignedTeamBasic(id=team.id, name=team.name, slug=team.slug)
+
+        role_basic = AssignedRoleBasic(id=role.id, name=role.name, slug=role.slug)
+
+        return RoleAssignmentResponse(
+            id=assignment.id,
+            role_id=assignment.role_id,
+            roleId=assignment.role_id,
+            entity_type=assignment.entity_type.lower(),
+            entityType=assignment.entity_type.lower(),
+            entity_id=assignment.entity_id,
+            entityId=assignment.entity_id,
+            created_at=assignment.created_at,
+            assigned_at=assignment.created_at,
+            assignedAt=assignment.created_at,
+            user_id=assignment.entity_id if is_user else None,
+            userId=assignment.entity_id if is_user else None,
+            team_id=assignment.entity_id if is_team else None,
+            teamId=assignment.entity_id if is_team else None,
+            role=role_basic,
+            user=user_basic,
+            assigned_user=user_basic,
+            assignedUser=user_basic,
+            team=team_basic,
+            assigned_team=team_basic,
+            assignedTeam=team_basic,
+        )
+
+    async def list_assignments(
+        self, params: RoleAssignmentQueryParams
+    ) -> PaginatedResponse[RoleAssignmentResponse]:
+        """List paginated role assignments filtered by role, user, or team."""
+        if params.role_id:
+            await self._get_role_or_404(params.role_id, load_permissions=False)
+
+        rows, total = await self.repository.list_assignments(params)
+        data = [self._serialize_assignment_row(row) for row in rows]
+        return PaginatedResponse(
+            data=data,
+            meta=PaginationMeta.create(
+                page=params.page, limit=params.limit, total=total
+            ),
+        )
+
+    async def get_assignment(
+        self, assignment_id: uuid.UUID, role_id: uuid.UUID | None = None
+    ) -> RoleAssignmentResponse:
+        """Get single role assignment by ID with role, user, and team details."""
+        if role_id:
+            await self._get_role_or_404(role_id, load_permissions=False)
+
+        row = await self.repository.get_assignment_by_id(assignment_id, role_id)
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Role assignment not found",
+            )
+        return self._serialize_assignment_row(row)
 
     async def resolve_user_permission(
         self,

@@ -2,7 +2,7 @@ import uuid
 from typing import Any
 
 from fastapi import Depends
-from sqlalchemy import delete, or_, select
+from sqlalchemy import and_, asc, delete, desc, func, or_, select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -10,13 +10,15 @@ from sqlalchemy.orm import selectinload
 from fastapi_plantilla.core.crud.repository import BaseRepository
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import RecordStatus
+from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.rbac.models import (
     Role,
     RoleAssignment,
     RolePermission,
     SystemModule,
 )
-from fastapi_plantilla.modules.teams.models import TeamUser
+from fastapi_plantilla.modules.rbac.schema import RoleAssignmentQueryParams
+from fastapi_plantilla.modules.teams.models import Team, TeamUser
 
 __all__ = ["RbacRepository"]
 
@@ -173,11 +175,120 @@ class RbacRepository(BaseRepository[Role]):
     ) -> list[RoleAssignment]:
         """Fetch all role assignments for a specific entity."""
         stmt = select(RoleAssignment).where(
-            RoleAssignment.entity_type == entity_type.upper(),
+            func.upper(RoleAssignment.entity_type) == entity_type.strip().upper(),
             RoleAssignment.entity_id == entity_id,
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    def _build_assignment_conditions(
+        self, params: RoleAssignmentQueryParams
+    ) -> list[Any]:
+        """Construct SQL filter clauses for role assignment queries."""
+        conditions: list[Any] = []
+        if params.role_id:
+            conditions.append(RoleAssignment.role_id == params.role_id)
+        if params.user_id:
+            conditions.append(
+                (func.upper(RoleAssignment.entity_type) == "USER")
+                & (RoleAssignment.entity_id == params.user_id)
+            )
+        if params.team_id:
+            conditions.append(
+                (func.upper(RoleAssignment.entity_type) == "TEAM")
+                & (RoleAssignment.entity_id == params.team_id)
+            )
+        if params.entity_type:
+            conditions.append(
+                func.upper(RoleAssignment.entity_type)
+                == params.entity_type.strip().upper()
+            )
+        if params.assigned_from:
+            conditions.append(RoleAssignment.created_at >= params.assigned_from)
+        if params.assigned_to:
+            conditions.append(RoleAssignment.created_at <= params.assigned_to)
+        return conditions
+
+    def _resolve_assignment_sort(self, sort_by: str, sort_order: str) -> Any:
+        """Resolve order_by clause for role assignment queries."""
+        sort_field: Any = RoleAssignment.created_at
+        sort_by_lower = sort_by.lower()
+        if sort_by_lower in ("roleid", "role_id"):
+            sort_field = RoleAssignment.role_id
+        elif sort_by_lower in ("entitytype", "entity_type"):
+            sort_field = RoleAssignment.entity_type
+
+        return asc(sort_field) if sort_order.lower() == "asc" else desc(sort_field)
+
+    async def list_assignments(
+        self, params: RoleAssignmentQueryParams
+    ) -> tuple[list[tuple[RoleAssignment, Role, User | None, Team | None]], int]:
+        """Fetch paginated role assignments with joined role, user, and team models."""
+        stmt = (
+            select(RoleAssignment, Role, User, Team)
+            .join(Role, Role.id == RoleAssignment.role_id)
+            .outerjoin(
+                User,
+                and_(
+                    func.upper(RoleAssignment.entity_type) == "USER",
+                    RoleAssignment.entity_id == User.id,
+                ),
+            )
+            .outerjoin(
+                Team,
+                and_(
+                    func.upper(RoleAssignment.entity_type) == "TEAM",
+                    RoleAssignment.entity_id == Team.id,
+                ),
+            )
+        )
+        count_stmt = select(func.count(RoleAssignment.id))
+        conditions = self._build_assignment_conditions(params)
+
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+            count_stmt = count_stmt.where(and_(*conditions))
+
+        total = (await self.session.scalar(count_stmt)) or 0
+        order_expr = self._resolve_assignment_sort(params.sort_by, params.sort_order)
+        stmt = (
+            stmt.order_by(order_expr)
+            .offset((params.page - 1) * params.limit)
+            .limit(params.limit)
+        )
+
+        res = await self.session.execute(stmt)
+        rows = list(res.all())
+        return rows, total  # type: ignore[return-value]
+
+    async def get_assignment_by_id(
+        self, assignment_id: uuid.UUID, role_id: uuid.UUID | None = None
+    ) -> tuple[RoleAssignment, Role, User | None, Team | None] | None:
+        """Fetch a single role assignment by ID with joined role, user, and team."""
+        stmt = (
+            select(RoleAssignment, Role, User, Team)
+            .join(Role, Role.id == RoleAssignment.role_id)
+            .outerjoin(
+                User,
+                and_(
+                    func.upper(RoleAssignment.entity_type) == "USER",
+                    RoleAssignment.entity_id == User.id,
+                ),
+            )
+            .outerjoin(
+                Team,
+                and_(
+                    func.upper(RoleAssignment.entity_type) == "TEAM",
+                    RoleAssignment.entity_id == Team.id,
+                ),
+            )
+            .where(RoleAssignment.id == assignment_id)
+        )
+        if role_id is not None:
+            stmt = stmt.where(RoleAssignment.role_id == role_id)
+
+        res = await self.session.execute(stmt)
+        return res.first()  # type: ignore[return-value]
 
     # ==========================================
     # 5. Effective User Permissions Resolution

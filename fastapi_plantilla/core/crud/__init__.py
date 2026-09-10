@@ -1,3 +1,4 @@
+from fastapi_plantilla.core.crud.actors import enrich_actors
 from fastapi_plantilla.core.crud.dependencies import (
     get_scope_context,
     get_write_options,
@@ -56,6 +57,7 @@ __all__ = [
     "UserReference",
     "WriteOptions",
     "create_crud_router",
+    "enrich_actors",
     "get_scope_context",
     "get_write_options",
 ]

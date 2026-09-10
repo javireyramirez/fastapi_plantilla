@@ -161,7 +161,7 @@ async def test_create_and_get_company(
     companies_client: tuple[AsyncClient, CompaniesAuthContext],
 ) -> None:
     """Verify company creation, NIF uniqueness, and retrieval by ID."""
-    client, _ = companies_client
+    client, context = companies_client
 
     nif = f"B{uuid.uuid4().hex[:7].upper()}"
     create_res = await client.post(
@@ -197,8 +197,14 @@ async def test_create_and_get_company(
     # 2. Get by ID
     get_res = await client.get(f"/api/companies/{company_id}")
     assert get_res.status_code == status.HTTP_200_OK
-    assert get_res.json()["id"] == company_id
-    assert get_res.json()["name"] == "Acme Corporation"
+    get_data = get_res.json()
+    assert get_data["id"] == company_id
+    assert get_data["name"] == "Acme Corporation"
+    assert get_data["created_by"] == str(context.user.id)
+    assert get_data["created_by_name"] == context.user.name
+    assert get_data["creator"]["id"] == str(context.user.id)
+    assert get_data["creator"]["name"] == context.user.name
+    assert get_data["creator"]["email"] == context.user.email
 
 
 @pytest.mark.anyio
@@ -206,7 +212,7 @@ async def test_update_company_and_optimistic_locking(
     companies_client: tuple[AsyncClient, CompaniesAuthContext],
 ) -> None:
     """Verify company updating, NIF uniqueness on update, and version increments."""
-    client, _ = companies_client
+    client, context = companies_client
 
     nif1 = f"A{uuid.uuid4().hex[:7].upper()}"
     nif2 = f"B{uuid.uuid4().hex[:7].upper()}"
@@ -226,8 +232,12 @@ async def test_update_company_and_optimistic_locking(
         json={"name": "Company One Renamed", "version": 1},
     )
     assert patch_res.status_code == status.HTTP_200_OK
-    assert patch_res.json()["name"] == "Company One Renamed"
-    assert patch_res.json()["version"] == 2
+    patch_data = patch_res.json()
+    assert patch_data["name"] == "Company One Renamed"
+    assert patch_data["version"] == 2
+    assert patch_data["updated_by"] == str(context.user.id)
+    assert patch_data["updated_by_name"] == context.user.name
+    assert patch_data["updater"]["name"] == context.user.name
 
     # 2. Attempt to update c1's NIF to c2's NIF -> Conflict
     conflict_res = await client.patch(

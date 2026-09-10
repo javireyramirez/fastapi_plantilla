@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    Index,
     String,
     Text,
     UniqueConstraint,
@@ -36,6 +37,13 @@ class TrashItem(
     __tablename__ = "sys_trash_bin"
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_entity_type: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, index=True
+    )
+    target_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, nullable=True, index=True
+    )
+    target_entity_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     owner_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         ForeignKey("auth_users.id", ondelete="SET NULL"),
@@ -64,4 +72,9 @@ class TrashItem(
 
     __table_args__ = (
         UniqueConstraint("entity_type", "entity_id", name="uq_sys_trash_bin_entity"),
+        Index(
+            "ix_sys_trash_bin_target_entity",
+            "target_entity_type",
+            "target_entity_id",
+        ),
     )

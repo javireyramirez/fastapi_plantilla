@@ -1,7 +1,7 @@
 import uuid
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from fastapi_plantilla.core.crud.schema import AuditFieldsSchema, PaginationParams
 
@@ -20,11 +20,36 @@ __all__ = [
 class PresignedUploadRequest(BaseModel):
     """Payload for requesting a presigned direct-upload URL."""
 
-    entity_type: str = Field(..., min_length=1, max_length=50)
-    entity_id: uuid.UUID
-    name: str = Field(..., min_length=1, max_length=255)
-    content_type: str | None = Field(default=None, max_length=100)
-    size_bytes: int | None = Field(default=None, ge=0)
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    entity_type: str = Field(
+        ...,
+        min_length=1,
+        max_length=50,
+        validation_alias=AliasChoices("entity_type", "entityType"),
+    )
+    entity_id: uuid.UUID = Field(
+        ...,
+        validation_alias=AliasChoices("entity_id", "entityId"),
+    )
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        validation_alias=AliasChoices("name", "filename", "fileName"),
+    )
+    content_type: str | None = Field(
+        default=None,
+        max_length=100,
+        validation_alias=AliasChoices("content_type", "contentType", "mimeType"),
+    )
+    size_bytes: int | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices(
+            "size_bytes", "sizeBytes", "file_size", "fileSize", "size"
+        ),
+    )
     description: str | None = Field(default=None, max_length=1000)
 
 
@@ -41,8 +66,20 @@ class PresignedUploadResponse(BaseModel):
 class ConfirmUploadRequest(BaseModel):
     """Optional payload when confirming a completed direct upload."""
 
-    size_bytes: int | None = Field(default=None, ge=0)
-    content_type: str | None = Field(default=None, max_length=100)
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    size_bytes: int | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices(
+            "size_bytes", "sizeBytes", "file_size", "fileSize", "size"
+        ),
+    )
+    content_type: str | None = Field(
+        default=None,
+        max_length=100,
+        validation_alias=AliasChoices("content_type", "contentType", "mimeType"),
+    )
 
 
 class PresignedDownloadResponse(BaseModel):

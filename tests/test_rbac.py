@@ -394,3 +394,92 @@ async def test_sync_system_modules_idempotency_and_api(
     assert res.status_code == status.HTTP_200_OK
     modules_data = res.json()
     assert any(m["code"] == "users" for m in modules_data)
+
+
+@pytest.mark.anyio
+async def test_list_role_assignments_api(
+    rbac_client: AsyncClient,
+    rbac_auth: RbacAuthContext,
+    rbac_test_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify listing role assignments with metadata and sorting."""
+    admin, regular = rbac_test_users
+
+    # 1. Create a role as admin
+    rbac_auth.user = admin
+    role_res = await rbac_client.post(
+        "/api/rbac/roles",
+        json={
+            "name": "Assignment Inspector",
+            "slug": f"assignment_inspector_{uuid.uuid4().hex[:6]}",
+            "permissions": [],
+        },
+    )
+    assert role_res.status_code == status.HTTP_201_CREATED
+    role_id = role_res.json()["id"]
+
+    # 2. Assign role to regular user
+    assign_res = await rbac_client.post(
+        "/api/rbac/assignments",
+        json={"role_id": role_id, "entity_type": "USER", "entity_id": str(regular.id)},
+    )
+    assert assign_res.status_code == status.HTTP_200_OK
+
+    # 3. Query GET /api/rbac/assignments with Fastify-style camelCase query params
+    res = await rbac_client.get(
+        f"/api/rbac/assignments?page=1&limit=10&sortBy=assignedAt&sortOrder=desc&role_id={role_id}"
+    )
+    assert res.status_code == status.HTTP_200_OK
+    data = res.json()
+    assert "data" in data
+    assert "meta" in data
+    assert data["meta"]["page"] == 1
+    assert data["meta"]["limit"] == 10
+    assert data["meta"]["total"] == 1
+
+    assignment_item = data["data"][0]
+    assignment_id = assignment_item["id"]
+    assert assignment_item["role_id"] == role_id
+    assert assignment_item["roleId"] == role_id
+    assert assignment_item["entity_type"] == "user"
+    assert assignment_item["entityType"] == "user"
+    assert assignment_item["entity_id"] == str(regular.id)
+    assert assignment_item["entityId"] == str(regular.id)
+    assert assignment_item["role"]["name"] == "Assignment Inspector"
+    assert assignment_item["user"]["email"] == regular.email
+    assert assignment_item["assigned_user"]["id"] == str(regular.id)
+    assert assignment_item["assignedUser"]["id"] == str(regular.id)
+
+    # 4. Query sub-resource GET /api/rbac/roles/{role_id}/assignments
+    sub_res = await rbac_client.get(f"/api/rbac/roles/{role_id}/assignments")
+    assert sub_res.status_code == status.HTTP_200_OK
+    sub_data = sub_res.json()
+    assert sub_data["meta"]["total"] == 1
+    assert sub_data["data"][0]["id"] == assignment_id
+
+    # 5. Detail GET /api/rbac/assignments/{assignment_id}
+    detail_res = await rbac_client.get(f"/api/rbac/assignments/{assignment_id}")
+    assert detail_res.status_code == status.HTTP_200_OK
+    detail_data = detail_res.json()
+    assert detail_data["id"] == assignment_id
+    assert detail_data["role"]["id"] == role_id
+    assert detail_data["user"]["id"] == str(regular.id)
+
+    # 6. Sub-resource detail GET /api/rbac/roles/{role_id}/assignments/{assignment_id}
+    sub_detail_res = await rbac_client.get(
+        f"/api/rbac/roles/{role_id}/assignments/{assignment_id}"
+    )
+    assert sub_detail_res.status_code == status.HTTP_200_OK
+    assert sub_detail_res.json()["id"] == assignment_id
+
+    # 7. Non-existent role returns 404
+    non_existent_role_id = uuid.uuid4()
+    not_found_res = await rbac_client.get(
+        f"/api/rbac/assignments?role_id={non_existent_role_id}"
+    )
+    assert not_found_res.status_code == status.HTTP_404_NOT_FOUND
+
+    # 8. Non-existent assignment returns 404
+    fake_assign_id = uuid.uuid4()
+    assign_404 = await rbac_client.get(f"/api/rbac/assignments/{fake_assign_id}")
+    assert assign_404.status_code == status.HTTP_404_NOT_FOUND

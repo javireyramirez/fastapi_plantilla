@@ -447,3 +447,210 @@ async def test_audit_query_singular_plural_normalization(
         data_history = res_history.json()
         assert len(data_history) == 1
         assert data_history[0]["entity_type"] == "user"
+
+
+@pytest.mark.anyio
+async def test_audit_actor_enrichment(
+    test_app: FastAPI,
+    dbsession: AsyncSession,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify audit endpoints enrich actor details with user name, email, and user."""
+    admin, normal_user = audit_users
+    test_app.dependency_overrides[get_current_active_superuser] = lambda: admin
+
+    repo = AuditRepository(dbsession)
+    entity_id = generate_uuid7()
+
+    # Record an entry where actor_id is normal_user.id but actor_name/email were omitted
+    created_log = await repo.record_entry(
+        AuditEntry(
+            entity_type="document",
+            entity_id=entity_id,
+            action="CREATE",
+            actor_id=normal_user.id,
+            details="Uploaded document",
+        )
+    )
+    await dbsession.commit()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://test"
+    ) as client:
+        # 1. Query paginated logs list
+        list_res = await client.get(f"/api/audit?entity_id={entity_id}")
+        assert list_res.status_code == 200
+        data = list_res.json()["data"]
+        assert len(data) == 1
+        item = data[0]
+
+        assert item["actor_id"] == str(normal_user.id)
+        assert item["actor_name"] == normal_user.name
+        assert item["actor_email"] == normal_user.email
+        assert item["user"] is not None
+        assert item["user"]["id"] == str(normal_user.id)
+        assert item["user"]["name"] == normal_user.name
+        assert item["user"]["email"] == normal_user.email
+
+        # 2. Query single log by ID
+        get_res = await client.get(f"/api/audit/{created_log.id}")
+        assert get_res.status_code == 200
+        single = get_res.json()
+        assert single["actor_name"] == normal_user.name
+        assert single["actor_email"] == normal_user.email
+        assert single["user"]["name"] == normal_user.name
+
+        # 3. Query entity history
+        history_res = await client.get(f"/api/audit/entity/document/{entity_id}")
+        assert history_res.status_code == 200
+        history = history_res.json()
+        assert len(history) == 1
+        assert history[0]["actor_name"] == normal_user.name
+        assert history[0]["user"]["email"] == normal_user.email
+
+
+@pytest.mark.anyio
+async def test_audit_permanent_delete_and_user_status(
+    dbsession: AsyncSession,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify permanent deletion, trash purge, suspend and reactivate in audit."""
+    admin, normal_user = audit_users
+    audit_repo = AuditRepository(dbsession)
+    options = WriteOptions(user_id=admin.id, ip_address="10.0.0.1")
+
+    # 1. Permanent delete on domain service
+    team_repo = BaseRepository(Team, dbsession)
+    team_service = BaseAuditService[Team](team_repo)
+    team_service.resource_name = "Team"
+
+    team = await team_service.create(
+        {
+            "id": generate_uuid7(),
+            "name": "Perm Team",
+            "slug": f"pt-{uuid.uuid4().hex[:6]}",
+        },
+        options=options,
+    )
+    await team_service.trash(team.id, options=options)
+    await team_service.permanent_delete(team.id, options=options)
+    await dbsession.flush()
+
+    logs = await audit_repo.get_entity_history("team", team.id)
+    perm_del_log = next((e for e in logs if e.action == "PERMANENT_DELETE"), None)
+    assert perm_del_log is not None
+    assert perm_del_log.actor_id == admin.id
+    assert perm_del_log.changes is not None
+    assert perm_del_log.changes["status"]["new"] == "PURGED"
+
+    # 2. Suspend and reactivate on user service
+    from fastapi_plantilla.modules.users.repository import UserAdminRepository
+
+    user_repo = UserAdminRepository(dbsession)
+    user_service = UserAdminService(user_repo)
+
+    test_user_id = normal_user.id
+    await user_service.suspend_user(
+        test_user_id, user_id_actor=admin.id, options=options
+    )
+    await dbsession.flush()
+
+    user_logs = await audit_repo.get_entity_history("user", test_user_id)
+    suspend_log = next((e for e in user_logs if e.action == "SUSPEND"), None)
+    assert suspend_log is not None
+    assert suspend_log.actor_id == admin.id
+    assert suspend_log.changes == {"is_active": {"old": True, "new": False}}
+
+    await user_service.reactivate_user(
+        test_user_id, user_id_actor=admin.id, options=options
+    )
+    await dbsession.flush()
+
+    user_logs_after = await audit_repo.get_entity_history("user", test_user_id)
+    reactivate_log = next(
+        (e for e in user_logs_after if e.action == "REACTIVATE"), None
+    )
+    assert reactivate_log is not None
+    assert reactivate_log.actor_id == admin.id
+    assert reactivate_log.changes == {"is_active": {"old": False, "new": True}}
+
+
+@pytest.mark.anyio
+async def test_audit_entity_name_population_and_endpoints(
+    test_app: FastAPI,
+    dbsession: AsyncSession,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify entity_name and entityName are correctly populated.
+
+    Checks audit logs and API responses.
+    """
+    admin, _ = audit_users
+    test_app.dependency_overrides[get_current_active_superuser] = lambda: admin
+
+    # 1. Create team via domain service and verify entity_name is recorded
+    team_repo = BaseRepository(Team, dbsession)
+    team_service = BaseAuditService[Team](team_repo)
+    team_service.resource_name = "Team"
+
+    options = WriteOptions(user_id=admin.id, ip_address="192.168.1.50")
+    team = await team_service.create(
+        {
+            "id": generate_uuid7(),
+            "name": "Audit Trail Team",
+            "slug": f"att-{uuid.uuid4().hex[:6]}",
+        },
+        options=options,
+    )
+    await dbsession.flush()
+
+    # 2. Query via HTTP endpoints
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://test"
+    ) as client:
+        # Check entity history endpoint
+        res = await client.get(f"/api/audit/entity/team/{team.id}")
+        assert res.status_code == 200
+        logs = res.json()
+        assert len(logs) >= 1
+        create_log = next(log for log in logs if log["action"] == "CREATE")
+        assert create_log["entity_name"] == "Audit Trail Team"
+        assert create_log["entityName"] == "Audit Trail Team"
+
+        # Check list endpoint with filter by entity_id
+        list_res = await client.get(f"/api/audit?entity_id={team.id}")
+        assert list_res.status_code == 200
+        data = list_res.json()["data"]
+        assert len(data) >= 1
+        assert data[0]["entity_name"] == "Audit Trail Team"
+        assert data[0]["entityName"] == "Audit Trail Team"
+
+        # Check single get endpoint
+        single_res = await client.get(f"/api/audit/{create_log['id']}")
+        assert single_res.status_code == 200
+        single_data = single_res.json()
+        assert single_data["entity_name"] == "Audit Trail Team"
+        assert single_data["entityName"] == "Audit Trail Team"
+
+    # 3. Test fallback enrichment for existing audit log with entity_name=None
+    audit_repo = AuditRepository(dbsession)
+    legacy_log = await audit_repo.record_entry(
+        AuditEntry(
+            entity_type="team",
+            entity_id=team.id,
+            entity_name=None,  # simulating legacy record without entity_name
+            action="UPDATE",
+            actor_id=admin.id,
+            details="Legacy update without entity_name",
+        )
+    )
+    await dbsession.flush()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://test"
+    ) as client:
+        res = await client.get(f"/api/audit/{legacy_log.id}")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["entity_name"] == "Audit Trail Team"
+        assert data["entityName"] == "Audit Trail Team"

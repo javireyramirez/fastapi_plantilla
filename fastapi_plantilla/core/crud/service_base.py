@@ -7,6 +7,7 @@ from fastapi import HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import inspect, or_
 
+from fastapi_plantilla.core.crud.actors import enrich_actors
 from fastapi_plantilla.core.crud.repository import BaseRepository
 from fastapi_plantilla.core.crud.schema import (
     DEFAULT_MAX_BULK_LIMIT,
@@ -19,6 +20,7 @@ from fastapi_plantilla.core.crud.schema import (
     PaginationParams,
     ScopeContext,
     SortOrder,
+    WriteOptions,
 )
 from fastapi_plantilla.core.database import Base
 
@@ -298,6 +300,7 @@ class BaseCRUDService[ModelT: Base]:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{self.resource_name} not found",
             )
+        await enrich_actors(self.repository.session, [item])
         return item
 
     async def find_paginated(
@@ -319,6 +322,7 @@ class BaseCRUDService[ModelT: Base]:
         items, total = await self.repository.find_many_with_count(
             *where_clauses, skip=skip, limit=params.limit, order_by=order_clause
         )
+        await enrich_actors(self.repository.session, items)
         meta = PaginationMeta.create(page=params.page, limit=params.limit, total=total)
         return PaginatedResponse(data=items, meta=meta)
 
@@ -369,6 +373,7 @@ class BaseCRUDService[ModelT: Base]:
         owner_id: uuid.UUID | None = None,
         scope: ScopeContext | None = None,
         allow_immutable: bool = False,
+        options: WriteOptions | None = None,
     ) -> ModelT:
         """Create and persist a new record."""
         payload = data.model_dump() if isinstance(data, BaseModel) else dict(data)
@@ -378,7 +383,9 @@ class BaseCRUDService[ModelT: Base]:
                 for k, v in payload.items()
                 if k not in self.IMMUTABLE_CREATE_FIELDS
             }
-        return await self.repository.create(payload)
+        item = await self.repository.create(payload)
+        await enrich_actors(self.repository.session, [item])
+        return item
 
     async def update(
         self,
@@ -389,6 +396,7 @@ class BaseCRUDService[ModelT: Base]:
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
         allow_immutable: bool = False,
+        options: WriteOptions | None = None,
     ) -> ModelT:
         """Update and persist a record with optimistic concurrency check."""
         payload = (
@@ -425,6 +433,7 @@ class BaseCRUDService[ModelT: Base]:
                         "record was modified by another transaction"
                     ),
                 )
+            await enrich_actors(self.repository.session, [item])
             return item
 
         updated = await self.repository.update(
@@ -447,6 +456,7 @@ class BaseCRUDService[ModelT: Base]:
                     "record was modified by another transaction"
                 ),
             )
+        await enrich_actors(self.repository.session, [updated])
         return updated
 
     async def delete(
@@ -455,12 +465,14 @@ class BaseCRUDService[ModelT: Base]:
         *where: Any,
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> ModelT:
         """Physically delete a record by ID or raise 404/403."""
         where_clauses = list(where) + self.build_scope_filters(scope)
         deleted = await self.repository.delete(id, *where_clauses)
         if deleted is None:
             await self._raise_not_found_or_forbidden(id)
+        await enrich_actors(self.repository.session, [deleted])
         return deleted
 
     async def bulk_create(
@@ -470,6 +482,7 @@ class BaseCRUDService[ModelT: Base]:
         owner_id: uuid.UUID | None = None,
         scope: ScopeContext | None = None,
         allow_immutable: bool = False,
+        options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Bulk create multiple records with anti-DoS size limitation."""
         if not items:

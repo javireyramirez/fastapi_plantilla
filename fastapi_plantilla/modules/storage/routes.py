@@ -161,11 +161,16 @@ async def list_documents(
     """Retrieve paginated list of documents with optional criteria filters."""
     where = []
     if params.entity_type:
-        where.append(Document.entity_type == params.entity_type)
-    if params.entity_id:
-        where.append(Document.entity_id == params.entity_id)
-    if params.is_uploaded is not None:
-        where.append(Document.is_uploaded == params.is_uploaded)
+        candidates = [params.entity_type]
+        if params.entity_type == "company":
+            candidates.append("companies")
+        elif params.entity_type == "companies":
+            candidates.append("company")
+        elif params.entity_type == "user":
+            candidates.append("users")
+        elif params.entity_type == "users":
+            candidates.append("user")
+        where.append(Document.entity_type.in_(candidates))
 
     return await service.find_paginated(params, *where, scope=scope)
 

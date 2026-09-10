@@ -339,5 +339,5 @@ class DocumentService(BaseOwnedService[Document]):
             logger.warning(f"Failed to delete storage file {document.file_key}: {err}")
 
         if document.status != RecordStatus.TRASHED:
-            await self.trash(id, user_id=user_id, scope=scope)
-        await self.permanent_delete(id, scope=scope)
+            await self.trash(id, user_id=user_id, scope=scope, options=options)
+        await self.permanent_delete(id, scope=scope, options=options)

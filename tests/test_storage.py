@@ -533,3 +533,27 @@ async def test_rbac_document_ownership_isolation(
     admin_get = await storage_client.get(f"/api/storage/documents/{user_doc_id}")
     assert admin_get.status_code == 200
     assert admin_get.json()["id"] == user_doc_id
+
+
+@pytest.mark.anyio
+async def test_presigned_upload_with_filename_aliases(
+    storage_client: AsyncClient,
+) -> None:
+    """Verify presigned upload accepts filename and file_size aliases."""
+    entity_id = str(uuid.uuid4())
+
+    req_body = {
+        "filename": "36002307_20260820-1.pdf",
+        "content_type": "application/pdf",
+        "file_size": 45937,
+        "entity_type": "companies",
+        "entity_id": entity_id,
+    }
+    res = await storage_client.post(
+        "/api/storage/documents/presigned-upload",
+        json=req_body,
+    )
+    assert res.status_code == 201
+    data = res.json()
+    assert "upload_url" in data
+    assert "document_id" in data

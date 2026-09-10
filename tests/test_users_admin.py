@@ -268,6 +268,14 @@ async def test_single_and_bulk_suspension_with_session_invalidation(
     assert bulk_re_res.status_code == status.HTTP_200_OK
     assert bulk_re_res.json()["count"] == 2
 
+    # Verify audit logs were generated for suspension and reactivation
+    from fastapi_plantilla.modules.audit.repository import AuditRepository
+
+    audit_repo = AuditRepository(dbsession)
+    target1_logs = await audit_repo.get_entity_history("user", target1.id)
+    assert any(e.action == "SUSPEND" for e in target1_logs)
+    assert any(e.action == "REACTIVATE" for e in target1_logs)
+
 
 @pytest.mark.anyio
 async def test_assign_roles_and_resend_invitation(
