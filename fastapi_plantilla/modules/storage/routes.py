@@ -172,6 +172,12 @@ async def list_documents(
     if params.content_types:
         where.append(Document.content_type.in_(params.content_types))
 
+    if params.size_min is not None:
+        where.append(Document.size_bytes >= params.size_min)
+
+    if params.size_max is not None:
+        where.append(Document.size_bytes <= params.size_max)
+
     return await service.find_paginated(params, *where, scope=scope)
 
 

@@ -135,6 +135,8 @@ class DocumentFilterParams(PaginationParams):
     is_uploaded: bool | None = None
     content_type: str | None = None
     content_types: list[str] | None = None
+    size_min: int | None = None
+    size_max: int | None = None
 
     @field_validator("content_types", mode="before")
     @classmethod

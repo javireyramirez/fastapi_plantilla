@@ -18,6 +18,7 @@ from fastapi_plantilla.core.crud.schema import (
 )
 from fastapi_plantilla.core.crud.service_owned import BaseOwnedService
 from fastapi_plantilla.core.mixins import RecordStatus, generate_uuid7
+from fastapi_plantilla.modules.settings.service import SystemSettingService
 from fastapi_plantilla.modules.storage.models import Document
 from fastapi_plantilla.modules.storage.providers import (
     PresignedUrlMethod,
@@ -61,10 +62,12 @@ class DocumentService(BaseOwnedService[Document]):
         self,
         repository: DocumentRepository,
         storage_provider: StorageProvider,
+        settings_service: SystemSettingService | None = None,
     ) -> None:
         super().__init__(repository)
         self.doc_repo = repository
         self.storage_provider = storage_provider
+        self.settings_service = settings_service
 
     async def find_paginated(
         self,
@@ -102,6 +105,80 @@ class DocumentService(BaseOwnedService[Document]):
         safe_name = sanitize_filename(filename)
         return f"documents/{entity_type}/{entity_id}/{doc_id}_{safe_name}"
 
+    async def _validate_file_size(self, size_bytes: int | None) -> None:
+        """Verify upload size does not exceed dynamic maximum limit."""
+        if size_bytes is None:
+            return
+        max_size_bytes = 52428800
+        if self.settings_service:
+            max_size_bytes = await self.settings_service.get_value(
+                "storage.max_upload_size_bytes", default=52428800
+            )
+        if size_bytes > max_size_bytes:
+            max_mb = max_size_bytes / (1024 * 1024)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File size exceeds maximum limit of {max_mb:.1f} MB",
+            )
+
+    async def _validate_file_type(
+        self,
+        extension: str | None,
+        content_type: str | None,
+    ) -> None:
+        """Verify extension and MIME type against allowed system settings."""
+        if not self.settings_service:
+            return
+
+        categories = await self.settings_service.get_value(
+            "storage.file_categories", default=None
+        )
+
+        allowed_exts = await self.settings_service.get_value(
+            "storage.allowed_extensions", default=None
+        )
+        if not allowed_exts and categories:
+            allowed_exts = [
+                ext for cat in categories for ext in cat.get("extensions", [])
+            ]
+
+        if allowed_exts and extension:
+            clean = [ext.lower().lstrip(".") for ext in allowed_exts]
+            if extension.lower() not in clean:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"File extension '.{extension}' is not permitted",
+                )
+
+        allowed_mimes = await self.settings_service.get_value(
+            "storage.allowed_mimetypes", default=None
+        )
+        if not allowed_mimes and categories:
+            allowed_mimes = [m for cat in categories for m in cat.get("mimes", [])]
+
+        if allowed_mimes and content_type:
+            is_allowed = any(
+                content_type.startswith(p[:-2] + "/")
+                if p.endswith("/*")
+                else p.lower() == content_type.lower()
+                for p in allowed_mimes
+            )
+            if not is_allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"MIME type '{content_type}' is not permitted",
+                )
+
+    async def _validate_upload_limits(
+        self,
+        size_bytes: int | None,
+        extension: str | None,
+        content_type: str | None,
+    ) -> None:
+        """Validate upload against configured system settings."""
+        await self._validate_file_size(size_bytes)
+        await self._validate_file_type(extension, content_type)
+
     async def request_presigned_upload(
         self,
         data: PresignedUploadRequest,
@@ -116,6 +193,8 @@ class DocumentService(BaseOwnedService[Document]):
             or mimetypes.guess_type(safe_name)[0]
             or "application/octet-stream"
         )
+        await self._validate_upload_limits(data.size_bytes, extension, content_type)
+
         file_key = self.build_storage_key(
             data.entity_type, data.entity_id, doc_id, safe_name
         )

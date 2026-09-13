@@ -133,6 +133,19 @@ SYSTEM_MODULES: Final[list[SystemModuleDef]] = [
         "is_active": True,
         "is_trasheable": False,
     },
+    {
+        "code": "settings",
+        "name": "Configuración",
+        "description": "Configuración dinámica del sistema y feature flags",
+        "category": "system",
+        "category_name": "Sistema",
+        "category_icon": "cpu",
+        "category_order": 4,
+        "icon": "sliders",
+        "sort_order": 8,
+        "is_active": True,
+        "is_trasheable": False,
+    },
 ]
 
 

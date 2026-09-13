@@ -5,6 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.config import StorageBackend, settings
 from fastapi_plantilla.core.database import get_db_session
+from fastapi_plantilla.modules.settings.dependencies import get_settings_service
+from fastapi_plantilla.modules.settings.service import SystemSettingService
 from fastapi_plantilla.modules.storage.providers import (
     AzureBlobStorageProvider,
     GoogleCloudStorageProvider,
@@ -63,6 +65,11 @@ def get_document_repository(
 def get_document_service(
     repository: DocumentRepository = Depends(get_document_repository),
     storage_provider: StorageProvider = Depends(get_storage_provider),
+    settings_service: SystemSettingService = Depends(get_settings_service),
 ) -> DocumentService:
     """Provide DocumentService instance."""
-    return DocumentService(repository=repository, storage_provider=storage_provider)
+    return DocumentService(
+        repository=repository,
+        storage_provider=storage_provider,
+        settings_service=settings_service,
+    )
