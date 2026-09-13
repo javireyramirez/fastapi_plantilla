@@ -94,6 +94,7 @@ class Settings(BaseSettings):
 
     # Storage - S3 / MinIO
     storage_s3_endpoint_url: str | None = None
+    storage_s3_public_endpoint_url: str | None = None
     storage_s3_access_key: str | None = None
     storage_s3_secret_key: str | None = None
     storage_s3_region: str = "us-east-1"

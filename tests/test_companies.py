@@ -285,7 +285,7 @@ async def test_list_companies_pagination_and_filters(
     assert len(search_res.json()["data"]) == 1
     assert search_res.json()["data"][0]["name"] == f"Alpha {unique_tag}"
 
-    # 2. Filter by sector
+    # 2. Filter by sector (single)
     sector_res = await client.get(f"/api/companies?search={unique_tag}&sector=Fintech")
     assert sector_res.status_code == status.HTTP_200_OK
     assert len(sector_res.json()["data"]) == 1
@@ -432,3 +432,54 @@ async def test_companies_rbac_ownership_scope_isolation(
     ids = [c["id"] for c in paginated_res.json()["data"]]
     assert user_comp_id in ids
     assert admin_comp_id not in ids
+
+
+@pytest.mark.anyio
+async def test_company_reuse_nif_when_in_trash_and_restore_conflict(
+    companies_client: tuple[AsyncClient, CompaniesAuthContext],
+    setup_companies_context: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify creating company with trashed NIF succeeds, but restore conflicts."""
+    client, context = companies_client
+    admin_user, _ = setup_companies_context
+    context.user = admin_user
+
+    test_nif = f"NIF_{uuid.uuid4().hex[:8]}"
+
+    # 1. Create first company
+    res1 = await client.post(
+        "/api/companies",
+        json={"name": "First Company", "nif": test_nif},
+    )
+    assert res1.status_code == status.HTTP_201_CREATED
+    first_id = res1.json()["id"]
+
+    # 2. Soft-delete first company
+    del_res = await client.delete(f"/api/companies/{first_id}")
+    assert del_res.status_code == status.HTTP_200_OK
+
+    # 3. Create second company with identical NIF -> Must succeed (201 Created)
+    res2 = await client.post(
+        "/api/companies",
+        json={"name": "Second Company", "nif": test_nif},
+    )
+    assert res2.status_code == status.HTTP_201_CREATED
+    second_id = res2.json()["id"]
+    assert second_id != first_id
+
+    # 4. Attempting to restore first company conflicts with active company
+    restore_conflict = await client.post(
+        f"/api/companies/{first_id}/restore",
+    )
+    assert restore_conflict.status_code == status.HTTP_409_CONFLICT
+    assert "already in use by an active company" in restore_conflict.json()["detail"]
+
+    # 5. Delete second company permanently
+    await client.delete(f"/api/companies/{second_id}")
+    await client.delete(f"/api/companies/{second_id}/permanent")
+
+    # 6. Now restoring first company succeeds
+    restore_ok = await client.post(
+        f"/api/companies/{first_id}/restore",
+    )
+    assert restore_ok.status_code == status.HTTP_200_OK

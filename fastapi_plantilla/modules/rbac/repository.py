@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from fastapi_plantilla.core.crud.repository import BaseRepository
+from fastapi_plantilla.core.crud.service_base import adjust_end_of_day
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.auth.models import User
@@ -68,6 +69,7 @@ class RbacRepository(BaseRepository[Role]):
         sort_order: int = 0,
         is_active: bool = True,
         is_trasheable: bool = True,
+        is_exportable: bool = True,
     ) -> SystemModule:
         """Create and persist a new system module."""
         module = SystemModule(
@@ -82,6 +84,7 @@ class RbacRepository(BaseRepository[Role]):
             sort_order=sort_order,
             is_active=is_active,
             is_trasheable=is_trasheable,
+            is_exportable=is_exportable,
         )
         self.session.add(module)
         await self.session.flush()
@@ -92,8 +95,12 @@ class RbacRepository(BaseRepository[Role]):
     # 2. Roles
     # ==========================================
 
-    def _role_query(self, load_permissions: bool = True) -> Any:
-        stmt = select(Role).where(Role.status != RecordStatus.TRASHED)
+    def _role_query(
+        self, load_permissions: bool = True, include_trashed: bool = False
+    ) -> Any:
+        stmt = select(Role)
+        if not include_trashed:
+            stmt = stmt.where(Role.status != RecordStatus.TRASHED)
         if load_permissions:
             stmt = stmt.options(
                 selectinload(Role.permissions).selectinload(RolePermission.module)
@@ -101,10 +108,15 @@ class RbacRepository(BaseRepository[Role]):
         return stmt
 
     async def get_role_by_id(
-        self, role_id: uuid.UUID, load_permissions: bool = True
+        self,
+        role_id: uuid.UUID,
+        load_permissions: bool = True,
+        include_trashed: bool = True,
     ) -> Role | None:
-        """Fetch active role by primary key ID."""
-        stmt = self._role_query(load_permissions).where(Role.id == role_id)
+        """Fetch role by primary key ID (including trashed for inspection)."""
+        stmt = self._role_query(
+            load_permissions=load_permissions, include_trashed=include_trashed
+        ).where(Role.id == role_id)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -116,9 +128,26 @@ class RbacRepository(BaseRepository[Role]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def list_roles(self, load_permissions: bool = False) -> list[Role]:
-        """Fetch all active roles ordered by slug."""
-        stmt = self._role_query(load_permissions).order_by(Role.slug.asc())
+    async def list_roles(
+        self,
+        search: str | None = None,
+        name: str | None = None,
+        is_system: bool | None = None,
+        load_permissions: bool = False,
+    ) -> list[Role]:
+        """Fetch active roles ordered by slug with optional search and system status."""
+        stmt = self._role_query(load_permissions)
+        search_term = search or name
+        if search_term:
+            stmt = stmt.where(
+                or_(
+                    Role.name.icontains(search_term.strip(), autoescape=True),
+                    Role.slug.icontains(search_term.strip(), autoescape=True),
+                )
+            )
+        if is_system is not None:
+            stmt = stmt.where(Role.is_system == is_system)
+        stmt = stmt.order_by(Role.slug.asc())
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -227,7 +256,8 @@ class RbacRepository(BaseRepository[Role]):
         if params.assigned_from:
             conditions.append(RoleAssignment.created_at >= params.assigned_from)
         if params.assigned_to:
-            conditions.append(RoleAssignment.created_at <= params.assigned_to)
+            adjusted_to = adjust_end_of_day(params.assigned_to)
+            conditions.append(RoleAssignment.created_at <= adjusted_to)
         return conditions
 
     def _resolve_assignment_sort(self, sort_by: str, sort_order: str) -> Any:

@@ -12,6 +12,7 @@ __all__ = [
     "UserAssignRolesRequest",
     "UserAssignTeamsRequest",
     "UserBulkActionRequest",
+    "UserExportResponse",
     "UserRemoveRolesRequest",
     "UserRemoveTeamsRequest",
     "UserRoleAssignmentResponse",
@@ -33,6 +34,21 @@ class UserAdminResponse(BaseModel):
     is_super_admin: bool
     is_system: bool
     roles: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class UserExportResponse(BaseModel):
+    """Clean representation of user data tailored for export (CSV, Excel, JSON)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    email: str
+    email_verified: bool
+    is_active: bool
+    is_super_admin: bool
     created_at: datetime
     updated_at: datetime
 
@@ -113,6 +129,10 @@ class UserRoleAssignmentResponse(BaseModel):
 class UsersPaginationParams(PaginationParams):
     """Query parameters for user administration listing."""
 
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    name: str | None = None
+    email: str | None = None
     is_active: bool | None = None
     is_super_admin: bool | None = None
     email_verified: bool | None = None

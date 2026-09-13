@@ -145,6 +145,7 @@ async def test_module_catalog_flow(rbac_client: AsyncClient) -> None:
     assert data["code"] == "test_module"
     assert data["name"] == "Test Module"
     assert data["is_trasheable"] is True
+    assert data["is_exportable"] is True
     assert data["category"] == "system"
     assert data["category_name"] == "Sistema"
     assert data["category_icon"] == "cpu"
@@ -157,25 +158,32 @@ async def test_module_catalog_flow(rbac_client: AsyncClient) -> None:
     )
     assert conflict_res.status_code == status.HTTP_409_CONFLICT
 
-    # Create non-trasheable module
+    # Create non-trasheable and non-exportable module
     notrash_res = await rbac_client.post(
         "/api/rbac/modules",
         json={
             "code": "test_notrash",
             "name": "No Trash Module",
             "is_trasheable": False,
+            "is_exportable": False,
         },
     )
     assert notrash_res.status_code == status.HTTP_201_CREATED
     assert notrash_res.json()["is_trasheable"] is False
+    assert notrash_res.json()["is_exportable"] is False
 
     # List modules
     list_res = await rbac_client.get("/api/rbac/modules")
     assert list_res.status_code == status.HTTP_200_OK
     modules = list_res.json()
-    assert any(m["code"] == "test_module" for m in modules)
     assert any(
-        m["code"] == "test_notrash" and m["is_trasheable"] is False for m in modules
+        m["code"] == "test_module" and m["is_exportable"] is True for m in modules
+    )
+    assert any(
+        m["code"] == "test_notrash"
+        and m["is_trasheable"] is False
+        and m["is_exportable"] is False
+        for m in modules
     )
 
 
@@ -503,3 +511,150 @@ async def test_list_role_assignments_api(
     fake_assign_id = uuid.uuid4()
     assign_404 = await rbac_client.get(f"/api/rbac/assignments/{fake_assign_id}")
     assert assign_404.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.anyio
+async def test_roles_bulk_operations(
+    rbac_client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Test bulk trash, restore, permanent delete, and system role protection."""
+    from fastapi_plantilla.modules.rbac.models import Role
+
+    # Create two regular custom roles
+    r1 = await rbac_client.post(
+        "/api/rbac/roles",
+        json={"name": "Bulk Role 1", "slug": f"bulk_r1_{uuid.uuid4().hex[:6]}"},
+    )
+    assert r1.status_code == status.HTTP_201_CREATED
+    id1 = r1.json()["id"]
+
+    r2 = await rbac_client.post(
+        "/api/rbac/roles",
+        json={"name": "Bulk Role 2", "slug": f"bulk_r2_{uuid.uuid4().hex[:6]}"},
+    )
+    assert r2.status_code == status.HTTP_201_CREATED
+    id2 = r2.json()["id"]
+
+    # Create a system role directly in DB
+    role_repo = BaseRepository(Role, dbsession)
+    sys_role = await role_repo.create(
+        {
+            "id": generate_uuid7(),
+            "name": "System Protected Role",
+            "slug": f"sys_role_{uuid.uuid4().hex[:6]}",
+            "is_system": True,
+        }
+    )
+
+    # 1. Attempting bulk trash including system role must fail with 400
+    sys_trash_res = await rbac_client.post(
+        "/api/rbac/roles/bulk/trash",
+        json={"ids": [id1, str(sys_role.id)]},
+    )
+    assert sys_trash_res.status_code == status.HTTP_400_BAD_REQUEST
+    assert "System roles cannot be deleted" in sys_trash_res.json()["detail"]
+
+    # 2. Bulk trash both custom roles succeeds
+    trash_res = await rbac_client.post(
+        "/api/rbac/roles/bulk/trash",
+        json={"ids": [id1, id2]},
+    )
+    assert trash_res.status_code == status.HTTP_200_OK
+    assert trash_res.json()["count"] == 2
+
+    # Verification: roles can be inspected with TRASHED status for preview
+    res_r1 = await rbac_client.get(f"/api/rbac/roles/{id1}")
+    assert res_r1.status_code == status.HTTP_200_OK
+    assert res_r1.json()["status"] == "TRASHED"
+    res_r2 = await rbac_client.get(f"/api/rbac/roles/{id2}")
+    assert res_r2.status_code == status.HTTP_200_OK
+    assert res_r2.json()["status"] == "TRASHED"
+
+    # Both roles are excluded from active list
+    roles_list = await rbac_client.get("/api/rbac/roles")
+    active_role_ids = [r["id"] for r in roles_list.json()]
+    assert id1 not in active_role_ids
+    assert id2 not in active_role_ids
+
+    # 3. Individual restore role 1 via POST /api/rbac/roles/{id1}/restore
+    restore_res = await rbac_client.post(f"/api/rbac/roles/{id1}/restore")
+    assert restore_res.status_code == status.HTTP_200_OK
+    assert restore_res.json()["status"] == "ACTIVE"
+    res_r1_back = await rbac_client.get(f"/api/rbac/roles/{id1}")
+    assert res_r1_back.status_code == status.HTTP_200_OK
+    assert res_r1_back.json()["status"] == "ACTIVE"
+
+    # 4. Attempting bulk permanent delete with system role must fail with 400
+    sys_perm_res = await rbac_client.request(
+        "DELETE",
+        "/api/rbac/roles/bulk/permanent",
+        json={"ids": [id2, str(sys_role.id)]},
+    )
+    assert sys_perm_res.status_code == status.HTTP_400_BAD_REQUEST
+
+    # 5. Bulk permanent delete role 2 succeeds (via DELETE method)
+    perm_res = await rbac_client.request(
+        "DELETE",
+        "/api/rbac/roles/bulk/permanent",
+        json={"ids": [id2]},
+    )
+    assert perm_res.status_code == status.HTTP_200_OK
+    assert perm_res.json()["count"] == 1
+
+    # Role 2 is now completely gone (404)
+    res_r2_gone = await rbac_client.get(f"/api/rbac/roles/{id2}")
+    assert res_r2_gone.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.anyio
+async def test_role_reuse_slug_when_in_trash_and_restore_conflict(
+    rbac_client: AsyncClient,
+) -> None:
+    """Verify creating role with trashed slug succeeds, but restore conflicts."""
+    test_slug = f"reused_role_{uuid.uuid4().hex[:6]}"
+
+    # 1. Create first role
+    res1 = await rbac_client.post(
+        "/api/rbac/roles",
+        json={"name": "First Role", "slug": test_slug},
+    )
+    assert res1.status_code == status.HTTP_201_CREATED
+    first_id = res1.json()["id"]
+
+    # 2. Soft-delete first role into trash
+    del_res = await rbac_client.delete(f"/api/rbac/roles/{first_id}")
+    assert del_res.status_code == status.HTTP_200_OK
+
+    # 3. Create second role with identical slug -> Must SUCCEED (201 Created, no 500!)
+    res2 = await rbac_client.post(
+        "/api/rbac/roles",
+        json={"name": "Second Role", "slug": test_slug},
+    )
+    assert res2.status_code == status.HTTP_201_CREATED
+    second_id = res2.json()["id"]
+    assert second_id != first_id
+
+    # 4. Attempting to restore first role from trash now conflicts with active role
+    restore_conflict = await rbac_client.post(
+        "/api/rbac/roles/bulk/restore",
+        json={"ids": [first_id]},
+    )
+    assert restore_conflict.status_code == status.HTTP_409_CONFLICT
+    assert "already in use by an active role" in restore_conflict.json()["detail"]
+
+    # 5. Delete second role permanently
+    await rbac_client.delete(f"/api/rbac/roles/{second_id}")
+    await rbac_client.request(
+        "DELETE",
+        "/api/rbac/roles/bulk/permanent",
+        json={"ids": [second_id]},
+    )
+
+    # 6. Now restoring first role succeeds cleanly
+    restore_ok = await rbac_client.post(
+        "/api/rbac/roles/bulk/restore",
+        json={"ids": [first_id]},
+    )
+    assert restore_ok.status_code == status.HTTP_200_OK
+    assert restore_ok.json()["count"] == 1

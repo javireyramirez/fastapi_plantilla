@@ -313,3 +313,70 @@ async def test_crud_router_custom_max_bulk_limit(
             "/limited/bulk", json=[{"name": f"Item {i}"} for i in range(4)]
         )
         assert res_fail.status_code == 422
+
+
+async def test_crud_router_export_uses_configured_or_fallback_schema(
+    router_client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify /export uses schemas and does not dump internal db columns."""
+    # Create an item first
+    res_create = await router_client.post("/items/", json={"name": "Exportable Item"})
+    assert res_create.status_code == 201
+
+    # Export using default schema_out fallback
+    res_export = await router_client.post("/items/export", json={"format": "json"})
+    assert res_export.status_code == 200
+    export_json = res_export.json()
+    assert isinstance(export_json, list)
+    assert len(export_json) >= 1
+
+    item_exported = next(it for it in export_json if it["name"] == "Exportable Item")
+    # Must only have schema_out fields: id, name, status
+    assert "name" in item_exported
+    assert "id" in item_exported
+    assert "status" in item_exported
+    # Internal DB mixin fields must NOT be exported
+    assert "version" not in item_exported
+    assert "created_by" not in item_exported
+    assert "deleted_at" not in item_exported
+
+
+async def test_crud_router_custom_schema_export(
+    dbsession: AsyncSession, _engine: AsyncEngine
+) -> None:
+    """Verify create_crud_router respects explicit schema_export parameter."""
+    repo = BaseRepository(RouterTestItem, dbsession)
+    service = BaseAuditService(repo)
+
+    class CustomExportSchema(BaseModel):
+        name: str
+
+        model_config = ConfigDict(from_attributes=True)
+
+    def _fake_scope() -> ScopeContext:
+        return ScopeContext()
+
+    router = create_crud_router(
+        service_getter=lambda: service,
+        schema_out=ItemOut,
+        schema_create=ItemCreate,
+        schema_update=ItemUpdate,
+        schema_export=CustomExportSchema,
+        prefix="/custom-export",
+        current_user_getter=lambda: None,
+        scope_getter=_fake_scope,
+    )
+    app = FastAPI()
+    app.include_router(router)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.post("/custom-export/", json={"name": "Only Name Export"})
+        res = await client.post("/custom-export/export", json={"format": "json"})
+        assert res.status_code == 200
+        data = res.json()
+        assert len(data) >= 1
+        assert list(data[0].keys()) == ["name"]
+        assert data[0]["name"] == "Only Name Export"

@@ -478,11 +478,17 @@ async def test_audit_actor_enrichment(
         transport=ASGITransport(app=test_app), base_url="http://test"
     ) as client:
         # 1. Query paginated logs list
-        list_res = await client.get(f"/api/audit?entity_id={entity_id}")
+        list_res = await client.get(
+            f"/api/audit?entity_id={entity_id}&sort_by=created_at&sort_order=asc"
+        )
         assert list_res.status_code == 200
         data = list_res.json()["data"]
         assert len(data) == 1
         item = data[0]
+
+        # 1b. Test sorting by action
+        sort_res = await client.get("/api/audit?sort_by=action&sort_order=desc")
+        assert sort_res.status_code == 200
 
         assert item["actor_id"] == str(normal_user.id)
         assert item["actor_name"] == normal_user.name

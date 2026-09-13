@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
 from fastapi import Depends
 from sqlalchemy import func, select
@@ -7,12 +8,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from fastapi_plantilla.core.crud.repository import BaseRepository
+from fastapi_plantilla.core.crud.service_base import adjust_end_of_day
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.teams.models import Team, TeamUser
 
 __all__ = ["TeamRepository"]
+
+
+def _build_team_clauses(
+    team_ids: list[uuid.UUID] | None = None,
+    created_at_from: datetime | None = None,
+    created_at_to: datetime | None = None,
+    search: str | None = None,
+) -> list[Any]:
+    clauses: list[Any] = []
+    if team_ids is not None:
+        clauses.append(Team.id.in_(team_ids))
+    if created_at_from is not None:
+        clauses.append(Team.created_at >= created_at_from)
+    if created_at_to is not None:
+        clauses.append(Team.created_at <= adjust_end_of_day(created_at_to))
+    if search:
+        clauses.append(Team.name.icontains(search.strip(), autoescape=True))
+    return clauses
 
 
 class TeamRepository(BaseRepository[Team]):
@@ -24,15 +44,13 @@ class TeamRepository(BaseRepository[Team]):
     async def get_by_id(self, team_id: uuid.UUID) -> Team | None:
         """Fetch team by primary key ID."""
         stmt = (
-            select(Team)
-            .options(selectinload(Team.members))
-            .where(Team.id == team_id, Team.status != RecordStatus.TRASHED)
+            select(Team).options(selectinload(Team.members)).where(Team.id == team_id)
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
     async def get_by_slug(self, slug: str) -> Team | None:
-        """Fetch team by slug."""
+        """Fetch team by unique slug."""
         stmt = (
             select(Team)
             .options(selectinload(Team.members))
@@ -46,25 +64,23 @@ class TeamRepository(BaseRepository[Team]):
         team_ids: list[uuid.UUID] | None = None,
         created_at_from: datetime | None = None,
         created_at_to: datetime | None = None,
+        search: str | None = None,
         skip: int = 0,
         limit: int = 20,
     ) -> list[Team]:
-        """Fetch paginated list of teams, filtering by permitted IDs and dates."""
+        """Fetch paginated list of teams filtering by IDs, dates, and name."""
+        team_clauses = _build_team_clauses(
+            team_ids, created_at_from, created_at_to, search
+        )
         stmt = (
             select(Team)
             .options(selectinload(Team.members))
             .where(Team.status != RecordStatus.TRASHED)
+            .where(*team_clauses)
             .order_by(Team.created_at.desc())
             .offset(skip)
             .limit(limit)
         )
-        if team_ids is not None:
-            stmt = stmt.where(Team.id.in_(team_ids))
-        if created_at_from is not None:
-            stmt = stmt.where(Team.created_at >= created_at_from)
-        if created_at_to is not None:
-            stmt = stmt.where(Team.created_at <= created_at_to)
-
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -73,20 +89,18 @@ class TeamRepository(BaseRepository[Team]):
         team_ids: list[uuid.UUID] | None = None,
         created_at_from: datetime | None = None,
         created_at_to: datetime | None = None,
+        search: str | None = None,
     ) -> int:
         """Count teams matching filter."""
+        team_clauses = _build_team_clauses(
+            team_ids, created_at_from, created_at_to, search
+        )
         stmt = (
             select(func.count())
             .select_from(Team)
             .where(Team.status != RecordStatus.TRASHED)
+            .where(*team_clauses)
         )
-        if team_ids is not None:
-            stmt = stmt.where(Team.id.in_(team_ids))
-        if created_at_from is not None:
-            stmt = stmt.where(Team.created_at >= created_at_from)
-        if created_at_to is not None:
-            stmt = stmt.where(Team.created_at <= created_at_to)
-
         result = await self.session.execute(stmt)
         return result.scalar() or 0
 

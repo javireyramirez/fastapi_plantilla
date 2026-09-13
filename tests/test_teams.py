@@ -199,9 +199,15 @@ async def test_team_crud_and_membership(
     del_team_res = await teams_client.delete(f"/api/teams/{team_id}")
     assert del_team_res.status_code == status.HTTP_200_OK
 
-    # Fetching deleted team returns 404
+    # Fetching deleted team returns detail with TRASHED status for read-only preview
     get_del_res = await teams_client.get(f"/api/teams/{team_id}")
-    assert get_del_res.status_code == status.HTTP_404_NOT_FOUND
+    assert get_del_res.status_code == status.HTTP_200_OK
+    assert get_del_res.json()["status"] == "TRASHED"
+
+    # Individual restore via POST /{team_id}/restore
+    restore_res = await teams_client.post(f"/api/teams/{team_id}/restore")
+    assert restore_res.status_code == status.HTTP_200_OK
+    assert restore_res.json()["status"] == "ACTIVE"
 
 
 @pytest.mark.anyio
@@ -276,3 +282,126 @@ async def test_team_permissions_inheritance(
     matrix = perms_res.json()["permissions"]
     assert "storage" in matrix
     assert matrix["storage"]["READ"] == "TEAM"
+
+
+@pytest.mark.anyio
+async def test_teams_bulk_operations(
+    teams_client: AsyncClient,
+) -> None:
+    """Test bulk trash, restore, and permanent deletion of teams."""
+    # Create two teams
+    r1 = await teams_client.post(
+        "/api/teams",
+        json={"name": "Bulk Team 1", "slug": f"bulk_1_{uuid.uuid4().hex[:6]}"},
+    )
+    assert r1.status_code == status.HTTP_201_CREATED
+    id1 = r1.json()["id"]
+
+    r2 = await teams_client.post(
+        "/api/teams",
+        json={"name": "Bulk Team 2", "slug": f"bulk_2_{uuid.uuid4().hex[:6]}"},
+    )
+    assert r2.status_code == status.HTTP_201_CREATED
+    id2 = r2.json()["id"]
+
+    # 1. Bulk trash both teams
+    trash_res = await teams_client.post(
+        "/api/teams/bulk/trash",
+        json={"ids": [id1, id2]},
+    )
+    assert trash_res.status_code == status.HTTP_200_OK
+    assert trash_res.json()["count"] == 2
+
+    # Both teams can be inspected with TRASHED status for read-only preview
+    res_t1 = await teams_client.get(f"/api/teams/{id1}")
+    assert res_t1.status_code == status.HTTP_200_OK
+    assert res_t1.json()["status"] == "TRASHED"
+    res_t2 = await teams_client.get(f"/api/teams/{id2}")
+    assert res_t2.status_code == status.HTTP_200_OK
+    assert res_t2.json()["status"] == "TRASHED"
+
+    # Both teams are excluded from active list
+    teams_list = await teams_client.get("/api/teams")
+    active_ids = [t["id"] for t in teams_list.json()["data"]]
+    assert id1 not in active_ids
+    assert id2 not in active_ids
+
+    # 2. Bulk restore team 1
+    restore_res = await teams_client.post(
+        "/api/teams/bulk/restore",
+        json={"ids": [id1]},
+    )
+    assert restore_res.status_code == status.HTTP_200_OK
+    assert restore_res.json()["count"] == 1
+
+    # Team 1 is back active, team 2 still trashed
+    res_t1_back = await teams_client.get(f"/api/teams/{id1}")
+    assert res_t1_back.status_code == status.HTTP_200_OK
+    assert res_t1_back.json()["status"] == "ACTIVE"
+    res_t2_still_del = await teams_client.get(f"/api/teams/{id2}")
+    assert res_t2_still_del.status_code == status.HTTP_200_OK
+    assert res_t2_still_del.json()["status"] == "TRASHED"
+
+    # 3. Bulk permanent delete team 2 (via POST alias)
+    perm_res = await teams_client.post(
+        "/api/teams/bulk/permanent",
+        json={"ids": [id2]},
+    )
+    assert perm_res.status_code == status.HTTP_200_OK
+    assert perm_res.json()["count"] == 1
+
+    # Team 2 is now completely gone (404)
+    res_t2_gone = await teams_client.get(f"/api/teams/{id2}")
+    assert res_t2_gone.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.anyio
+async def test_team_reuse_slug_when_in_trash_and_restore_conflict(
+    teams_client: AsyncClient,
+) -> None:
+    """Verify creating team with trashed slug succeeds, but restore conflicts."""
+    test_slug = f"reused_team_{uuid.uuid4().hex[:6]}"
+
+    # 1. Create first team
+    r1 = await teams_client.post(
+        "/api/teams",
+        json={"name": "First Team", "slug": test_slug},
+    )
+    assert r1.status_code == status.HTTP_201_CREATED
+    id1 = r1.json()["id"]
+
+    # 2. Soft-delete first team
+    del_res = await teams_client.delete(f"/api/teams/{id1}")
+    assert del_res.status_code == status.HTTP_200_OK
+
+    # 3. Create second team with identical slug -> Must succeed (201 Created, no 500)
+    r2 = await teams_client.post(
+        "/api/teams",
+        json={"name": "Second Team", "slug": test_slug},
+    )
+    assert r2.status_code == status.HTTP_201_CREATED
+    id2 = r2.json()["id"]
+    assert id2 != id1
+
+    # 4. Attempting to restore first team conflicts
+    restore_conflict = await teams_client.post(
+        "/api/teams/bulk/restore",
+        json={"ids": [id1]},
+    )
+    assert restore_conflict.status_code == status.HTTP_409_CONFLICT
+    assert "already in use by an active team" in restore_conflict.json()["detail"]
+
+    # 5. Delete second team permanently
+    await teams_client.delete(f"/api/teams/{id2}")
+    await teams_client.post(
+        "/api/teams/bulk/permanent",
+        json={"ids": [id2]},
+    )
+
+    # 6. Now restoring first team succeeds
+    restore_ok = await teams_client.post(
+        "/api/teams/bulk/restore",
+        json={"ids": [id1]},
+    )
+    assert restore_ok.status_code == status.HTTP_200_OK
+    assert restore_ok.json()["count"] == 1

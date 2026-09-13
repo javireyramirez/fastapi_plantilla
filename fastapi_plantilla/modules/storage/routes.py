@@ -190,6 +190,9 @@ async def list_documents(
     if params.target_is_uploaded is not None:
         where.append(Document.is_uploaded == params.target_is_uploaded)
 
+    if params.target_content_types:
+        where.append(Document.content_type.in_(params.target_content_types))
+
     return await service.find_paginated(params, *where, scope=scope)
 
 

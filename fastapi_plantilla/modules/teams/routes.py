@@ -4,6 +4,8 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from fastapi_plantilla.core.crud.schema import (
+    BulkIdsRequest,
+    BulkResponse,
     MessageResponse,
     PaginatedResponse,
     ScopeContext,
@@ -41,6 +43,8 @@ async def create_team(
 
 @router.get("", response_model=PaginatedResponse[TeamResponse])
 async def list_teams(
+    search: str | None = Query(default=None),
+    name: str | None = Query(default=None),
     created_at_from: datetime | None = Query(default=None),
     created_at_to: datetime | None = Query(default=None),
     page: int = Query(default=1, ge=1),
@@ -48,14 +52,47 @@ async def list_teams(
     scope: ScopeContext = Depends(require_permission("teams", RbacActions.READ)),
     service: TeamService = Depends(get_team_service),
 ) -> PaginatedResponse[TeamResponse]:
-    """List teams accessible within caller's scope with optional date filters."""
+    """List teams accessible within caller's scope with optional filters."""
     return await service.list_teams(
         scope=scope,
+        search=search,
+        name=name,
         created_at_from=created_at_from,
         created_at_to=created_at_to,
         page=page,
         limit=limit,
     )
+
+
+@router.post("/bulk/trash", response_model=BulkResponse)
+async def bulk_trash_teams(
+    req: BulkIdsRequest,
+    scope: ScopeContext = Depends(require_permission("teams", RbacActions.DELETE)),
+    service: TeamService = Depends(get_team_service),
+) -> BulkResponse:
+    """Move multiple teams to trash."""
+    return await service.bulk_trash(req=req, user_id=scope.user_id, scope=scope)
+
+
+@router.post("/bulk/restore", response_model=BulkResponse)
+async def bulk_restore_teams(
+    req: BulkIdsRequest,
+    scope: ScopeContext = Depends(require_permission("teams", RbacActions.RESTORE)),
+    service: TeamService = Depends(get_team_service),
+) -> BulkResponse:
+    """Restore multiple teams from trash."""
+    return await service.bulk_restore(req=req, user_id=scope.user_id, scope=scope)
+
+
+@router.delete("/bulk/permanent", response_model=BulkResponse)
+@router.post("/bulk/permanent", response_model=BulkResponse, include_in_schema=False)
+async def bulk_permanent_delete_teams(
+    req: BulkIdsRequest,
+    scope: ScopeContext = Depends(require_permission("teams", RbacActions.DELETE)),
+    service: TeamService = Depends(get_team_service),
+) -> BulkResponse:
+    """Permanently delete multiple teams from trash."""
+    return await service.bulk_permanent_delete(req=req, scope=scope)
 
 
 @router.get("/{team_id}", response_model=TeamResponse)
@@ -88,6 +125,17 @@ async def delete_team(
     """Delete a team."""
     await service.delete_team(team_id=team_id, scope=scope)
     return MessageResponse(message="Team deleted successfully")
+
+
+@router.post("/{team_id}/restore", response_model=TeamResponse)
+async def restore_team(
+    team_id: uuid.UUID,
+    scope: ScopeContext = Depends(require_permission("teams", RbacActions.RESTORE)),
+    service: TeamService = Depends(get_team_service),
+) -> TeamResponse:
+    """Restore a single team from trash."""
+    team = await service.restore(team_id, user_id=scope.user_id, scope=scope)
+    return TeamResponse.model_validate(team)
 
 
 # ==========================================

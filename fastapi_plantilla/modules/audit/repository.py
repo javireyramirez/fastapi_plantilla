@@ -1,12 +1,14 @@
+import re
 import uuid
 from typing import Any
 
 from fastapi import Depends
-from sqlalchemy import desc
+from sqlalchemy import asc, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.repository import BaseRepository
 from fastapi_plantilla.core.crud.schema import AuditEntry
+from fastapi_plantilla.core.crud.service_base import adjust_end_of_day
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.modules.audit.models import AuditLog
 from fastapi_plantilla.modules.audit.schema import AuditFilterParams
@@ -84,8 +86,17 @@ def _build_audit_conditions(params: AuditFilterParams) -> list[Any]:
     if params.from_date:
         conditions.append(AuditLog.created_at >= params.from_date)
     if params.to_date:
-        conditions.append(AuditLog.created_at <= params.to_date)
+        conditions.append(AuditLog.created_at <= adjust_end_of_day(params.to_date))
     return conditions
+
+
+def _build_audit_order_by(sort_by: str | None, sort_order: Any = "desc") -> Any:
+    """Build dynamic order by clause for audit log queries."""
+    col_name = re.sub(r"(?<!^)(?=[A-Z])", "_", sort_by or "created_at").lower()
+    if col_name == "module_slug":
+        col_name = "entity_type"
+    col = getattr(AuditLog, col_name, AuditLog.created_at)
+    return desc(col) if str(sort_order).lower() == "desc" else asc(col)
 
 
 class AuditRepository(BaseRepository[AuditLog]):
@@ -114,13 +125,14 @@ class AuditRepository(BaseRepository[AuditLog]):
         return log
 
     async def list_logs(self, params: AuditFilterParams) -> tuple[list[AuditLog], int]:
-        """Query paginated audit logs applying optional filters."""
+        """Query paginated audit logs applying optional filters and dynamic ordering."""
         conditions = _build_audit_conditions(params)
+        order_clause = _build_audit_order_by(params.sort_by, params.sort_order)
         return await self.find_many_with_count(
             *conditions,
             skip=(params.page - 1) * params.limit,
             limit=params.limit,
-            order_by=desc(AuditLog.created_at),
+            order_by=order_clause,
         )
 
     async def get_entity_history(

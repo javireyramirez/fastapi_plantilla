@@ -19,19 +19,41 @@ class S3StorageProvider:
         self,
         bucket: str | None = None,
         endpoint_url: str | None = None,
+        public_endpoint_url: str | None = None,
         access_key: str | None = None,
         secret_key: str | None = None,
         region: str | None = None,
     ) -> None:
         self.bucket = bucket or settings.storage_bucket
+        resolved_endpoint = endpoint_url or settings.storage_s3_endpoint_url
+        resolved_public_endpoint = (
+            public_endpoint_url
+            or settings.storage_s3_public_endpoint_url
+            or resolved_endpoint
+        )
+        resolved_access_key = access_key or settings.storage_s3_access_key
+        resolved_secret_key = secret_key or settings.storage_s3_secret_key
+        resolved_region = region or settings.storage_s3_region
+
         self.client = boto3.client(
             "s3",
-            endpoint_url=endpoint_url or settings.storage_s3_endpoint_url,
-            aws_access_key_id=access_key or settings.storage_s3_access_key,
-            aws_secret_access_key=secret_key or settings.storage_s3_secret_key,
-            region_name=region or settings.storage_s3_region,
+            endpoint_url=resolved_endpoint,
+            aws_access_key_id=resolved_access_key,
+            aws_secret_access_key=resolved_secret_key,
+            region_name=resolved_region,
             config=Config(signature_version="s3v4"),
         )
+        if resolved_public_endpoint != resolved_endpoint:
+            self.public_client = boto3.client(
+                "s3",
+                endpoint_url=resolved_public_endpoint,
+                aws_access_key_id=resolved_access_key,
+                aws_secret_access_key=resolved_secret_key,
+                region_name=resolved_region,
+                config=Config(signature_version="s3v4"),
+            )
+        else:
+            self.public_client = self.client
 
     async def upload(
         self,
@@ -75,7 +97,7 @@ class S3StorageProvider:
         params = {"Bucket": self.bucket, "Key": key}
 
         def _generate() -> str:
-            return self.client.generate_presigned_url(  # type: ignore[no-any-return]
+            return self.public_client.generate_presigned_url(  # type: ignore[no-any-return]
                 ClientMethod=client_method,
                 Params=params,
                 ExpiresIn=expires_in,

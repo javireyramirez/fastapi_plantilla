@@ -1,3 +1,4 @@
+import re
 import uuid
 from collections.abc import Sequence
 from datetime import datetime, time
@@ -24,7 +25,14 @@ from fastapi_plantilla.core.crud.schema import (
 )
 from fastapi_plantilla.core.database import Base
 
-__all__ = ["BaseCRUDService"]
+__all__ = ["BaseCRUDService", "adjust_end_of_day"]
+
+
+def adjust_end_of_day(dt: datetime | None) -> datetime | None:
+    """Adjust datetime to end-of-day (23:59:59.999999) if time is midnight."""
+    if dt is not None and dt.time() == time.min:
+        return dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return dt
 
 
 class BaseCRUDService[ModelT: Base]:
@@ -34,6 +42,7 @@ class BaseCRUDService[ModelT: Base]:
     resource_name: str = "Resource"
     mask_forbidden_as_not_found: bool = False
     MAX_BULK_LIMIT: int = DEFAULT_MAX_BULK_LIMIT
+    export_schema: type[BaseModel] | None = None
 
     IMMUTABLE_FIELDS: frozenset[str] = frozenset(
         {
@@ -165,11 +174,7 @@ class BaseCRUDService[ModelT: Base]:
         if from_date is not None:
             clauses.append(col >= from_date)
         if to_date is not None:
-            if to_date.time() == time.min:
-                to_date = to_date.replace(
-                    hour=23, minute=59, second=59, microsecond=999999
-                )
-            clauses.append(col <= to_date)
+            clauses.append(col <= adjust_end_of_day(to_date))
         return clauses
 
     def build_number_range_filter(
@@ -240,6 +245,11 @@ class BaseCRUDService[ModelT: Base]:
         if sort_by in available:
             return available[sort_by]
         col = self._get_column(sort_by)
+        if col is None:
+            snake_sort = re.sub(r"(?<!^)(?=[A-Z])", "_", sort_by).lower()
+            if snake_sort in available:
+                return available[snake_sort]
+            col = self._get_column(snake_sort)
         return (
             (col.desc() if sort_order == SortOrder.DESC else col.asc())
             if col is not None

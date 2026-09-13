@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import Depends, HTTPException, status
 from loguru import logger
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.config import settings
@@ -268,10 +269,21 @@ class TrashService:
             )
         self._apply_scope(scope, item)
 
-        await self.repository.restore_target_model(
-            item.entity_type, item.entity_id, user_id=user_id
-        )
-        await self.repository.delete(item.id)
+        try:
+            async with self.repository.session.begin_nested():
+                await self.repository.restore_target_model(
+                    item.entity_type, item.entity_id, user_id=user_id
+                )
+                await self.repository.delete(item.id)
+                await self.repository.session.flush()
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Cannot restore {item.entity_type} '{item.name}': "
+                    "a conflicting active record already exists."
+                ),
+            ) from exc
 
         actor_uuid = None
         if user_id:
@@ -349,14 +361,11 @@ class TrashService:
         action: Callable[[uuid.UUID], Coroutine[Any, Any, Any]],
         action_verb: str,
     ) -> BulkResponse:
-        """Execute a batch operation over trash IDs, logging individual failures."""
+        """Execute a batch operation over trash IDs."""
         count = 0
         for item_id in ids:
-            try:
-                await action(item_id)
-                count += 1
-            except Exception as err:
-                logger.warning(f"Failed to {action_verb} trash item {item_id}: {err}")
+            await action(item_id)
+            count += 1
 
         return BulkResponse(
             count=count,

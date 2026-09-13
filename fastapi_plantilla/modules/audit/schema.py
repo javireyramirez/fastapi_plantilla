@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
-from fastapi_plantilla.core.crud.schema import UserReference
+from fastapi_plantilla.core.crud.schema import SortOrder, UserReference
 
 __all__ = [
     "AuditAction",
@@ -126,3 +126,11 @@ class AuditFilterParams(BaseModel):
     )
     page: int = Field(default=1, ge=1, le=1000)
     limit: int = Field(default=20, ge=1, le=100)
+    sort_by: str = Field(
+        default="created_at",
+        validation_alias=AliasChoices("sort_by", "sortBy"),
+    )
+    sort_order: SortOrder = Field(
+        default=SortOrder.DESC,
+        validation_alias=AliasChoices("sort_order", "sortOrder"),
+    )

@@ -1,9 +1,14 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
-from fastapi_plantilla.core.crud.schema import MessageResponse, PaginatedResponse
+from fastapi_plantilla.core.crud.schema import (
+    BulkIdsRequest,
+    BulkResponse,
+    MessageResponse,
+    PaginatedResponse,
+)
 from fastapi_plantilla.modules.auth.dependencies import (
     get_current_active_superuser,
     get_current_user,
@@ -61,11 +66,14 @@ async def create_module(
 
 @router.get("/roles", response_model=list[RoleResponse])
 async def list_roles(
+    search: str | None = Query(default=None),
+    name: str | None = Query(default=None),
+    is_system: bool | None = Query(default=None),
     _: UserResponse = Depends(get_current_user),
     service: RbacService = Depends(get_rbac_service),
 ) -> list[RoleResponse]:
-    """List all system roles with assigned permissions."""
-    return await service.list_roles()
+    """List all system roles with optional search (LIKE) and is_system filtering."""
+    return await service.list_roles(search=search, name=name, is_system=is_system)
 
 
 @router.post(
@@ -78,6 +86,39 @@ async def create_role(
 ) -> RoleDetailResponse:
     """Create a new role with optional initial permissions (SuperAdmin only)."""
     return await service.create_role(data, user_id=current_user.id)
+
+
+@router.post("/roles/bulk/trash", response_model=BulkResponse)
+async def bulk_trash_roles(
+    req: BulkIdsRequest,
+    current_user: UserResponse = Depends(get_current_active_superuser),
+    service: RbacService = Depends(get_rbac_service),
+) -> BulkResponse:
+    """Move multiple non-system roles to trash (SuperAdmin only)."""
+    return await service.bulk_trash(req=req, user_id=current_user.id)
+
+
+@router.post("/roles/bulk/restore", response_model=BulkResponse)
+async def bulk_restore_roles(
+    req: BulkIdsRequest,
+    current_user: UserResponse = Depends(get_current_active_superuser),
+    service: RbacService = Depends(get_rbac_service),
+) -> BulkResponse:
+    """Restore multiple roles from trash (SuperAdmin only)."""
+    return await service.bulk_restore(req=req, user_id=current_user.id)
+
+
+@router.delete("/roles/bulk/permanent", response_model=BulkResponse)
+@router.post(
+    "/roles/bulk/permanent", response_model=BulkResponse, include_in_schema=False
+)
+async def bulk_permanent_delete_roles(
+    req: BulkIdsRequest,
+    _: UserResponse = Depends(get_current_active_superuser),
+    service: RbacService = Depends(get_rbac_service),
+) -> BulkResponse:
+    """Permanently delete multiple roles from trash (SuperAdmin only)."""
+    return await service.bulk_permanent_delete(req=req)
 
 
 @router.get("/roles/{role_id}", response_model=RoleDetailResponse)
@@ -110,6 +151,17 @@ async def delete_role(
     """Delete a non-system role (SuperAdmin only)."""
     await service.delete_role(role_id, user_id=current_user.id)
     return MessageResponse(message="Role deleted successfully")
+
+
+@router.post("/roles/{role_id}/restore", response_model=RoleDetailResponse)
+async def restore_role(
+    role_id: uuid.UUID,
+    current_user: UserResponse = Depends(get_current_active_superuser),
+    service: RbacService = Depends(get_rbac_service),
+) -> RoleDetailResponse:
+    """Restore a role from trash (SuperAdmin only)."""
+    role = await service.restore(role_id, user_id=current_user.id)
+    return await service.get_role(role.id)
 
 
 @router.put("/roles/{role_id}/permissions", response_model=RoleDetailResponse)

@@ -4,11 +4,16 @@ from typing import Any
 from fastapi import Depends, HTTPException, status
 
 from fastapi_plantilla.core.crud.schema import (
+    BulkIdsRequest,
+    BulkResponse,
     PaginatedResponse,
     PaginationMeta,
+    ScopeContext,
     ScopeType,
+    WriteOptions,
 )
 from fastapi_plantilla.core.crud.service_audit import BaseAuditService
+from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.rbac.catalog import MODULE_CATEGORIES
 from fastapi_plantilla.modules.rbac.models import Role, RoleAssignment
@@ -83,6 +88,7 @@ class RbacService(BaseAuditService[Role]):
             sort_order=data.sort_order,
             is_active=data.is_active,
             is_trasheable=data.is_trasheable,
+            is_exportable=data.is_exportable,
         )
         return ModuleResponse.model_validate(module)
 
@@ -99,9 +105,16 @@ class RbacService(BaseAuditService[Role]):
             )
         return role
 
-    async def list_roles(self) -> list[RoleResponse]:
-        """List all roles without permissions for table/listing view."""
-        roles = await self.repository.list_roles(load_permissions=False)
+    async def list_roles(
+        self,
+        search: str | None = None,
+        name: str | None = None,
+        is_system: bool | None = None,
+    ) -> list[RoleResponse]:
+        """List all roles with optional search (LIKE) and is_system filtering."""
+        roles = await self.repository.list_roles(
+            search=search, name=name, is_system=is_system, load_permissions=False
+        )
         return [RoleResponse.model_validate(r) for r in roles]
 
     async def get_role(self, role_id: uuid.UUID) -> RoleDetailResponse:
@@ -160,6 +173,91 @@ class RbacService(BaseAuditService[Role]):
                 detail="System roles cannot be deleted",
             )
         await self.trash(role_id, user_id=user_id)
+
+    async def bulk_trash(
+        self,
+        req: BulkIdsRequest,
+        *where: Any,
+        user_id: str | uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
+    ) -> BulkResponse:
+        """Move multiple roles to trash, preventing deletion of system roles."""
+        has_system = await self.repository.exists(
+            self.repository.pk.in_(req.ids), Role.is_system.is_(True)
+        )
+        if has_system:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="System roles cannot be deleted",
+            )
+        return await super().bulk_trash(req, *where, user_id=user_id, scope=scope)
+
+    async def restore(
+        self,
+        id: uuid.UUID,
+        *where: Any,
+        user_id: str | uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
+    ) -> Role:
+        """Restore role ensuring no active role with the same slug exists."""
+        role = await self.repository.find_first(Role.id == id)
+        if role and role.status == RecordStatus.TRASHED:
+            existing = await self.repository.get_role_by_slug(role.slug)
+            if existing and existing.id != role.id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Cannot restore role '{role.name}': slug '{role.slug}' "
+                        "is already in use by an active role."
+                    ),
+                )
+        return await super().restore(
+            id, *where, user_id=user_id, scope=scope, options=options
+        )
+
+    async def bulk_restore(
+        self,
+        req: BulkIdsRequest,
+        *where: Any,
+        user_id: str | uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
+    ) -> BulkResponse:
+        """Bulk restore roles ensuring no active roles conflict with their slugs."""
+        roles = await self.repository.find_many(
+            Role.id.in_(req.ids), Role.status == RecordStatus.TRASHED
+        )
+        for r in roles:
+            existing = await self.repository.get_role_by_slug(r.slug)
+            if existing and existing.id not in req.ids:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Cannot restore role '{r.name}': slug '{r.slug}' "
+                        "is already in use by an active role."
+                    ),
+                )
+        return await super().bulk_restore(req, *where, user_id=user_id, scope=scope)
+
+    async def bulk_permanent_delete(
+        self,
+        req: BulkIdsRequest,
+        *where: Any,
+        scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
+    ) -> BulkResponse:
+        """Permanently delete roles from trash, preventing deletion of system roles."""
+        has_system = await self.repository.exists(
+            self.repository.pk.in_(req.ids), Role.is_system.is_(True)
+        )
+        if has_system:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="System roles cannot be deleted",
+            )
+        return await super().bulk_permanent_delete(
+            req, *where, scope=scope, options=options
+        )
 
     async def set_role_permissions(
         self, role_id: uuid.UUID, permissions: list[RolePermissionItem]

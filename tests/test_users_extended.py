@@ -23,6 +23,8 @@ from fastapi_plantilla.modules.rbac.models import Role, SystemModule
 from fastapi_plantilla.modules.rbac.routes import router as rbac_router
 from fastapi_plantilla.modules.teams.models import Team
 from fastapi_plantilla.modules.teams.routes import router as teams_router
+from fastapi_plantilla.modules.trash.listener import setup_trash_listeners
+from fastapi_plantilla.modules.trash.routes import router as trash_router
 from fastapi_plantilla.modules.users.routes import router as users_router
 
 
@@ -144,9 +146,11 @@ def extended_app(
 ) -> FastAPI:
     """FastAPI test app configured with users, teams, and rbac routers."""
     app = FastAPI()
+    setup_trash_listeners()
     app.include_router(users_router, prefix="/api")
     app.include_router(teams_router, prefix="/api")
     app.include_router(rbac_router, prefix="/api")
+    app.include_router(trash_router, prefix="/api")
 
     app.dependency_overrides[get_db_session] = lambda: dbsession
     app.dependency_overrides[get_current_user] = lambda: extended_auth.user
@@ -225,6 +229,14 @@ async def test_combobox_and_temporal_filters(
     assert date_res.status_code == status.HTTP_200_OK
     assert len(date_res.json()["data"]) >= 3
 
+    # 4. Temporal filter with midnight / start of day should include today's records
+    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    midnight_res = await client.get(f"/api/users?created_at_to={today_midnight}")
+    assert midnight_res.status_code == status.HTTP_200_OK
+    assert len(midnight_res.json()["data"]) >= 3
+
 
 @pytest.mark.anyio
 async def test_export_users(
@@ -273,15 +285,25 @@ async def test_trash_restore_and_bulk_operations(
     """Verify single and bulk trash, restore, and permanent deletion."""
     _, user1, user2, _, _, _ = setup_extended_users
 
-    # 1. Single soft-delete and restore
+    # 1. Single soft-delete and verify in trash bin
     del_res = await client.delete(f"/api/users/{user1.id}")
     assert del_res.status_code == status.HTTP_200_OK
 
-    # Restoring single user
+    trash_res1 = await client.get("/api/trash")
+    assert trash_res1.status_code == status.HTTP_200_OK
+    trash_ids1 = [item["entity_id"] for item in trash_res1.json()["data"]]
+    assert str(user1.id) in trash_ids1
+
+    # Restoring single user removes it from trash bin
     res_res = await client.post(f"/api/users/{user1.id}/restore")
     assert res_res.status_code == status.HTTP_200_OK
 
-    # 2. Bulk trash
+    trash_res_after_restore = await client.get("/api/trash")
+    trash_items_after = trash_res_after_restore.json()["data"]
+    trash_ids_after = [item["entity_id"] for item in trash_items_after]
+    assert str(user1.id) not in trash_ids_after
+
+    # 2. Bulk trash sends all users to trash bin
     bulk_trash = await client.post(
         "/api/users/bulk/trash",
         json={"ids": [str(user1.id), str(user2.id)]},
@@ -289,7 +311,12 @@ async def test_trash_restore_and_bulk_operations(
     assert bulk_trash.status_code == status.HTTP_200_OK
     assert bulk_trash.json()["count"] == 2
 
-    # 3. Bulk restore
+    trash_res2 = await client.get("/api/trash")
+    trash_ids2 = [item["entity_id"] for item in trash_res2.json()["data"]]
+    assert str(user1.id) in trash_ids2
+    assert str(user2.id) in trash_ids2
+
+    # 3. Bulk restore removes all users from trash bin
     bulk_res = await client.post(
         "/api/users/bulk/restore",
         json={"ids": [str(user1.id), str(user2.id)]},
@@ -297,10 +324,19 @@ async def test_trash_restore_and_bulk_operations(
     assert bulk_res.status_code == status.HTTP_200_OK
     assert bulk_res.json()["count"] == 2
 
-    # 4. Trash and permanent delete
+    trash_res3 = await client.get("/api/trash")
+    trash_ids3 = [item["entity_id"] for item in trash_res3.json()["data"]]
+    assert str(user1.id) not in trash_ids3
+    assert str(user2.id) not in trash_ids3
+
+    # 4. Trash and permanent delete purges user from trash bin
     await client.delete(f"/api/users/{user1.id}")
     perm_res = await client.delete(f"/api/users/{user1.id}/permanent")
     assert perm_res.status_code == status.HTTP_200_OK
+
+    trash_res4 = await client.get("/api/trash")
+    trash_ids4 = [item["entity_id"] for item in trash_res4.json()["data"]]
+    assert str(user1.id) not in trash_ids4
 
     # User no longer found
     check_res = await client.get(f"/api/users/{user1.id}")

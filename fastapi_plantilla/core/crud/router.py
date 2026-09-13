@@ -53,11 +53,13 @@ def create_crud_router[  # noqa: C901
     resource_name: str | None = None,
     pagination_params: type[PaginationParams] = PaginationParams,
     max_bulk_limit: int = BaseCRUDService.MAX_BULK_LIMIT,
+    schema_export: type[BaseModel] | None = None,
     current_user_getter: Callable[..., Any] = get_current_user,
     scope_getter: Callable[..., Any] = get_scope_context,
 ) -> APIRouter:
     """Dynamically generate standard CRUD endpoints for a domain resource."""
     router = APIRouter(prefix=prefix, tags=tags)
+    effective_export_schema = schema_export or schema_out
 
     def _scope_dep(action: RbacActions) -> Any:
         if resource_name is not None:
@@ -105,13 +107,15 @@ def create_crud_router[  # noqa: C901
     @router.post(
         "/export",
         response_class=Response,
-        summary=f"Export {schema_out.__name__} records",
+        summary=f"Export {effective_export_schema.__name__} records",
     )
     async def export_data(
         req: ExportRequest,
         service: Any = Depends(service_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.EXPORT)),
     ) -> Response:
+        if getattr(service, "export_schema", None) is None:
+            service.export_schema = effective_export_schema
         content, media_type, filename = await service.export_data(req, scope=scope)
         return Response(
             content=content,

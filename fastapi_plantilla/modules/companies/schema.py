@@ -62,5 +62,4 @@ class CompanyUpdate(BaseModel):
 class CompaniesPaginationParams(PaginationParams):
     """Extended query parameters for company list filtering."""
 
-    nif: str | None = None
     sector: str | None = None

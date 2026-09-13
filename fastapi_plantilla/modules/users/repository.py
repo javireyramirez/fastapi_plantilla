@@ -1,9 +1,8 @@
 import uuid
-from datetime import datetime
 from typing import Any
 
 from fastapi import Depends
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,101 +23,11 @@ class UserAdminRepository(BaseRepository[User]):
     def __init__(self, session: AsyncSession = Depends(get_db_session)) -> None:
         super().__init__(User, session)
 
-    async def get_by_id(self, user_id: uuid.UUID) -> User | None:
-        """Fetch user by ID."""
-        return await self.find_first(
-            User.id == user_id, User.status != RecordStatus.TRASHED
-        )
-
     async def get_by_email(self, email: str) -> User | None:
         """Fetch user by email."""
         return await self.find_first(
             User.email == email, User.status != RecordStatus.TRASHED
         )
-
-    def _build_user_query_clauses(
-        self,
-        search: str | None = None,
-        is_active: bool | None = None,
-        is_super_admin: bool | None = None,
-        email_verified: bool | None = None,
-        created_at_from: datetime | None = None,
-        created_at_to: datetime | None = None,
-        updated_at_from: datetime | None = None,
-        updated_at_to: datetime | None = None,
-    ) -> list[Any]:
-        """Build where clauses for user filtering."""
-        clauses: list[Any] = [User.status != RecordStatus.TRASHED]
-        if search:
-            pattern = f"%{search}%"
-            clauses.append(or_(User.name.ilike(pattern), User.email.ilike(pattern)))
-        if is_active is not None:
-            clauses.append(User.is_active == is_active)
-        if is_super_admin is not None:
-            clauses.append(User.is_super_admin == is_super_admin)
-        if email_verified is not None:
-            clauses.append(User.email_verified == email_verified)
-        if created_at_from is not None:
-            clauses.append(User.created_at >= created_at_from)
-        if created_at_to is not None:
-            clauses.append(User.created_at <= created_at_to)
-        if updated_at_from is not None:
-            clauses.append(User.updated_at >= updated_at_from)
-        if updated_at_to is not None:
-            clauses.append(User.updated_at <= updated_at_to)
-        return clauses
-
-    async def list_users(
-        self,
-        search: str | None = None,
-        is_active: bool | None = None,
-        is_super_admin: bool | None = None,
-        email_verified: bool | None = None,
-        created_at_from: datetime | None = None,
-        created_at_to: datetime | None = None,
-        updated_at_from: datetime | None = None,
-        updated_at_to: datetime | None = None,
-        skip: int = 0,
-        limit: int = 20,
-    ) -> list[User]:
-        """Fetch paginated users with optional search, status, and temporal filters."""
-        clauses = self._build_user_query_clauses(
-            search=search,
-            is_active=is_active,
-            is_super_admin=is_super_admin,
-            email_verified=email_verified,
-            created_at_from=created_at_from,
-            created_at_to=created_at_to,
-            updated_at_from=updated_at_from,
-            updated_at_to=updated_at_to,
-        )
-        return await self.find_many(
-            *clauses, skip=skip, limit=limit, order_by=User.created_at.desc()
-        )
-
-    async def count_users(
-        self,
-        search: str | None = None,
-        is_active: bool | None = None,
-        is_super_admin: bool | None = None,
-        email_verified: bool | None = None,
-        created_at_from: datetime | None = None,
-        created_at_to: datetime | None = None,
-        updated_at_from: datetime | None = None,
-        updated_at_to: datetime | None = None,
-    ) -> int:
-        """Count users matching filter parameters."""
-        clauses = self._build_user_query_clauses(
-            search=search,
-            is_active=is_active,
-            is_super_admin=is_super_admin,
-            email_verified=email_verified,
-            created_at_from=created_at_from,
-            created_at_to=created_at_to,
-            updated_at_from=updated_at_from,
-            updated_at_to=updated_at_to,
-        )
-        return await self.count(*clauses)
 
     async def invalidate_user_sessions(self, user_id: uuid.UUID) -> int:
         """Invalidate all active sessions for a user."""

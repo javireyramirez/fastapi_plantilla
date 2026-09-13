@@ -5,6 +5,7 @@ from enum import StrEnum
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from fastapi_plantilla.core.crud.schema import ScopeType
+from fastapi_plantilla.core.mixins import RecordStatus
 
 __all__ = [
     "AssignedRoleBasic",
@@ -55,6 +56,7 @@ class ModuleCreate(BaseModel):
     sort_order: int = 0
     is_active: bool = True
     is_trasheable: bool = True
+    is_exportable: bool = True
 
 
 class ModuleUpdate(BaseModel):
@@ -70,6 +72,7 @@ class ModuleUpdate(BaseModel):
     sort_order: int | None = None
     is_active: bool | None = None
     is_trasheable: bool | None = None
+    is_exportable: bool | None = None
 
 
 class ModuleResponse(BaseModel):
@@ -89,6 +92,7 @@ class ModuleResponse(BaseModel):
     sort_order: int = 0
     is_active: bool
     is_trasheable: bool = True
+    is_exportable: bool = True
 
 
 class RolePermissionItem(BaseModel):
@@ -152,6 +156,7 @@ class RoleResponse(BaseModel):
     color: str | None = None
     icon: str | None = None
     is_system: bool
+    status: RecordStatus = RecordStatus.ACTIVE
     created_at: datetime
     updated_at: datetime
 

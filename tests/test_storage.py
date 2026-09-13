@@ -130,6 +130,33 @@ def test_s3_provider_initialization() -> None:
         secret_key="fake-secret",  # noqa: S106
     )
     assert provider.bucket == "test-bucket"
+    assert provider.public_client is provider.client
+
+    # When public_endpoint_url is provided, public_client should use it
+    provider_public = S3StorageProvider(
+        bucket="test-bucket",
+        endpoint_url="http://minio:9000",
+        public_endpoint_url="http://localhost:9000",
+        region="us-east-1",
+        access_key="fake-key",
+        secret_key="fake-secret",  # noqa: S106
+    )
+    assert provider_public.public_client is not provider_public.client
+
+
+@pytest.mark.anyio
+async def test_s3_provider_presigned_url_uses_public_client() -> None:
+    """Verify presigned url uses public_endpoint_url."""
+    provider = S3StorageProvider(
+        bucket="test-bucket",
+        endpoint_url="http://minio:9000",
+        public_endpoint_url="http://localhost:9000",
+        region="us-east-1",
+        access_key="fake-key",
+        secret_key="fake-secret",  # noqa: S106
+    )
+    url = await provider.get_presigned_url("test.pdf", expires_in=60)
+    assert url.startswith("http://localhost:9000/test-bucket/test.pdf?")
 
 
 # =========================================================================
@@ -602,3 +629,60 @@ async def test_documents_entity_id_filtering_isolation(
     docs_b = list_b.json()["data"]
     assert any(d["id"] == doc_b_id for d in docs_b)
     assert not any(d["id"] == doc_a_id for d in docs_b)
+
+
+@pytest.mark.anyio
+async def test_documents_content_type_filtering(
+    storage_client: AsyncClient,
+) -> None:
+    """Verify documents filtering by content_type and contentType (comma-separated)."""
+    entity_id = uuid.uuid4()
+
+    # Upload PDF
+    res_pdf = await storage_client.post(
+        "/api/storage/documents/upload",
+        files={"file": ("doc.pdf", io.BytesIO(b"pdf data"), "application/pdf")},
+        data={"entity_type": "companies", "entity_id": str(entity_id)},
+    )
+    assert res_pdf.status_code == 201
+    pdf_id = res_pdf.json()["id"]
+
+    # Upload PNG
+    res_png = await storage_client.post(
+        "/api/storage/documents/upload",
+        files={"file": ("img.png", io.BytesIO(b"png data"), "image/png")},
+        data={"entity_type": "companies", "entity_id": str(entity_id)},
+    )
+    assert res_png.status_code == 201
+    png_id = res_png.json()["id"]
+
+    # Upload TXT
+    res_txt = await storage_client.post(
+        "/api/storage/documents/upload",
+        files={"file": ("note.txt", io.BytesIO(b"text data"), "text/plain")},
+        data={"entity_type": "companies", "entity_id": str(entity_id)},
+    )
+    assert res_txt.status_code == 201
+    txt_id = res_txt.json()["id"]
+
+    # 1. Query for PDF only (snake_case)
+    res = await storage_client.get(
+        f"/api/storage/documents?entity_id={entity_id}&content_type=application/pdf"
+    )
+    assert res.status_code == 200
+    items = res.json()["data"]
+    ids = [d["id"] for d in items]
+    assert pdf_id in ids
+    assert png_id not in ids
+    assert txt_id not in ids
+
+    # 2. Query for PDF and PNG (comma-separated, camelCase contentType)
+    res = await storage_client.get(
+        f"/api/storage/documents?entity_id={entity_id}&contentType=application/pdf,image/png"
+    )
+    assert res.status_code == 200
+    items = res.json()["data"]
+    ids = [d["id"] for d in items]
+    assert pdf_id in ids
+    assert png_id in ids
+    assert txt_id not in ids

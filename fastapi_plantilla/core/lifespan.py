@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.modules.rbac.catalog import sync_system_modules
+from fastapi_plantilla.modules.trash.listener import setup_trash_listeners
 
 
 def _setup_db(app: FastAPI) -> None:  # pragma: no cover
@@ -28,6 +29,7 @@ async def lifespan_setup(
     app.middleware_stack = None
     _setup_db(app)
     app.middleware_stack = app.build_middleware_stack()
+    setup_trash_listeners()
 
     session_factory = app.state.db_session_factory
     try:

@@ -195,6 +195,16 @@ async def test_users_admin_crud_and_listing(
     assert search_res.status_code == status.HTTP_200_OK
     assert len(search_res.json()["data"]) == 1
 
+    # Sort by email_verified and camelCase emailVerified
+    sort_res1 = await users_client.get(
+        "/api/users?sort_by=email_verified&sort_order=desc"
+    )
+    assert sort_res1.status_code == status.HTTP_200_OK
+    sort_res2 = await users_client.get(
+        "/api/users?sort_by=emailVerified&sort_order=asc"
+    )
+    assert sort_res2.status_code == status.HTTP_200_OK
+
     # Create new user administratively
     create_res = await users_client.post(
         "/api/users",

@@ -18,6 +18,7 @@ from fastapi_plantilla.core.crud.schema import (
     WriteOptions,
 )
 from fastapi_plantilla.core.crud.service_audit import BaseAuditService
+from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.auth.models import Account, User, Verification
 from fastapi_plantilla.modules.email.dependencies import get_email_service
 from fastapi_plantilla.modules.email.service import EmailService
@@ -64,7 +65,7 @@ class UserAdminService(BaseAuditService[User]):
     async def _get_user_or_404(self, user_id: uuid.UUID) -> User:
         """Fetch user by ID or raise 404."""
         user = await self.repository.get_by_id(user_id)
-        if not user:
+        if not user or user.status == RecordStatus.TRASHED:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
         return user
 
@@ -116,8 +117,14 @@ class UserAdminService(BaseAuditService[User]):
         await self.repository.invalidate_user_sessions(item.id)
 
     def build_where_filters(self, params: PaginationParams) -> list[Any]:
-        """Build query clauses including email search and boolean status filters."""
+        """Build query clauses including name, email, and boolean status filters."""
         clauses = super().build_where_filters(params)
+        name_val = getattr(params, "name", None)
+        if name_val:
+            clauses.append(self.build_string_filter("name", name_val))
+        email_val = getattr(params, "email", None)
+        if email_val:
+            clauses.append(self.build_string_filter("email", email_val))
         for bool_field in ("is_active", "is_super_admin", "email_verified"):
             val = getattr(params, bool_field, None)
             if val is not None:

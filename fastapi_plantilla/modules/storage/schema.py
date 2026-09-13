@@ -128,6 +128,8 @@ class DocumentFilterParams(PaginationParams):
     entity_id_camel: uuid.UUID | None = Field(default=None, alias="entityId")
     is_uploaded: bool | None = Field(default=None, alias="is_uploaded")
     is_uploaded_camel: bool | None = Field(default=None, alias="isUploaded")
+    content_type: str | None = Field(default=None, alias="content_type")
+    content_type_camel: str | None = Field(default=None, alias="contentType")
 
     @property
     def target_entity_id(self) -> uuid.UUID | None:
@@ -145,6 +147,15 @@ class DocumentFilterParams(PaginationParams):
         return (
             self.is_uploaded if self.is_uploaded is not None else self.is_uploaded_camel
         )
+
+    @property
+    def target_content_types(self) -> list[str] | None:
+        """Resolve content_types regardless of snake_case or camelCase."""
+        raw = self.content_type or self.content_type_camel
+        if not raw:
+            return None
+        types = [t.strip() for t in raw.split(",") if t.strip()]
+        return types if types else None
 
 
 class ZipDownloadRequest(BaseModel):

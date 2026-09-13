@@ -3,9 +3,11 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     ForeignKey,
+    Index,
     String,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -31,7 +33,7 @@ class Team(UUID7PrimaryKeyMixin, AuditFieldsMixin, OptimisticLockMixin, Base):
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     slug: Mapped[str] = mapped_column(
-        String(100), unique=True, index=True, nullable=False
+        String(100), unique=False, index=False, nullable=False
     )
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     owner_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -39,6 +41,16 @@ class Team(UUID7PrimaryKeyMixin, AuditFieldsMixin, OptimisticLockMixin, Base):
         ForeignKey("auth_users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_sys_teams_slug_active",
+            "slug",
+            unique=True,
+            postgresql_where=text("status != 'TRASHED'"),
+            sqlite_where=text("status != 'TRASHED'"),
+        ),
     )
 
     members: Mapped[list["TeamUser"]] = relationship(

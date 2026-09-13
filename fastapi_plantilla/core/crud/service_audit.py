@@ -7,6 +7,7 @@ from fastapi import HTTPException, status
 from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import inspect
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.audit_diff import (
@@ -145,10 +146,20 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         )
 
         rows: list[dict[str, Any]] = []
-        for item in items:
-            mapper = inspect(item.__class__)
-            row = {col.key: getattr(item, col.key) for col in mapper.columns}
-            rows.append(row)
+        if self.export_schema is not None:
+            for item in items:
+                dumped = self.export_schema.model_validate(item).model_dump(mode="json")
+                rows.append(dumped)
+        else:
+            excluded = {"version", "password", "password_hash", "token"}
+            for item in items:
+                mapper = inspect(item.__class__)
+                row = {
+                    col.key: getattr(item, col.key)
+                    for col in mapper.columns
+                    if col.key not in excluded and not col.key.startswith("_")
+                }
+                rows.append(row)
 
         slug = getattr(self, "resource_name", "export").lower()
         return format_export(
@@ -374,6 +385,16 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
                     status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg
                 ) from exc
             raise
+        except IntegrityError as exc:
+            if target_status == RecordStatus.ACTIVE:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Cannot restore {self.resource_name}: a conflicting "
+                        "active record already exists."
+                    ),
+                ) from exc
+            raise
 
     async def trash(
         self,
@@ -492,15 +513,26 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         status_filter = self.get_status_filter(is_trash=is_trash_filter)
         if status_filter is not None:
             where_clauses.append(status_filter)
-        count = await self.repository.update_many(
-            self.repository.pk.in_(req.ids),
-            *where_clauses,
-            data={
-                "status": target_status,
-                actor_field: str(user_id) if user_id else None,
-                timestamp_field: datetime.now(UTC),
-            },
-        )
+        try:
+            count = await self.repository.update_many(
+                self.repository.pk.in_(req.ids),
+                *where_clauses,
+                data={
+                    "status": target_status,
+                    actor_field: str(user_id) if user_id else None,
+                    timestamp_field: datetime.now(UTC),
+                },
+            )
+        except IntegrityError as exc:
+            if target_status == RecordStatus.ACTIVE:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Cannot restore {self.resource_name}: one or more "
+                        "records conflict with existing active records."
+                    ),
+                ) from exc
+            raise
         if count > 0:
             if target_status == RecordStatus.TRASHED:
                 await self.on_after_bulk_trash(req.ids, user_id=user_id)
@@ -541,7 +573,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
 
     async def on_after_permanent_delete(self, id: uuid.UUID) -> None:
         """Hook executed after permanently deleting an item."""
-        entity_type = getattr(self.model, "__tablename__", self.resource_name).lower()
+        entity_type = getattr(self.model, "__name__", self.resource_name).lower()
         if entity_type.startswith("sys_"):
             entity_type = entity_type.removeprefix("sys_").rstrip("s")
         for hook in _PURGE_SYNC_HOOKS:
@@ -556,10 +588,9 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         user_id: str | uuid.UUID | None = None,
     ) -> None:
         """Hook executed after bulk soft-deleting items."""
-        for item_id in ids:
-            item = await self.repository.get_by_id(item_id)
-            if item is not None:
-                await self.on_after_trash(item, user_id=user_id)
+        items = await self.repository.find_many(self.repository.pk.in_(ids))
+        for item in items:
+            await self.on_after_trash(item, user_id=user_id)
 
     async def on_after_bulk_restore(
         self,
@@ -567,8 +598,9 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         user_id: str | uuid.UUID | None = None,
     ) -> None:
         """Hook executed after bulk restoring items."""
-        for item_id in ids:
-            await self.on_after_permanent_delete(item_id)
+        items = await self.repository.find_many(self.repository.pk.in_(ids))
+        for item in items:
+            await self.on_after_restore(item, user_id=user_id)
 
     async def bulk_trash(
         self,

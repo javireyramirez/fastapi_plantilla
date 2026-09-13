@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.repository import BaseRepository
 from fastapi_plantilla.core.database import get_db_session
+from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.companies.models import Company
 
 __all__ = ["CompanyRepository"]
@@ -15,5 +16,7 @@ class CompanyRepository(BaseRepository[Company]):
         super().__init__(Company, session)
 
     async def get_by_nif(self, nif: str) -> Company | None:
-        """Fetch company by unique NIF identifier."""
-        return await self.find_first(Company.nif == nif)
+        """Fetch active company by unique NIF identifier."""
+        return await self.find_first(
+            Company.nif == nif, Company.status != RecordStatus.TRASHED
+        )

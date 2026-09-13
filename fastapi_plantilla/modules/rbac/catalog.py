@@ -53,13 +53,14 @@ class SystemModuleDefinition(TypedDict, total=False):
     sort_order: int
     is_active: bool
     is_trasheable: bool
+    is_exportable: bool
 
 
 CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
     {
         "code": "companies",
         "name": "Compañías",
-        "description": "Gestión de empresas / clientes",
+        "description": "Gestión de compañias / clientes",
         "category": "business",
         "category_name": "Negocio",
         "category_icon": "briefcase",
@@ -68,32 +69,21 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "sort_order": 3,
         "is_active": True,
         "is_trasheable": True,
-    },
-    {
-        "code": "documents",
-        "name": "Documentos",
-        "description": "Gestión de documentos",
-        "category": "files",
-        "category_name": "Archivos",
-        "category_icon": "file-text",
-        "category_order": 2,
-        "icon": "file",
-        "sort_order": 4,
-        "is_active": True,
-        "is_trasheable": True,
+        "is_exportable": True,
     },
     {
         "code": "storage",
-        "name": "Almacenamiento",
-        "description": "Gestión de archivos",
+        "name": "Almacenamiento y Documentos",
+        "description": "Gestión de archivos y documentos del sistema",
         "category": "files",
         "category_name": "Archivos",
         "category_icon": "file-text",
         "category_order": 2,
         "icon": "hard-drive",
-        "sort_order": 5,
+        "sort_order": 4,
         "is_active": True,
         "is_trasheable": True,
+        "is_exportable": True,
     },
     {
         "code": "users",
@@ -107,6 +97,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "sort_order": 0,
         "is_active": True,
         "is_trasheable": True,
+        "is_exportable": True,
     },
     {
         "code": "teams",
@@ -120,6 +111,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "sort_order": 1,
         "is_active": True,
         "is_trasheable": True,
+        "is_exportable": False,
     },
     {
         "code": "roles",
@@ -133,6 +125,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "sort_order": 2,
         "is_active": True,
         "is_trasheable": True,
+        "is_exportable": False,
     },
     {
         "code": "rbac",
@@ -146,6 +139,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "sort_order": 0,
         "is_active": True,
         "is_trasheable": True,
+        "is_exportable": False,
     },
     {
         "code": "audit",
@@ -159,6 +153,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "sort_order": 6,
         "is_active": True,
         "is_trasheable": False,
+        "is_exportable": True,
     },
     {
         "code": "trash",
@@ -172,6 +167,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "sort_order": 7,
         "is_active": True,
         "is_trasheable": False,
+        "is_exportable": False,
     },
 ]
 
@@ -207,6 +203,7 @@ async def sync_system_modules(
         sort_val = int(item.get("sort_order", 0))
         is_active_val = bool(item.get("is_active", True))
         trasheable_val = bool(item.get("is_trasheable", True))
+        exportable_val = bool(item.get("is_exportable", True))
 
         if existing is None:
             new_mod = SystemModule(
@@ -223,6 +220,7 @@ async def sync_system_modules(
                 sort_order=sort_val,
                 is_active=is_active_val,
                 is_trasheable=trasheable_val,
+                is_exportable=exportable_val,
             )
             session.add(new_mod)
             synced.append(new_mod)
@@ -239,6 +237,7 @@ async def sync_system_modules(
             existing.sort_order = sort_val
             existing.is_active = is_active_val
             existing.is_trasheable = trasheable_val
+            existing.is_exportable = exportable_val
             synced.append(existing)
 
     await session.flush()

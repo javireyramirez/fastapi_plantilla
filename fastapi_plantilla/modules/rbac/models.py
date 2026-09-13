@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import (
     Boolean,
     ForeignKey,
+    Index,
     Integer,
     String,
     UniqueConstraint,
@@ -55,6 +56,9 @@ class SystemModule(UUID7PrimaryKeyMixin, TimestampMixin, Base):
     is_trasheable: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default=text("true"), nullable=False
     )
+    is_exportable: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
 
     permissions: Mapped[list["RolePermission"]] = relationship(
         back_populates="module", cascade="all, delete-orphan"
@@ -73,12 +77,22 @@ class Role(UUID7PrimaryKeyMixin, AuditFieldsMixin, OptimisticLockMixin, Base):
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     slug: Mapped[str] = mapped_column(
-        String(100), unique=True, index=True, nullable=False
+        String(100), unique=False, index=False, nullable=False
     )
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     color: Mapped[str | None] = mapped_column(String(50), nullable=True)
     icon: Mapped[str | None] = mapped_column(String(50), nullable=True)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_rbac_roles_slug_active",
+            "slug",
+            unique=True,
+            postgresql_where=text("status != 'TRASHED'"),
+            sqlite_where=text("status != 'TRASHED'"),
+        ),
+    )
 
     permissions: Mapped[list["RolePermission"]] = relationship(
         back_populates="role", cascade="all, delete-orphan", lazy="selectin"

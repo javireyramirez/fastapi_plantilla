@@ -10,6 +10,7 @@ from fastapi_plantilla.core.crud.schema import (
     WriteOptions,
 )
 from fastapi_plantilla.core.crud.service_owned import BaseOwnedService
+from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.companies.models import Company
 from fastapi_plantilla.modules.companies.repository import CompanyRepository
 
@@ -29,14 +30,11 @@ class CompanyService(BaseOwnedService[Company]):
         self.repository: CompanyRepository = repository
 
     def build_where_filters(self, params: PaginationParams) -> list[Any]:
-        """Build query clauses including sector and exact NIF matching."""
+        """Build query clauses including sector."""
         clauses = super().build_where_filters(params)
         sector_val = getattr(params, "sector", None)
         if sector_val:
             clauses.append(Company.sector == sector_val)
-        nif_val = getattr(params, "nif", None)
-        if nif_val:
-            clauses.append(Company.nif == nif_val)
         return clauses
 
     async def create(
@@ -110,4 +108,28 @@ class CompanyService(BaseOwnedService[Company]):
             scope=scope,
             options=options,
             allow_immutable=allow_immutable,
+        )
+
+    async def restore(
+        self,
+        id: uuid.UUID,
+        *where: Any,
+        user_id: str | uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
+    ) -> Company:
+        """Restore company verifying NIF does not collide with an active company."""
+        company = await self.repository.find_first(Company.id == id)
+        if company and company.status == RecordStatus.TRASHED:
+            existing = await self.repository.get_by_nif(company.nif)
+            if existing and existing.id != company.id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Cannot restore company '{company.name}': NIF '{company.nif}' "
+                        "is already in use by an active company."
+                    ),
+                )
+        return await super().restore(
+            id, *where, user_id=user_id, scope=scope, options=options
         )

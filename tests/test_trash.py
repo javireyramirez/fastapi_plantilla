@@ -722,3 +722,49 @@ async def test_document_trash_includes_module_principal_entity(
     assert len(items) == 1
     assert items[0]["module_principal_entity"]["code"] == "companies"
     assert items[0]["module_principal_entity"]["entity_name"] == "Acme Aerospace Corp"
+
+
+@pytest.mark.anyio
+async def test_restore_conflict_returns_409(
+    client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify restoring an item whose unique constraint conflicts returns 409."""
+    from fastapi_plantilla.modules.rbac.repository import RbacRepository
+    from fastapi_plantilla.modules.rbac.schema import RoleCreate
+    from fastapi_plantilla.modules.rbac.service import RbacService
+
+    rbac_repo = RbacRepository(dbsession)
+    rbac_service = RbacService(rbac_repo)
+
+    # 1. Create Role A and trash it
+    r1 = await rbac_service.create_role(
+        RoleCreate(name="Role Conflict A", slug="conflict-slug", description="A")
+    )
+    await dbsession.commit()
+    await rbac_service.trash(r1.id)
+    await dbsession.commit()
+
+    # 2. Create Role B with the same slug (active)
+    await rbac_service.create_role(
+        RoleCreate(name="Role Conflict B", slug="conflict-slug", description="B")
+    )
+    await dbsession.commit()
+
+    # 3. Find trash item for Role A
+    trash_repo = TrashRepository(dbsession)
+    trash_item = await trash_repo.get_by_entity("role", r1.id)
+    assert trash_item is not None
+
+    # 4. Attempt single restore -> must fail with 409 Conflict
+    res_single = await client.post(f"/api/trash/{trash_item.id}/restore")
+    assert res_single.status_code == 409
+    assert "conflicting active record already exists" in res_single.json()["detail"]
+
+    # 5. Attempt bulk restore -> must also fail with 409 Conflict
+    res_bulk = await client.post(
+        "/api/trash/bulk/restore",
+        json={"ids": [str(trash_item.id)]},
+    )
+    assert res_bulk.status_code == 409
+    assert "conflicting active record already exists" in res_bulk.json()["detail"]
