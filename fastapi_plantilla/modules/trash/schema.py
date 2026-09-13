@@ -2,12 +2,14 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from fastapi_plantilla.core.crud.schema import (
     BulkIdsRequest,
     BulkResponse,
     PaginationParams,
+    PrincipalEntityModule,
+    UserReference,
 )
 
 DEFAULT_TRASH_PURGE_LIMIT: int = 500
@@ -17,32 +19,11 @@ __all__ = [
     "BulkTrashActionRequest",
     "BulkTrashResponse",
     "PrincipalEntityModule",
-    "TrashDeletorResponse",
     "TrashFilterParams",
     "TrashItemResponse",
     "TrashModuleResponse",
     "TrashPurgeResponse",
 ]
-
-
-class PrincipalEntityModule(BaseModel):
-    """Metadata of the parent entity to which a document belongs."""
-
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
-
-    code: str
-    name: str
-    entity_name: str | None = None
-    entity_id: uuid.UUID | None = None
-
-
-class TrashDeletorResponse(BaseModel):
-    """Information of the actor who moved the item to trash."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    name: str | None = None
-    email: str | None = None
 
 
 class TrashModuleResponse(BaseModel):
@@ -69,10 +50,7 @@ class TrashItemResponse(BaseModel):
     name: str
     module_principal_entity: PrincipalEntityModule | dict[str, Any] | None = None
     owner_id: uuid.UUID | None = None
-    deleted_by: str | None = None
-    deleted_by_name: str | None = None
-    deleted_by_email: str | None = None
-    deletor: TrashDeletorResponse | None = None
+    deletor: UserReference | None = None
     deleted_at: datetime
     expires_at: datetime
     details: str | None = None
@@ -90,13 +68,7 @@ class TrashFilterParams(PaginationParams):
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    entity_type: str | None = Field(
-        default=None,
-        max_length=50,
-        validation_alias=AliasChoices(
-            "entity_type", "entityType", "module_slug", "moduleSlug"
-        ),
-    )
+    entity_type: str | None = Field(default=None, max_length=50)
     category: str | None = Field(default=None, max_length=50)
     is_expired: bool | None = None
     deleted_at_from: datetime | None = None

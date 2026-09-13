@@ -1,26 +1,19 @@
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
-from fastapi_plantilla.core.crud.schema import AuditFieldsSchema, PaginationParams
+from fastapi_plantilla.core.crud.schema import (
+    AuditFieldsSchema,
+    PaginationParams,
+    UserReference,
+)
 
 __all__ = [
     "CompaniesPaginationParams",
     "CompanyCreate",
-    "CompanyOwnerResponse",
     "CompanyResponse",
     "CompanyUpdate",
 ]
-
-
-class CompanyOwnerResponse(BaseModel):
-    """Minimal owner representation for company relations."""
-
-    id: uuid.UUID
-    name: str | None = None
-    email: str | None = None
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class CompanyResponse(AuditFieldsSchema):
@@ -32,8 +25,7 @@ class CompanyResponse(AuditFieldsSchema):
     sector: str | None = None
     website: str | None = None
     description: str | None = None
-    owner_id: uuid.UUID | None = None
-    owner: CompanyOwnerResponse | None = None
+    owner: UserReference | None = None
 
 
 class CompanyCreate(BaseModel):

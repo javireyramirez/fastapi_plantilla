@@ -24,6 +24,7 @@ from fastapi_plantilla.core.mixins import generate_uuid7
 from fastapi_plantilla.modules.auth.dependencies import get_current_user
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.auth.schema import UserResponse
+from fastapi_plantilla.modules.companies.models import Company
 from fastapi_plantilla.modules.storage.dependencies import (
     get_storage_provider,
 )
@@ -607,10 +608,16 @@ async def test_documents_entity_id_filtering_isolation(
     res_b = await storage_client.post(
         "/api/storage/documents/upload",
         files={"file": ("doc_b.pdf", io.BytesIO(b"content b"), "application/pdf")},
-        data={"entityType": "companies", "entityId": str(comp_b_id)},
+        data={"entity_type": "companies", "entity_id": str(comp_b_id)},
     )
     assert res_b.status_code == 201
     doc_b_id = res_b.json()["id"]
+
+    # Verify module_principal_entity is present
+    assert res_a.json()["module_principal_entity"] is not None
+    assert res_a.json()["module_principal_entity"]["code"] == "companies"
+    assert res_a.json()["module_principal_entity"]["name"] == "Compañías"
+    assert res_a.json()["module_principal_entity"]["entity_id"] == str(comp_a_id)
 
     # 1. Query for Company A (snake_case)
     list_a = await storage_client.get(
@@ -621,9 +628,9 @@ async def test_documents_entity_id_filtering_isolation(
     assert any(d["id"] == doc_a_id for d in docs_a)
     assert not any(d["id"] == doc_b_id for d in docs_a)
 
-    # 2. Query for Company B (camelCase)
+    # 2. Query for Company B (snake_case)
     list_b = await storage_client.get(
-        f"/api/storage/documents?entityType=companies&entityId={comp_b_id}"
+        f"/api/storage/documents?entity_type=companies&entity_id={comp_b_id}"
     )
     assert list_b.status_code == 200
     docs_b = list_b.json()["data"]
@@ -635,7 +642,7 @@ async def test_documents_entity_id_filtering_isolation(
 async def test_documents_content_type_filtering(
     storage_client: AsyncClient,
 ) -> None:
-    """Verify documents filtering by content_type and contentType (comma-separated)."""
+    """Verify documents filtering by content_type (single and comma-separated)."""
     entity_id = uuid.uuid4()
 
     # Upload PDF
@@ -676,9 +683,9 @@ async def test_documents_content_type_filtering(
     assert png_id not in ids
     assert txt_id not in ids
 
-    # 2. Query for PDF and PNG (comma-separated, camelCase contentType)
+    # 2. Query for PDF and PNG (comma-separated content_type)
     res = await storage_client.get(
-        f"/api/storage/documents?entity_id={entity_id}&contentType=application/pdf,image/png"
+        f"/api/storage/documents?entity_id={entity_id}&content_type=application/pdf,image/png"
     )
     assert res.status_code == 200
     items = res.json()["data"]
@@ -686,3 +693,52 @@ async def test_documents_content_type_filtering(
     assert pdf_id in ids
     assert png_id in ids
     assert txt_id not in ids
+
+
+@pytest.mark.anyio
+async def test_document_module_principal_entity_name_resolution(
+    storage_client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify module_principal_entity correctly resolves and returns entity_name."""
+    company_repo = BaseRepository(Company, dbsession)
+    company = await company_repo.create(
+        {
+            "id": generate_uuid7(),
+            "name": "Acme Logistics SL",
+            "nif": f"B{uuid.uuid4().hex[:8].upper()}",
+        }
+    )
+    await dbsession.flush()
+
+    # Upload document associated with the company
+    file_bytes = b"Contract terms and conditions"
+    res = await storage_client.post(
+        "/api/storage/documents/upload",
+        files={"file": ("contract.pdf", io.BytesIO(file_bytes), "application/pdf")},
+        data={"entity_type": "companies", "entity_id": str(company.id)},
+    )
+    assert res.status_code == 201
+    upload_data = res.json()
+    doc_id = upload_data["id"]
+
+    assert upload_data["module_principal_entity"] is not None
+    assert upload_data["module_principal_entity"]["code"] == "companies"
+    assert upload_data["module_principal_entity"]["name"] == "Compañías"
+    assert upload_data["module_principal_entity"]["entity_id"] == str(company.id)
+    assert upload_data["module_principal_entity"]["entity_name"] == "Acme Logistics SL"
+
+    # List documents for this company
+    list_res = await storage_client.get(
+        f"/api/storage/documents?entity_id={company.id}"
+    )
+    assert list_res.status_code == 200
+    list_data = list_res.json()["data"]
+    doc_in_list = next(d for d in list_data if d["id"] == doc_id)
+    assert doc_in_list["module_principal_entity"]["entity_name"] == "Acme Logistics SL"
+
+    # Get single document
+    get_res = await storage_client.get(f"/api/storage/documents/{doc_id}")
+    assert get_res.status_code == 200
+    single_data = get_res.json()
+    assert single_data["module_principal_entity"]["entity_name"] == "Acme Logistics SL"

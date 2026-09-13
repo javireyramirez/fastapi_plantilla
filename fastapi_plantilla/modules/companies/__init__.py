@@ -4,7 +4,6 @@ from fastapi_plantilla.modules.companies.routes import router
 from fastapi_plantilla.modules.companies.schema import (
     CompaniesPaginationParams,
     CompanyCreate,
-    CompanyOwnerResponse,
     CompanyResponse,
     CompanyUpdate,
 )
@@ -14,7 +13,6 @@ __all__ = [
     "CompaniesPaginationParams",
     "Company",
     "CompanyCreate",
-    "CompanyOwnerResponse",
     "CompanyRepository",
     "CompanyResponse",
     "CompanyService",

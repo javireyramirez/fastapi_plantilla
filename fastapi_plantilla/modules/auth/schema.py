@@ -33,7 +33,6 @@ class UserBase(BaseModel):
 
     name: str
     email: EmailStr
-    image: str | None = None
 
 
 class UserCreate(UserBase):
@@ -47,7 +46,6 @@ class UserUpdate(BaseModel):
 
     name: str | None = None
     email: EmailStr | None = None
-    image: str | None = None
 
 
 class PasswordChange(BaseModel):

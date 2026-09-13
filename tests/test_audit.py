@@ -490,9 +490,6 @@ async def test_audit_actor_enrichment(
         sort_res = await client.get("/api/audit?sort_by=action&sort_order=desc")
         assert sort_res.status_code == 200
 
-        assert item["actor_id"] == str(normal_user.id)
-        assert item["actor_name"] == normal_user.name
-        assert item["actor_email"] == normal_user.email
         assert item["user"] is not None
         assert item["user"]["id"] == str(normal_user.id)
         assert item["user"]["name"] == normal_user.name
@@ -502,16 +499,15 @@ async def test_audit_actor_enrichment(
         get_res = await client.get(f"/api/audit/{created_log.id}")
         assert get_res.status_code == 200
         single = get_res.json()
-        assert single["actor_name"] == normal_user.name
-        assert single["actor_email"] == normal_user.email
         assert single["user"]["name"] == normal_user.name
+        assert single["user"]["email"] == normal_user.email
 
         # 3. Query entity history
         history_res = await client.get(f"/api/audit/entity/document/{entity_id}")
         assert history_res.status_code == 200
         history = history_res.json()
         assert len(history) == 1
-        assert history[0]["actor_name"] == normal_user.name
+        assert history[0]["user"]["name"] == normal_user.name
         assert history[0]["user"]["email"] == normal_user.email
 
 
@@ -621,7 +617,6 @@ async def test_audit_entity_name_population_and_endpoints(
         assert len(logs) >= 1
         create_log = next(log for log in logs if log["action"] == "CREATE")
         assert create_log["entity_name"] == "Audit Trail Team"
-        assert create_log["entityName"] == "Audit Trail Team"
 
         # Check list endpoint with filter by entity_id
         list_res = await client.get(f"/api/audit?entity_id={team.id}")
@@ -629,14 +624,12 @@ async def test_audit_entity_name_population_and_endpoints(
         data = list_res.json()["data"]
         assert len(data) >= 1
         assert data[0]["entity_name"] == "Audit Trail Team"
-        assert data[0]["entityName"] == "Audit Trail Team"
 
         # Check single get endpoint
         single_res = await client.get(f"/api/audit/{create_log['id']}")
         assert single_res.status_code == 200
         single_data = single_res.json()
         assert single_data["entity_name"] == "Audit Trail Team"
-        assert single_data["entityName"] == "Audit Trail Team"
 
     # 3. Test fallback enrichment for existing audit log with entity_name=None
     audit_repo = AuditRepository(dbsession)
@@ -659,4 +652,3 @@ async def test_audit_entity_name_population_and_endpoints(
         assert res.status_code == 200
         data = res.json()
         assert data["entity_name"] == "Audit Trail Team"
-        assert data["entityName"] == "Audit Trail Team"

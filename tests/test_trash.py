@@ -554,18 +554,17 @@ async def test_trash_deletor_info_populated(
 
     expected_name = auth_state.user.name
     expected_email = auth_state.user.email
-    assert item["deleted_by"] == str(auth_state.user.id)
-    assert item["deleted_by_name"] == expected_name
-    assert item["deleted_by_email"] == expected_email
-    assert item["deletor"] == {"name": expected_name, "email": expected_email}
+    assert item["deletor"]["id"] == str(auth_state.user.id)
+    assert item["deletor"]["name"] == expected_name
+    assert item["deletor"]["email"] == expected_email
 
     # Verify single item endpoint returns the exact same deletor fields
     get_res = await client.get(f"/api/trash/{item['id']}")
     assert get_res.status_code == 200
     single = get_res.json()
-    assert single["deleted_by_name"] == expected_name
-    assert single["deleted_by_email"] == expected_email
-    assert single["deletor"] == {"name": expected_name, "email": expected_email}
+    assert single["deletor"]["id"] == str(auth_state.user.id)
+    assert single["deletor"]["name"] == expected_name
+    assert single["deletor"]["email"] == expected_email
 
 
 @pytest.mark.anyio

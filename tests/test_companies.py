@@ -200,8 +200,6 @@ async def test_create_and_get_company(
     get_data = get_res.json()
     assert get_data["id"] == company_id
     assert get_data["name"] == "Acme Corporation"
-    assert get_data["created_by"] == str(context.user.id)
-    assert get_data["created_by_name"] == context.user.name
     assert get_data["creator"]["id"] == str(context.user.id)
     assert get_data["creator"]["name"] == context.user.name
     assert get_data["creator"]["email"] == context.user.email
@@ -235,8 +233,7 @@ async def test_update_company_and_optimistic_locking(
     patch_data = patch_res.json()
     assert patch_data["name"] == "Company One Renamed"
     assert patch_data["version"] == 2
-    assert patch_data["updated_by"] == str(context.user.id)
-    assert patch_data["updated_by_name"] == context.user.name
+    assert patch_data["updater"]["id"] == str(context.user.id)
     assert patch_data["updater"]["name"] == context.user.name
 
     # 2. Attempt to update c1's NIF to c2's NIF -> Conflict

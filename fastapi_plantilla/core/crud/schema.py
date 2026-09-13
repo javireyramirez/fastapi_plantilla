@@ -25,6 +25,7 @@ __all__ = [
     "PaginatedResponse",
     "PaginationMeta",
     "PaginationParams",
+    "PrincipalEntityModule",
     "ScopeContext",
     "ScopeType",
     "SortOrder",
@@ -165,7 +166,6 @@ class UserReference(BaseModel):
     id: uuid.UUID | None = None
     name: str | None = None
     email: str | None = None
-    image: str | None = None
 
 
 class AuditFieldsSchema(BaseModel):
@@ -176,20 +176,8 @@ class AuditFieldsSchema(BaseModel):
     status: RecordStatus = RecordStatus.ACTIVE
     created_at: datetime
     updated_at: datetime
-    deleted_at: datetime | None = None
-    restored_at: datetime | None = None
-    created_by: str | None = None
-    updated_by: str | None = None
-    deleted_by: str | None = None
-    restored_by: str | None = None
-    created_by_name: str | None = None
-    updated_by_name: str | None = None
-    deleted_by_name: str | None = None
-    restored_by_name: str | None = None
     creator: UserReference | None = None
     updater: UserReference | None = None
-    deletor: UserReference | None = None
-    restorer: UserReference | None = None
     version: int = Field(default=1, ge=1)
 
 
@@ -246,3 +234,14 @@ class AuditEntry(BaseModel):
     user_agent: str | None = None
     changes: dict[str, Any] | None = None
     details: str | None = None
+
+
+class PrincipalEntityModule(BaseModel):
+    """Metadata of the parent entity to which a document belongs."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    code: str
+    name: str
+    entity_name: str | None = None
+    entity_id: uuid.UUID | None = None

@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from fastapi_plantilla.core.crud.schema import SortOrder, UserReference
 
@@ -43,15 +43,8 @@ class AuditLogResponse(BaseModel):
     id: uuid.UUID
     entity_type: str
     entity_id: uuid.UUID | None = None
-    entity_name: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("entity_name", "entityName"),
-    )
-    entityName: str | None = Field(default=None)  # noqa: N815
+    entity_name: str | None = None
     action: str
-    actor_id: uuid.UUID | None = None
-    actor_name: str | None = None
-    actor_email: str | None = None
     user: UserReference | None = None
     ip_address: str | None = None
     user_agent: str | None = None
@@ -59,25 +52,13 @@ class AuditLogResponse(BaseModel):
     details: str | None = None
     created_at: datetime
 
-    @model_validator(mode="after")
-    def sync_entity_names(self) -> "AuditLogResponse":
-        """Synchronize snake_case and camelCase entity name fields."""
-        val = self.entity_name or self.entityName
-        self.entity_name = val
-        self.entityName = val
-        return self
-
 
 class AuditLogCreate(BaseModel):
     """Payload to create an explicit domain audit log record."""
 
     entity_type: str = Field(..., min_length=1, max_length=100)
     entity_id: uuid.UUID | None = None
-    entity_name: str | None = Field(
-        default=None,
-        max_length=255,
-        validation_alias=AliasChoices("entity_name", "entityName"),
-    )
+    entity_name: str | None = Field(default=None, max_length=255)
     action: str = Field(..., min_length=1, max_length=50)
     actor_id: uuid.UUID | None = None
     actor_name: str | None = Field(default=None, max_length=255)
@@ -93,44 +74,23 @@ class AuditFilterParams(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    entity_type: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "entity_type", "entityType", "module_slug", "moduleSlug"
-        ),
-    )
-    entity_id: uuid.UUID | None = Field(
-        default=None,
-        validation_alias=AliasChoices("entity_id", "entityId"),
-    )
-    entity_name: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("entity_name", "entityName"),
-    )
+    entity_type: str | None = None
+    entity_id: uuid.UUID | None = None
+    entity_name: str | None = None
     action: str | None = None
     actor_id: uuid.UUID | None = Field(
         default=None,
-        validation_alias=AliasChoices("actor_id", "actorId", "user_id", "userId"),
+        validation_alias=AliasChoices("actor_id", "user_id"),
     )
     from_date: datetime | None = Field(
         default=None,
-        validation_alias=AliasChoices(
-            "from_date", "fromDate", "createdAtFrom", "created_at_from"
-        ),
+        validation_alias=AliasChoices("from_date", "created_at_from"),
     )
     to_date: datetime | None = Field(
         default=None,
-        validation_alias=AliasChoices(
-            "to_date", "toDate", "createdAtTo", "created_at_to"
-        ),
+        validation_alias=AliasChoices("to_date", "created_at_to"),
     )
     page: int = Field(default=1, ge=1, le=1000)
     limit: int = Field(default=20, ge=1, le=100)
-    sort_by: str = Field(
-        default="created_at",
-        validation_alias=AliasChoices("sort_by", "sortBy"),
-    )
-    sort_order: SortOrder = Field(
-        default=SortOrder.DESC,
-        validation_alias=AliasChoices("sort_order", "sortOrder"),
-    )
+    sort_by: str = "created_at"
+    sort_order: SortOrder = SortOrder.DESC

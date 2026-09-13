@@ -313,25 +313,17 @@ class RbacService(BaseAuditService[Role]):
         return RoleAssignmentResponse(
             id=assignment.id,
             role_id=assignment.role_id,
-            roleId=assignment.role_id,
             entity_type=assignment.entity_type.lower(),
-            entityType=assignment.entity_type.lower(),
             entity_id=assignment.entity_id,
-            entityId=assignment.entity_id,
             created_at=assignment.created_at,
             assigned_at=assignment.created_at,
-            assignedAt=assignment.created_at,
             user_id=assignment.entity_id if is_user else None,
-            userId=assignment.entity_id if is_user else None,
             team_id=assignment.entity_id if is_team else None,
-            teamId=assignment.entity_id if is_team else None,
             role=role_basic,
             user=user_basic,
             assigned_user=user_basic,
-            assignedUser=user_basic,
             team=team_basic,
             assigned_team=team_basic,
-            assignedTeam=team_basic,
         )
 
     async def list_assignments(

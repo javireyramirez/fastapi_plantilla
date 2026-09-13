@@ -53,16 +53,13 @@ async def _fetch_users_map(
     if not raw_to_uuid:
         return {}
     unique_uuids = list(set(raw_to_uuid.values()))
-    stmt = select(User.id, User.name, User.email, User.image).where(
-        User.id.in_(unique_uuids)
-    )
+    stmt = select(User.id, User.name, User.email).where(User.id.in_(unique_uuids))
     result = await session.execute(stmt)
     uuid_to_ref = {
         row.id: UserReference(
             id=row.id,
             name=row.name,
             email=row.email,
-            image=row.image,
         )
         for row in result.all()
     }
@@ -74,20 +71,20 @@ async def _fetch_users_map(
 
 
 def _attach_item_actors(item: Any, users_map: dict[str, UserReference]) -> None:
-    """Attach actor objects and names to a single item in-place."""
-    for attr, ref_attr, name_attr in (
-        ("created_by", "creator", "created_by_name"),
-        ("updated_by", "updater", "updated_by_name"),
-        ("restored_by", "restorer", "restored_by_name"),
+    """Attach actor objects to a single item in-place."""
+    for attr, ref_attr in (
+        ("created_by", "creator"),
+        ("updated_by", "updater"),
     ):
         if hasattr(item, attr):
             raw = getattr(item, attr, None)
             key = str(raw).strip() if raw is not None else ""
             user_ref = users_map.get(key)
             name = user_ref.name if user_ref else (str(raw) if raw else None)
-            ref = user_ref or (UserReference(name=name) if name else None)
+            ref = user_ref or (
+                UserReference(id=_extract_uuid(raw), name=name) if name or raw else None
+            )
             setattr(item, ref_attr, ref)
-            setattr(item, name_attr, name)
 
     if hasattr(item, "deleted_by"):
         raw = getattr(item, "deleted_by", None)
@@ -96,11 +93,11 @@ def _attach_item_actors(item: Any, users_map: dict[str, UserReference]) -> None:
         name = user_ref.name if user_ref else (str(raw) if raw else None)
         email = user_ref.email if user_ref else None
         ref = user_ref or (
-            UserReference(name=name, email=email) if name or email else None
+            UserReference(id=_extract_uuid(raw), name=name, email=email)
+            if name or email or raw
+            else None
         )
         item.deletor = ref  # type: ignore[attr-defined]
-        item.deleted_by_name = name  # type: ignore[attr-defined]
-        item.deleted_by_email = email  # type: ignore[attr-defined]
 
     if hasattr(item, "actor_id"):
         raw = getattr(item, "actor_id", None)
@@ -109,13 +106,11 @@ def _attach_item_actors(item: Any, users_map: dict[str, UserReference]) -> None:
         name = user_ref.name if user_ref else getattr(item, "actor_name", None)
         email = user_ref.email if user_ref else getattr(item, "actor_email", None)
         if user_ref:
-            if not getattr(item, "actor_name", None):
-                item.actor_name = user_ref.name  # type: ignore[attr-defined]
-            if not getattr(item, "actor_email", None):
-                item.actor_email = user_ref.email  # type: ignore[attr-defined]
             item.user = user_ref  # type: ignore[attr-defined]
-        elif name or email:
-            item.user = UserReference(name=name, email=email)  # type: ignore[attr-defined]
+        elif name or email or raw:
+            item.user = UserReference(  # type: ignore[attr-defined]
+                id=_extract_uuid(raw), name=name, email=email
+            )
         else:
             item.user = None  # type: ignore[attr-defined]
 

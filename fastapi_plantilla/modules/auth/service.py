@@ -188,7 +188,7 @@ class AuthService:
         user = await self.repository.create_user(
             name=schema.name,
             email=schema.email,
-            image=schema.image,
+            image=None,
         )
         await self.repository.create_account(
             user_id=user.id,

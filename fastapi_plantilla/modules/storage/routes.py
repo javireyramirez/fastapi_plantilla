@@ -6,7 +6,6 @@ from fastapi import (
     Depends,
     File,
     Form,
-    HTTPException,
     Query,
     Response,
     UploadFile,
@@ -78,32 +77,20 @@ async def confirm_upload(
 )
 async def upload_direct(
     file: Annotated[UploadFile, File(...)],
-    entity_type: Annotated[str | None, Form(alias="entity_type", max_length=50)] = None,
-    entity_type_camel: Annotated[
-        str | None, Form(alias="entityType", max_length=50)
-    ] = None,
-    entity_id: Annotated[uuid.UUID | None, Form(alias="entity_id")] = None,
-    entity_id_camel: Annotated[uuid.UUID | None, Form(alias="entityId")] = None,
+    entity_type: Annotated[str, Form(max_length=50)],
+    entity_id: Annotated[uuid.UUID, Form()],
     description: Annotated[str | None, Form()] = None,
     service: DocumentService = Depends(get_document_service),
     options: WriteOptions = Depends(get_write_options),
 ) -> Document:
     """Upload file directly to server and persist document metadata."""
-    resolved_type = entity_type or entity_type_camel
-    resolved_id = entity_id or entity_id_camel
-    if not resolved_type or not resolved_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="entity_type and entity_id are required fields.",
-        )
-
     file_bytes = await file.read()
     filename = file.filename or "uploaded_file"
     return await service.upload_direct(
         file_data=file_bytes,
         filename=filename,
-        entity_type=resolved_type,
-        entity_id=resolved_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
         content_type=file.content_type,
         description=description,
         options=options,
@@ -173,25 +160,17 @@ async def list_documents(
 ) -> PaginatedResponse[Document]:
     """Retrieve paginated list of documents with optional criteria filters."""
     where = []
-    if params.target_entity_id is not None:
-        where.append(Document.entity_id == params.target_entity_id)
+    if params.entity_id is not None:
+        where.append(Document.entity_id == params.entity_id)
 
-    if params.target_entity_type:
-        candidates = [params.target_entity_type]
-        norm = params.target_entity_type.strip().lower()
-        if norm in ("company", "companies"):
-            candidates = ["company", "companies"]
-        elif norm in ("user", "users"):
-            candidates = ["user", "users"]
-        elif norm in ("team", "teams"):
-            candidates = ["team", "teams"]
-        where.append(Document.entity_type.in_(candidates))
+    if params.entity_type:
+        where.append(Document.entity_type == params.entity_type)
 
-    if params.target_is_uploaded is not None:
-        where.append(Document.is_uploaded == params.target_is_uploaded)
+    if params.is_uploaded is not None:
+        where.append(Document.is_uploaded == params.is_uploaded)
 
-    if params.target_content_types:
-        where.append(Document.content_type.in_(params.target_content_types))
+    if params.content_types:
+        where.append(Document.content_type.in_(params.content_types))
 
     return await service.find_paginated(params, *where, scope=scope)
 

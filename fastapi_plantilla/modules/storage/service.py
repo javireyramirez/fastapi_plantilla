@@ -9,7 +9,9 @@ from typing import Any
 from fastapi import HTTPException, status
 from loguru import logger
 
+from fastapi_plantilla.core.crud.principal import enrich_principal_entities
 from fastapi_plantilla.core.crud.schema import (
+    PaginatedResponse,
     ScopeContext,
     ScopeType,
     WriteOptions,
@@ -63,6 +65,31 @@ class DocumentService(BaseOwnedService[Document]):
         super().__init__(repository)
         self.doc_repo = repository
         self.storage_provider = storage_provider
+
+    async def find_paginated(
+        self,
+        params: Any,
+        *where: Any,
+        scope: ScopeContext | None = None,
+        order_by: Any = None,
+    ) -> PaginatedResponse[Document]:
+        """Fetch paginated documents enriched with principal entity metadata."""
+        res = await super().find_paginated(
+            params, *where, scope=scope, order_by=order_by
+        )
+        await enrich_principal_entities(self.repository.session, res.data)
+        return res
+
+    async def get_by_id(
+        self,
+        id: uuid.UUID,
+        *where: Any,
+        scope: ScopeContext | None = None,
+    ) -> Document:
+        """Fetch document by ID enriched with principal entity metadata."""
+        doc = await super().get_by_id(id, *where, scope=scope)
+        await enrich_principal_entities(self.repository.session, [doc])
+        return doc
 
     def build_storage_key(
         self,
@@ -154,12 +181,14 @@ class DocumentService(BaseOwnedService[Document]):
             if data.content_type is not None:
                 update_payload["content_type"] = data.content_type
 
-        return await self.update(
+        doc = await self.update(
             id,
             update_payload,
             user_id=user_id,
             scope=scope,
         )
+        await enrich_principal_entities(self.repository.session, [doc])
+        return doc
 
     async def upload_direct(
         self,
@@ -203,12 +232,14 @@ class DocumentService(BaseOwnedService[Document]):
 
         user_id = options.user_id if options else None
         scope = options.scope if options else None
-        return await self.create(
+        doc = await self.create(
             create_payload,
             user_id=user_id,
             scope=scope,
             allow_immutable=True,
         )
+        await enrich_principal_entities(self.repository.session, [doc])
+        return doc
 
     async def get_presigned_download(
         self,

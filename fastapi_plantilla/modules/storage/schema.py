@@ -1,9 +1,21 @@
 import uuid
-from typing import Self
+from typing import Any, Self
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
-from fastapi_plantilla.core.crud.schema import AuditFieldsSchema, PaginationParams
+from fastapi_plantilla.core.crud.schema import (
+    AuditFieldsSchema,
+    PaginationParams,
+    PrincipalEntityModule,
+)
+from fastapi_plantilla.modules.trash.service import resolve_module
 
 __all__ = [
     "ConfirmUploadRequest",
@@ -22,33 +34,19 @@ class PresignedUploadRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    entity_type: str = Field(
-        ...,
-        min_length=1,
-        max_length=50,
-        validation_alias=AliasChoices("entity_type", "entityType"),
-    )
-    entity_id: uuid.UUID = Field(
-        ...,
-        validation_alias=AliasChoices("entity_id", "entityId"),
-    )
+    entity_type: str = Field(..., min_length=1, max_length=50)
+    entity_id: uuid.UUID
     name: str = Field(
         ...,
         min_length=1,
         max_length=255,
-        validation_alias=AliasChoices("name", "filename", "fileName"),
+        validation_alias=AliasChoices("name", "filename"),
     )
-    content_type: str | None = Field(
-        default=None,
-        max_length=100,
-        validation_alias=AliasChoices("content_type", "contentType", "mimeType"),
-    )
+    content_type: str | None = Field(default=None, max_length=100)
     size_bytes: int | None = Field(
         default=None,
         ge=0,
-        validation_alias=AliasChoices(
-            "size_bytes", "sizeBytes", "file_size", "fileSize", "size"
-        ),
+        validation_alias=AliasChoices("size_bytes", "file_size", "size"),
     )
     description: str | None = Field(default=None, max_length=1000)
 
@@ -71,15 +69,9 @@ class ConfirmUploadRequest(BaseModel):
     size_bytes: int | None = Field(
         default=None,
         ge=0,
-        validation_alias=AliasChoices(
-            "size_bytes", "sizeBytes", "file_size", "fileSize", "size"
-        ),
+        validation_alias=AliasChoices("size_bytes", "file_size", "size"),
     )
-    content_type: str | None = Field(
-        default=None,
-        max_length=100,
-        validation_alias=AliasChoices("content_type", "contentType", "mimeType"),
-    )
+    content_type: str | None = Field(default=None, max_length=100)
 
 
 class PresignedDownloadResponse(BaseModel):
@@ -115,47 +107,56 @@ class DocumentResponse(AuditFieldsSchema):
     is_uploaded: bool
     description: str | None = None
     owner_id: uuid.UUID | None = None
+    module_principal_entity: PrincipalEntityModule | dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def populate_module_principal_entity(self) -> Self:
+        """Resolve and attach module principal metadata if not explicitly provided."""
+        if self.module_principal_entity is None and self.entity_type:
+            target_mod = resolve_module(self.entity_type)
+            code = target_mod.code if target_mod else self.entity_type
+            name = target_mod.name if target_mod else self.entity_type.capitalize()
+            self.module_principal_entity = PrincipalEntityModule(
+                code=code,
+                name=name,
+                entity_name=None,
+                entity_id=self.entity_id,
+            )
+        return self
 
 
 class DocumentFilterParams(PaginationParams):
     """Pagination and filter parameters for documents list."""
 
-    entity_type: str | None = Field(default=None, max_length=50, alias="entity_type")
-    entity_type_camel: str | None = Field(
-        default=None, max_length=50, alias="entityType"
-    )
-    entity_id: uuid.UUID | None = Field(default=None, alias="entity_id")
-    entity_id_camel: uuid.UUID | None = Field(default=None, alias="entityId")
-    is_uploaded: bool | None = Field(default=None, alias="is_uploaded")
-    is_uploaded_camel: bool | None = Field(default=None, alias="isUploaded")
-    content_type: str | None = Field(default=None, alias="content_type")
-    content_type_camel: str | None = Field(default=None, alias="contentType")
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    @property
-    def target_entity_id(self) -> uuid.UUID | None:
-        """Resolve entity_id regardless of snake_case or camelCase."""
-        return self.entity_id or self.entity_id_camel
+    entity_type: str | None = Field(default=None, max_length=50)
+    entity_id: uuid.UUID | None = None
+    is_uploaded: bool | None = None
+    content_type: str | None = None
+    content_types: list[str] | None = None
 
-    @property
-    def target_entity_type(self) -> str | None:
-        """Resolve entity_type regardless of snake_case or camelCase."""
-        return self.entity_type or self.entity_type_camel
-
-    @property
-    def target_is_uploaded(self) -> bool | None:
-        """Resolve is_uploaded regardless of snake_case or camelCase."""
-        return (
-            self.is_uploaded if self.is_uploaded is not None else self.is_uploaded_camel
-        )
-
-    @property
-    def target_content_types(self) -> list[str] | None:
-        """Resolve content_types regardless of snake_case or camelCase."""
-        raw = self.content_type or self.content_type_camel
-        if not raw:
+    @field_validator("content_types", mode="before")
+    @classmethod
+    def parse_content_types(cls, v: Any) -> list[str] | None:
+        """Normalize string separated by commas or sequence of types to list."""
+        if v is None:
             return None
-        types = [t.strip() for t in raw.split(",") if t.strip()]
-        return types if types else None
+        if isinstance(v, str):
+            items = [t.strip() for t in v.split(",") if t.strip()]
+            return items if items else None
+        if isinstance(v, (list, tuple, set)):
+            items = [str(t).strip() for t in v if str(t).strip()]
+            return items if items else None
+        return v
+
+    @model_validator(mode="after")
+    def merge_content_type(self) -> Self:
+        """Merge singular content_type into content_types list if not provided."""
+        if not self.content_types and self.content_type:
+            items = [t.strip() for t in self.content_type.split(",") if t.strip()]
+            self.content_types = items if items else None
+        return self
 
 
 class ZipDownloadRequest(BaseModel):

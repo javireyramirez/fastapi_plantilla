@@ -453,9 +453,9 @@ async def test_list_role_assignments_api(
     )
     assert assign_res.status_code == status.HTTP_200_OK
 
-    # 3. Query GET /api/rbac/assignments with Fastify-style camelCase query params
+    # 3. Query GET /api/rbac/assignments with canonical snake_case query params
     res = await rbac_client.get(
-        f"/api/rbac/assignments?page=1&limit=10&sortBy=assignedAt&sortOrder=desc&role_id={role_id}"
+        f"/api/rbac/assignments?page=1&limit=10&sort_by=created_at&sort_order=desc&role_id={role_id}"
     )
     assert res.status_code == status.HTTP_200_OK
     data = res.json()
@@ -468,15 +468,11 @@ async def test_list_role_assignments_api(
     assignment_item = data["data"][0]
     assignment_id = assignment_item["id"]
     assert assignment_item["role_id"] == role_id
-    assert assignment_item["roleId"] == role_id
     assert assignment_item["entity_type"] == "user"
-    assert assignment_item["entityType"] == "user"
     assert assignment_item["entity_id"] == str(regular.id)
-    assert assignment_item["entityId"] == str(regular.id)
     assert assignment_item["role"]["name"] == "Assignment Inspector"
     assert assignment_item["user"]["email"] == regular.email
     assert assignment_item["assigned_user"]["id"] == str(regular.id)
-    assert assignment_item["assignedUser"]["id"] == str(regular.id)
 
     # 4. Query sub-resource GET /api/rbac/roles/{role_id}/assignments
     sub_res = await rbac_client.get(f"/api/rbac/roles/{role_id}/assignments")

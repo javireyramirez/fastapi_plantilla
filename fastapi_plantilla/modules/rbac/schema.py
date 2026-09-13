@@ -170,16 +170,9 @@ class RoleDetailResponse(RoleResponse):
 class RoleAssignmentRequest(BaseModel):
     """Payload to assign a role to a user or a team."""
 
-    role_id: uuid.UUID = Field(..., validation_alias=AliasChoices("role_id", "roleId"))
-    entity_type: str = Field(
-        ...,
-        min_length=2,
-        max_length=50,
-        validation_alias=AliasChoices("entity_type", "entityType"),
-    )  # USER or TEAM
-    entity_id: uuid.UUID = Field(
-        ..., validation_alias=AliasChoices("entity_id", "entityId")
-    )
+    role_id: uuid.UUID
+    entity_type: str = Field(..., min_length=2, max_length=50)  # USER or TEAM
+    entity_id: uuid.UUID
 
 
 class AssignedRoleBasic(BaseModel):
@@ -219,41 +212,19 @@ class RoleAssignmentQueryParams(BaseModel):
 
     page: int = Field(default=1, ge=1, le=1000)
     limit: int = Field(default=10, ge=1, le=100)
-    sort_by: str = Field(
-        default="assignedAt",
-        validation_alias=AliasChoices("sort_by", "sortBy"),
-    )
-    sort_order: str = Field(
-        default="desc",
-        validation_alias=AliasChoices("sort_order", "sortOrder"),
-    )
-    role_id: uuid.UUID | None = Field(
-        default=None,
-        validation_alias=AliasChoices("role_id", "roleId"),
-    )
-    user_id: uuid.UUID | None = Field(
-        default=None,
-        validation_alias=AliasChoices("user_id", "userId"),
-    )
-    team_id: uuid.UUID | None = Field(
-        default=None,
-        validation_alias=AliasChoices("team_id", "teamId"),
-    )
-    entity_type: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("entity_type", "entityType"),
-    )
+    sort_by: str = "created_at"
+    sort_order: str = "desc"
+    role_id: uuid.UUID | None = None
+    user_id: uuid.UUID | None = None
+    team_id: uuid.UUID | None = None
+    entity_type: str | None = None
     assigned_from: datetime | None = Field(
         default=None,
-        validation_alias=AliasChoices(
-            "assigned_from", "assignedFrom", "created_at_from", "createdAtFrom"
-        ),
+        validation_alias=AliasChoices("assigned_from", "created_at_from"),
     )
     assigned_to: datetime | None = Field(
         default=None,
-        validation_alias=AliasChoices(
-            "assigned_to", "assignedTo", "created_at_to", "createdAtTo"
-        ),
+        validation_alias=AliasChoices("assigned_to", "created_at_to"),
     )
 
 
@@ -263,45 +234,19 @@ class RoleAssignmentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: uuid.UUID
-    role_id: uuid.UUID = Field(..., validation_alias=AliasChoices("role_id", "roleId"))
-    roleId: uuid.UUID | None = Field(default=None)  # noqa: N815
-    entity_type: str = Field(
-        ..., validation_alias=AliasChoices("entity_type", "entityType")
-    )
-    entityType: str | None = Field(default=None)  # noqa: N815
-    entity_id: uuid.UUID = Field(
-        ..., validation_alias=AliasChoices("entity_id", "entityId")
-    )
-    entityId: uuid.UUID | None = Field(default=None)  # noqa: N815
-    created_at: datetime = Field(
-        ...,
-        validation_alias=AliasChoices(
-            "created_at", "createdAt", "assigned_at", "assignedAt"
-        ),
-    )
-    assigned_at: datetime | None = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "assigned_at", "assignedAt", "created_at", "createdAt"
-        ),
-    )
-    assignedAt: datetime | None = Field(default=None)  # noqa: N815
-    user_id: uuid.UUID | None = Field(
-        default=None, validation_alias=AliasChoices("user_id", "userId")
-    )
-    userId: uuid.UUID | None = Field(default=None)  # noqa: N815
-    team_id: uuid.UUID | None = Field(
-        default=None, validation_alias=AliasChoices("team_id", "teamId")
-    )
-    teamId: uuid.UUID | None = Field(default=None)  # noqa: N815
+    role_id: uuid.UUID
+    entity_type: str
+    entity_id: uuid.UUID
+    created_at: datetime
+    assigned_at: datetime | None = None
+    user_id: uuid.UUID | None = None
+    team_id: uuid.UUID | None = None
 
     role: AssignedRoleBasic | None = None
     user: AssignedUserBasic | None = None
     assigned_user: AssignedUserBasic | None = None
-    assignedUser: AssignedUserBasic | None = Field(default=None)  # noqa: N815
     team: AssignedTeamBasic | None = None
     assigned_team: AssignedTeamBasic | None = None
-    assignedTeam: AssignedTeamBasic | None = Field(default=None)  # noqa: N815
 
 
 class UserPermissionsMatrixResponse(BaseModel):
