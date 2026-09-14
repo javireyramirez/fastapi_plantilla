@@ -6,6 +6,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    HttpUrl,
     field_validator,
     model_validator,
 )
@@ -19,6 +20,7 @@ from fastapi_plantilla.modules.trash.service import resolve_module
 
 __all__ = [
     "ConfirmUploadRequest",
+    "CreateExternalUrlRequest",
     "DocumentFilterParams",
     "DocumentResponse",
     "DocumentUpdateSchema",
@@ -27,6 +29,23 @@ __all__ = [
     "PresignedUploadResponse",
     "ZipDownloadRequest",
 ]
+
+
+class CreateExternalUrlRequest(BaseModel):
+    """Payload for registering an external URL (Drive, OneDrive, Dropbox, etc.)."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    entity_type: str = Field(..., min_length=1, max_length=50)
+    entity_id: uuid.UUID
+    url: HttpUrl
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        validation_alias=AliasChoices("name", "title", "filename"),
+    )
+    description: str | None = Field(default=None, max_length=1000)
 
 
 class PresignedUploadRequest(BaseModel):
@@ -106,6 +125,7 @@ class DocumentResponse(AuditFieldsSchema):
     extension: str | None = None
     is_uploaded: bool
     description: str | None = None
+    external_url: str | None = None
     owner_id: uuid.UUID | None = None
     module_principal_entity: PrincipalEntityModule | dict[str, Any] | None = None
 

@@ -27,6 +27,7 @@ from fastapi_plantilla.modules.storage.providers import (
 from fastapi_plantilla.modules.storage.repository import DocumentRepository
 from fastapi_plantilla.modules.storage.schema import (
     ConfirmUploadRequest,
+    CreateExternalUrlRequest,
     PresignedDownloadResponse,
     PresignedUploadRequest,
     PresignedUploadResponse,
@@ -320,6 +321,45 @@ class DocumentService(BaseOwnedService[Document]):
         await enrich_principal_entities(self.repository.session, [doc])
         return doc
 
+    async def create_external_url(
+        self,
+        data: CreateExternalUrlRequest,
+        options: WriteOptions | None = None,
+    ) -> Document:
+        """Register an external URL resource directly as an active document."""
+        doc_id = generate_uuid7()
+        name = data.name.strip()
+        url_str = str(data.url)
+        url_path = url_str.split("?", 1)[0]
+        extension = Path(url_path).suffix.lstrip(".").lower() or None
+        content_type = mimetypes.guess_type(url_path)[0] or "application/x-external-url"
+        file_key = f"external/{doc_id}"
+
+        create_payload: dict[str, Any] = {
+            "id": doc_id,
+            "entity_type": data.entity_type,
+            "entity_id": data.entity_id,
+            "name": name,
+            "file_key": file_key,
+            "external_url": url_str,
+            "content_type": content_type,
+            "size_bytes": 0,
+            "extension": extension,
+            "description": data.description,
+            "is_uploaded": True,
+        }
+
+        user_id = options.user_id if options else None
+        scope = options.scope if options else None
+        doc = await self.create(
+            create_payload,
+            user_id=user_id,
+            scope=scope,
+            allow_immutable=True,
+        )
+        await enrich_principal_entities(self.repository.session, [doc])
+        return doc
+
     async def get_presigned_download(
         self,
         id: uuid.UUID,
@@ -333,6 +373,15 @@ class DocumentService(BaseOwnedService[Document]):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Document file has not been uploaded yet.",
+            )
+
+        if document.external_url:
+            return PresignedDownloadResponse(
+                document_id=document.id,
+                download_url=document.external_url,
+                expires_in=expires_in,
+                name=document.name,
+                content_type=document.content_type,
             )
 
         download_url = await self.storage_provider.get_presigned_url(
@@ -361,6 +410,12 @@ class DocumentService(BaseOwnedService[Document]):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Document file has not been uploaded yet.",
+            )
+
+        if document.external_url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="External URL documents must be accessed via download-url.",
             )
 
         data = await self.storage_provider.download(document.file_key)
@@ -416,12 +471,6 @@ class DocumentService(BaseOwnedService[Document]):
             zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED
         ) as zf:
             for doc in accessible_docs:
-                try:
-                    file_bytes = await self.storage_provider.download(doc.file_key)
-                except Exception as err:
-                    logger.warning(f"Failed downloading {doc.file_key} for zip: {err}")
-                    continue
-
                 count = seen_names.get(doc.name, 0) + 1
                 seen_names[doc.name] = count
                 filename = (
@@ -429,6 +478,21 @@ class DocumentService(BaseOwnedService[Document]):
                     if count == 1
                     else f"{Path(doc.name).stem}_{count}{Path(doc.name).suffix}"
                 )
+
+                if doc.external_url:
+                    shortcut_data = (
+                        f"[InternetShortcut]\r\nURL={doc.external_url}\r\n"
+                    ).encode()
+                    shortcut_name = f"{sanitize_filename(Path(filename).stem)}.url"
+                    zf.writestr(shortcut_name, shortcut_data)
+                    continue
+
+                try:
+                    file_bytes = await self.storage_provider.download(doc.file_key)
+                except Exception as err:
+                    logger.warning(f"Failed downloading {doc.file_key} for zip: {err}")
+                    continue
+
                 zf.writestr(filename, file_bytes)
 
         return zip_buffer.getvalue(), DEFAULT_ZIP_FILENAME
@@ -443,10 +507,13 @@ class DocumentService(BaseOwnedService[Document]):
         user_id = options.user_id if options else None
         document = await self.get_by_id(id, scope=scope)
 
-        try:
-            await self.storage_provider.delete(document.file_key)
-        except Exception as err:
-            logger.warning(f"Failed to delete storage file {document.file_key}: {err}")
+        if not document.external_url:
+            try:
+                await self.storage_provider.delete(document.file_key)
+            except Exception as err:
+                logger.warning(
+                    f"Failed to delete storage file {document.file_key}: {err}"
+                )
 
         if document.status != RecordStatus.TRASHED:
             await self.trash(id, user_id=user_id, scope=scope, options=options)

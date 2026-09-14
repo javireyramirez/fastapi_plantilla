@@ -44,5 +44,6 @@ class Document(
         Boolean, default=False, index=True, nullable=False
     )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (Index("ix_sys_documents_entity", "entity_type", "entity_id"),)

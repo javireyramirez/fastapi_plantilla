@@ -742,3 +742,77 @@ async def test_document_module_principal_entity_name_resolution(
     assert get_res.status_code == 200
     single_data = get_res.json()
     assert single_data["module_principal_entity"]["entity_name"] == "Acme Logistics SL"
+
+
+@pytest.mark.anyio
+async def test_external_url_document_flow(
+    storage_client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify end-to-end flow for external URL documents."""
+    company_repo = BaseRepository(Company, dbsession)
+    company = await company_repo.create(
+        {
+            "id": generate_uuid7(),
+            "name": "Cloud Integrations SL",
+            "nif": f"B{uuid.uuid4().hex[:8].upper()}",
+        }
+    )
+    await dbsession.flush()
+
+    external_link = "https://drive.google.com/drive/folders/1a2b3c4d5e6f7g8h"
+    res = await storage_client.post(
+        "/api/storage/documents/url",
+        json={
+            "entity_type": "companies",
+            "entity_id": str(company.id),
+            "url": external_link,
+            "name": "Carpeta Drive de Facturas",
+            "description": "Acceso a carpeta compartida de Google Drive",
+        },
+    )
+    assert res.status_code == 201
+    doc_data = res.json()
+    doc_id = doc_data["id"]
+
+    assert doc_data["name"] == "Carpeta Drive de Facturas"
+    assert doc_data["external_url"] == external_link
+    assert doc_data["is_uploaded"] is True
+    assert doc_data["size_bytes"] == 0
+    assert doc_data["file_key"].startswith("external/")
+    assert doc_data["module_principal_entity"]["entity_name"] == "Cloud Integrations SL"
+
+    # Presigned download URL returns direct external URL
+    download_url_res = await storage_client.get(
+        f"/api/storage/documents/{doc_id}/download-url"
+    )
+    assert download_url_res.status_code == 200
+    dl_data = download_url_res.json()
+    assert dl_data["download_url"] == external_link
+
+    # Direct download endpoint redirects (HTTP 307)
+    dl_direct_res = await storage_client.get(
+        f"/api/storage/documents/{doc_id}/download",
+        follow_redirects=False,
+    )
+    assert dl_direct_res.status_code == 307
+    assert dl_direct_res.headers["location"] == external_link
+
+    # ZIP download includes .url InternetShortcut
+    zip_res = await storage_client.post(
+        "/api/storage/documents/zip",
+        json={"document_ids": [doc_id]},
+    )
+    assert zip_res.status_code == 200
+    assert zip_res.headers["content-type"] == "application/zip"
+
+    with zipfile.ZipFile(io.BytesIO(zip_res.content)) as zf:
+        file_list = zf.namelist()
+        assert len(file_list) == 1
+        assert file_list[0].endswith(".url")
+        shortcut_content = zf.read(file_list[0]).decode("utf-8")
+        assert f"URL={external_link}" in shortcut_content
+
+    # Permanent delete succeeds cleanly without storage provider failure
+    del_res = await storage_client.delete(f"/api/storage/documents/{doc_id}/permanent")
+    assert del_res.status_code == 204

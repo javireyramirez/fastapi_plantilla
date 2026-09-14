@@ -11,6 +11,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import RedirectResponse
 
 from fastapi_plantilla.core.crud.dependencies import (
     get_scope_context,
@@ -26,6 +27,7 @@ from fastapi_plantilla.modules.storage.local_routes import local_router
 from fastapi_plantilla.modules.storage.models import Document
 from fastapi_plantilla.modules.storage.schema import (
     ConfirmUploadRequest,
+    CreateExternalUrlRequest,
     DocumentFilterParams,
     DocumentResponse,
     DocumentUpdateSchema,
@@ -97,6 +99,21 @@ async def upload_direct(
     )
 
 
+@router.post(
+    "/documents/url",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register external link as document (Drive, OneDrive, Dropbox, etc.)",
+)
+async def add_external_url(
+    data: CreateExternalUrlRequest,
+    service: DocumentService = Depends(get_document_service),
+    options: WriteOptions = Depends(get_write_options),
+) -> Document:
+    """Register external URL resource and persist document metadata."""
+    return await service.create_external_url(data, options=options)
+
+
 @router.get(
     "/documents/{id}/download-url",
     response_model=PresignedDownloadResponse,
@@ -121,7 +138,13 @@ async def download_file(
     service: DocumentService = Depends(get_document_service),
     scope: ScopeContext = Depends(get_scope_context),
 ) -> Response:
-    """Download document bytes directly from storage provider."""
+    """Download document bytes directly or redirect to external resource URL."""
+    doc = await service.get_by_id(id, scope=scope)
+    if doc.external_url:
+        return RedirectResponse(
+            url=doc.external_url,
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+        )
     content, filename, mime = await service.download_content(id, scope=scope)
     return Response(
         content=content,
