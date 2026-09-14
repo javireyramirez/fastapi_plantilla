@@ -1,7 +1,9 @@
 import enum
 from pathlib import Path
 from tempfile import gettempdir
+from typing import Any
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from yarl import URL
 
@@ -47,7 +49,21 @@ class Settings(BaseSettings):
     log_level: LogLevel = LogLevel.INFO
 
     # Frontend
-    frontend_url: str | None
+    frontend_url: str | None = None
+    cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+    ]
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def assemble_cors_origins(cls, v: Any) -> list[str]:
+        """Parse CORS origins from comma-separated string or list."""
+        if isinstance(v, str) and not v.startswith("["):
+            return [i.strip() for i in v.split(",") if i.strip()]
+        if isinstance(v, list):
+            return [str(i).strip() for i in v if str(i).strip()]
+        return []
 
     # Database
     db_host: str

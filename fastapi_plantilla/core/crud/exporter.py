@@ -25,6 +25,7 @@ __all__ = [
     "export_to_json",
     "export_to_tsv",
     "format_export",
+    "get_supported_export_formats",
     "serialize_cell",
 ]
 
@@ -175,3 +176,11 @@ def format_export(
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     filename = f"{slug}_{timestamp}.{strategy.extension}"
     return content, strategy.media_type, filename
+
+
+def get_supported_export_formats() -> list[str]:
+    """Return all export formats supported by the system."""
+    formats = [f.value for f in ExportFormat]
+    if openpyxl is None and ExportFormat.EXCEL.value in formats:
+        formats.remove(ExportFormat.EXCEL.value)
+    return formats

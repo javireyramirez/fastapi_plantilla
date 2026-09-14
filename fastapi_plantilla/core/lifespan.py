@@ -26,9 +26,7 @@ async def lifespan_setup(
     app: FastAPI,
 ) -> AsyncGenerator[None, None]:  # pragma: no cover
     """Manage startup and shutdown lifecycle for FastAPI."""
-    app.middleware_stack = None
     _setup_db(app)
-    app.middleware_stack = app.build_middleware_stack()
     setup_trash_listeners()
 
     session_factory = app.state.db_session_factory

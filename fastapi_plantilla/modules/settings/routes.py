@@ -2,6 +2,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 
+from fastapi_plantilla.core.crud.exporter import get_supported_export_formats
 from fastapi_plantilla.modules.auth.dependencies import (
     get_current_active_superuser,
     get_current_user,
@@ -29,6 +30,16 @@ async def get_public_settings(
     allowed file types, application metadata) served from memory cache.
     """
     return await service.get_public_settings()
+
+
+@router.get(
+    "/export-formats",
+    response_model=list[str],
+    summary="Get globally supported export file formats",
+)
+async def get_export_formats() -> list[str]:
+    """Return all export formats supported by the system (read-only)."""
+    return get_supported_export_formats()
 
 
 @router.get("", response_model=list[SettingResponse])

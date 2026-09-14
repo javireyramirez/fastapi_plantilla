@@ -261,3 +261,14 @@ async def test_storage_validation_against_system_settings(
     await dbsession.delete(ext_setting)
     await dbsession.flush()
     settings_service.invalidate_cache()
+
+
+@pytest.mark.anyio
+async def test_get_export_formats(client: AsyncClient) -> None:
+    """Verify GET /api/settings/export-formats returns supported formats list."""
+    response = await client.get("/api/settings/export-formats")
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert isinstance(data, list)
+    assert "csv" in data
+    assert "json" in data
