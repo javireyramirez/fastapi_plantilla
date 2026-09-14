@@ -137,6 +137,27 @@ DEFAULT_SYSTEM_SETTINGS: Final[list[SettingDef]] = [
         "category": "general",
         "is_public": True,
     },
+    {
+        "key": "pagination.default_page_size",
+        "value": 20,
+        "description": "Número de elementos por página por defecto en tablas",
+        "category": "pagination",
+        "is_public": True,
+    },
+    {
+        "key": "pagination.page_size_options",
+        "value": [10, 20, 50, 100],
+        "description": "Opciones de tamaño de página disponibles en tablas",
+        "category": "pagination",
+        "is_public": True,
+    },
+    {
+        "key": "pagination.max_page_size",
+        "value": 100,
+        "description": "Límite máximo permitido de elementos por página",
+        "category": "pagination",
+        "is_public": True,
+    },
 ]
 
 

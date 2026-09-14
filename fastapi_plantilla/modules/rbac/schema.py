@@ -55,8 +55,8 @@ class ModuleCreate(BaseModel):
     icon: str | None = Field(default=None, max_length=50)
     sort_order: int = 0
     is_active: bool = True
-    is_trasheable: bool = True
-    is_exportable: bool = True
+    supported_actions: list[RbacActions] = Field(default_factory=list)
+    requires_super_admin: bool = False
 
 
 class ModuleUpdate(BaseModel):
@@ -71,8 +71,8 @@ class ModuleUpdate(BaseModel):
     icon: str | None = Field(default=None, max_length=50)
     sort_order: int | None = None
     is_active: bool | None = None
-    is_trasheable: bool | None = None
-    is_exportable: bool | None = None
+    supported_actions: list[RbacActions] | None = None
+    requires_super_admin: bool | None = None
 
 
 class ModuleResponse(BaseModel):
@@ -91,8 +91,8 @@ class ModuleResponse(BaseModel):
     icon: str | None = None
     sort_order: int = 0
     is_active: bool
-    is_trasheable: bool = True
-    is_exportable: bool = True
+    supported_actions: list[RbacActions] = Field(default_factory=list)
+    requires_super_admin: bool = False
 
 
 class RolePermissionItem(BaseModel):

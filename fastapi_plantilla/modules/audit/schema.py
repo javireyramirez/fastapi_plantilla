@@ -11,6 +11,7 @@ __all__ = [
     "AuditAction",
     "AuditFilterParams",
     "AuditLogCreate",
+    "AuditLogExportResponse",
     "AuditLogResponse",
 ]
 
@@ -51,6 +52,26 @@ class AuditLogResponse(BaseModel):
     changes: dict[str, Any] | None = None
     details: str | None = None
     created_at: datetime
+
+
+class AuditLogExportResponse(BaseModel):
+    """Clean representation of audit log records tailored for export."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: uuid.UUID
+    created_at: datetime
+    action: str
+    entity_type: str
+    entity_id: uuid.UUID | None = None
+    entity_name: str | None = None
+    actor_id: uuid.UUID | None = None
+    actor_name: str | None = None
+    actor_email: str | None = None
+    ip_address: str | None = None
+    user_agent: str | None = None
+    details: str | None = None
+    changes: dict[str, Any] | None = None
 
 
 class AuditLogCreate(BaseModel):

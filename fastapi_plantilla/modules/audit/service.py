@@ -8,8 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.actors import enrich_actors
+from fastapi_plantilla.core.crud.exporter import format_export
 from fastapi_plantilla.core.crud.schema import (
     AuditEntry,
+    ExportRequest,
     PaginatedResponse,
     PaginationMeta,
 )
@@ -17,6 +19,7 @@ from fastapi_plantilla.modules.audit.models import AuditLog
 from fastapi_plantilla.modules.audit.repository import AuditRepository
 from fastapi_plantilla.modules.audit.schema import (
     AuditFilterParams,
+    AuditLogExportResponse,
     AuditLogResponse,
 )
 from fastapi_plantilla.modules.auth.models import User
@@ -253,3 +256,38 @@ class AuditService:
         await enrich_actors(self.repository.session, items)
         await enrich_entity_names(self.repository.session, items)
         return [AuditLogResponse.model_validate(item) for item in items]
+
+    async def export_data(
+        self,
+        req: ExportRequest,
+        limit: int = 1000,
+    ) -> tuple[bytes | str, str, str]:
+        """Export audit logs to CSV, Excel, or JSON format."""
+        items = await self.repository.get_logs_for_export(
+            ids=req.ids,
+            filters=req.filters,
+            sort_by=req.sort_by,
+            sort_order=req.sort_order,
+            limit=limit,
+        )
+        await enrich_actors(self.repository.session, items)
+        await enrich_entity_names(self.repository.session, items)
+
+        for item in items:
+            user = getattr(item, "user", None)
+            if user:
+                if not item.actor_name and user.name:
+                    item.actor_name = user.name
+                if not item.actor_email and user.email:
+                    item.actor_email = user.email
+
+        rows = [
+            AuditLogExportResponse.model_validate(item).model_dump(mode="json")
+            for item in items
+        ]
+        return format_export(
+            format=req.format,
+            data=rows,
+            slug="audit_logs",
+            columns=req.columns,
+        )

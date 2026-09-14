@@ -47,7 +47,7 @@ def test_pagination_params_defaults_and_limits() -> None:
     """Verify PaginationParams default values and bounds validation."""
     params = PaginationParams()
     assert params.page == 1
-    assert params.limit == 10
+    assert params.limit == 20
     assert params.sort_by == "created_at"
     assert params.sort_order == SortOrder.DESC
     assert params.is_trash is False

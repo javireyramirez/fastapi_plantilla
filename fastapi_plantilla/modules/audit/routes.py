@@ -1,9 +1,9 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
-from fastapi_plantilla.core.crud.schema import PaginatedResponse
+from fastapi_plantilla.core.crud.schema import ExportRequest, PaginatedResponse
 from fastapi_plantilla.modules.audit.dependencies import get_audit_service
 from fastapi_plantilla.modules.audit.schema import (
     AuditFilterParams,
@@ -14,6 +14,25 @@ from fastapi_plantilla.modules.auth.dependencies import get_current_active_super
 from fastapi_plantilla.modules.auth.schema import UserResponse
 
 router = APIRouter(prefix="/audit", tags=["Audit"])
+
+
+@router.post(
+    "/export",
+    response_class=Response,
+    summary="Export audit logs in CSV, Excel, or JSON format",
+)
+async def export_audit_logs(
+    req: ExportRequest,
+    service: AuditService = Depends(get_audit_service),
+    _: UserResponse = Depends(get_current_active_superuser),
+) -> Response:
+    """Export filtered audit logs."""
+    content, media_type, filename = await service.export_data(req)
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get(

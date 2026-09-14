@@ -29,6 +29,16 @@ class UserAdminRepository(BaseRepository[User]):
             User.email == email, User.status != RecordStatus.TRASHED
         )
 
+    async def count_active_superadmins(self) -> int:
+        """Count active, non-trashed super admin users."""
+        stmt = select(func.count(User.id)).where(
+            User.is_super_admin.is_(True),
+            User.is_active.is_(True),
+            User.status != RecordStatus.TRASHED,
+        )
+        result = await self.session.execute(stmt)
+        return int(result.scalar() or 0)
+
     async def invalidate_user_sessions(self, user_id: uuid.UUID) -> int:
         """Invalidate all active sessions for a user."""
         stmt = (

@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query
 
 from fastapi_plantilla.modules.auth.dependencies import (
     get_current_active_superuser,
@@ -9,7 +9,6 @@ from fastapi_plantilla.modules.auth.dependencies import (
 from fastapi_plantilla.modules.auth.schema import UserResponse
 from fastapi_plantilla.modules.settings.dependencies import get_settings_service
 from fastapi_plantilla.modules.settings.schema import (
-    SettingCreate,
     SettingResponse,
     SettingUpdate,
 )
@@ -43,17 +42,6 @@ async def list_settings(
     return [SettingResponse.model_validate(s) for s in settings_list]
 
 
-@router.post("", response_model=SettingResponse, status_code=status.HTTP_201_CREATED)
-async def create_setting(
-    data: SettingCreate,
-    _: UserResponse = Depends(get_current_active_superuser),
-    service: SystemSettingService = Depends(get_settings_service),
-) -> SettingResponse:
-    """Create a new system setting (SuperAdmin only)."""
-    setting = await service.create_setting(data)
-    return SettingResponse.model_validate(setting)
-
-
 @router.get("/{key}", response_model=SettingResponse)
 async def get_setting(
     key: str,
@@ -69,13 +57,13 @@ async def get_setting(
 async def update_setting(
     key: str,
     data: SettingUpdate,
-    _: UserResponse = Depends(get_current_active_superuser),
+    current_user: UserResponse = Depends(get_current_active_superuser),
     service: SystemSettingService = Depends(get_settings_service),
 ) -> SettingResponse:
     """
     Update setting value or metadata (SuperAdmin only).
 
-    Automatically invalidates the in-memory cache.
+    Automatically invalidates the in-memory cache and records an audit log.
     """
-    setting = await service.update_setting(key, data)
+    setting = await service.update_setting(key, data, actor=current_user)
     return SettingResponse.model_validate(setting)

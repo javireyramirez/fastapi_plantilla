@@ -13,7 +13,9 @@ from sqlalchemy import (
 from sqlalchemy import (
     Enum as SQLEnum,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import JSON
 
 from fastapi_plantilla.core.crud.schema import ScopeType
 from fastapi_plantilla.core.database import Base
@@ -53,11 +55,14 @@ class SystemModule(UUID7PrimaryKeyMixin, TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, index=True, nullable=False
     )
-    is_trasheable: Mapped[bool] = mapped_column(
-        Boolean, default=True, server_default=text("true"), nullable=False
+    supported_actions: Mapped[list[str]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=list,
+        server_default=text("'[]'"),
     )
-    is_exportable: Mapped[bool] = mapped_column(
-        Boolean, default=True, server_default=text("true"), nullable=False
+    requires_super_admin: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
     )
 
     permissions: Mapped[list["RolePermission"]] = relationship(

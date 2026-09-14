@@ -652,3 +652,103 @@ async def test_audit_entity_name_population_and_endpoints(
         assert res.status_code == 200
         data = res.json()
         assert data["entity_name"] == "Audit Trail Team"
+
+
+@pytest.mark.anyio
+async def test_audit_export(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify exporting audit logs to CSV, JSON, and with filters."""
+    admin = User(
+        id=generate_uuid7(),
+        email="audit_exporter@example.com",
+        name="Audit Exporter",
+        is_active=True,
+        is_super_admin=True,
+    )
+    dbsession.add(admin)
+    await dbsession.flush()
+
+    repo = AuditRepository(dbsession)
+    log1 = await repo.record_entry(
+        AuditEntry(
+            entity_type="user",
+            entity_id=admin.id,
+            entity_name=admin.name,
+            action="LOGIN",
+            actor_id=admin.id,
+            actor_name=admin.name,
+            actor_email=admin.email,
+            details="User logged in successfully",
+        )
+    )
+    await repo.record_entry(
+        AuditEntry(
+            entity_type="company",
+            entity_id=generate_uuid7(),
+            entity_name="Export Test Corp",
+            action="CREATE",
+            actor_id=admin.id,
+            actor_name=admin.name,
+            actor_email=admin.email,
+            details="Company created",
+        )
+    )
+    await dbsession.flush()
+
+    test_app = FastAPI()
+    test_app.include_router(audit_router, prefix="/api")
+    test_app.dependency_overrides[get_db_session] = lambda: dbsession
+    test_app.dependency_overrides[get_current_active_superuser] = lambda: (
+        _user_to_response(admin)
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://test"
+    ) as client:
+        # 1. Export as CSV (default)
+        csv_res = await client.post(
+            "/api/audit/export",
+            json={"format": "csv"},
+        )
+        assert csv_res.status_code == 200
+        assert "text/csv" in csv_res.headers["content-type"]
+        assert "attachment; filename=" in csv_res.headers["content-disposition"]
+        csv_text = csv_res.text
+        assert "LOGIN" in csv_text
+        assert "CREATE" in csv_text
+        assert "Audit Exporter" in csv_text
+
+        # 2. Export as JSON
+        json_res = await client.post(
+            "/api/audit/export",
+            json={"format": "json"},
+        )
+        assert json_res.status_code == 200
+        assert "application/json" in json_res.headers["content-type"]
+        json_data = json_res.json()
+        assert isinstance(json_data, list)
+        actions = [item["action"] for item in json_data]
+        assert "LOGIN" in actions
+        assert "CREATE" in actions
+
+        # 3. Export with filters (e.g. entity_type='company')
+        filtered_res = await client.post(
+            "/api/audit/export",
+            json={"format": "json", "filters": {"entity_type": "company"}},
+        )
+        assert filtered_res.status_code == 200
+        filtered_data = filtered_res.json()
+        assert all(
+            item["entity_type"] in ("company", "companies") for item in filtered_data
+        )
+
+        # 4. Export by specific ID
+        id_res = await client.post(
+            "/api/audit/export",
+            json={"format": "json", "ids": [str(log1.id)]},
+        )
+        assert id_res.status_code == 200
+        id_data = id_res.json()
+        assert len(id_data) == 1
+        assert id_data[0]["id"] == str(log1.id)

@@ -144,8 +144,8 @@ async def test_module_catalog_flow(rbac_client: AsyncClient) -> None:
     data = res.json()
     assert data["code"] == "test_module"
     assert data["name"] == "Test Module"
-    assert data["is_trasheable"] is True
-    assert data["is_exportable"] is True
+    assert data["supported_actions"] == []
+    assert data["requires_super_admin"] is False
     assert data["category"] == "system"
     assert data["category_name"] == "Sistema"
     assert data["category_icon"] == "cpu"
@@ -158,31 +158,32 @@ async def test_module_catalog_flow(rbac_client: AsyncClient) -> None:
     )
     assert conflict_res.status_code == status.HTTP_409_CONFLICT
 
-    # Create non-trasheable and non-exportable module
-    notrash_res = await rbac_client.post(
+    # Create module with custom supported_actions and requires_super_admin
+    custom_actions_res = await rbac_client.post(
         "/api/rbac/modules",
         json={
-            "code": "test_notrash",
-            "name": "No Trash Module",
-            "is_trasheable": False,
-            "is_exportable": False,
+            "code": "test_custom_actions",
+            "name": "Custom Actions Module",
+            "supported_actions": ["READ", "EXPORT"],
+            "requires_super_admin": True,
         },
     )
-    assert notrash_res.status_code == status.HTTP_201_CREATED
-    assert notrash_res.json()["is_trasheable"] is False
-    assert notrash_res.json()["is_exportable"] is False
+    assert custom_actions_res.status_code == status.HTTP_201_CREATED
+    assert custom_actions_res.json()["supported_actions"] == ["READ", "EXPORT"]
+    assert custom_actions_res.json()["requires_super_admin"] is True
 
     # List modules
     list_res = await rbac_client.get("/api/rbac/modules")
     assert list_res.status_code == status.HTTP_200_OK
     modules = list_res.json()
     assert any(
-        m["code"] == "test_module" and m["is_exportable"] is True for m in modules
+        m["code"] == "test_module" and m["requires_super_admin"] is False
+        for m in modules
     )
     assert any(
-        m["code"] == "test_notrash"
-        and m["is_trasheable"] is False
-        and m["is_exportable"] is False
+        m["code"] == "test_custom_actions"
+        and m["supported_actions"] == ["READ", "EXPORT"]
+        and m["requires_super_admin"] is True
         for m in modules
     )
 

@@ -11,6 +11,7 @@ from fastapi_plantilla.modules.rbac.models import (
     RolePermission,
     SystemModule,
 )
+from fastapi_plantilla.modules.settings.models import SystemSetting
 from fastapi_plantilla.modules.teams.models import Team, TeamUser
 from scripts.seed import run_all_seeds
 
@@ -46,7 +47,8 @@ async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:  # no
     assert users_mod.category_order == 3
     assert users_mod.icon == "users"
     assert users_mod.sort_order == 0
-    assert users_mod.is_trasheable is True
+    assert "RESTORE" in users_mod.supported_actions
+    assert "EXPORT" in users_mod.supported_actions
 
     comp_mod = next(m for m in modules if m.code == "companies")
     assert comp_mod.name == "Compañías"
@@ -63,10 +65,15 @@ async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:  # no
     assert rbac_mod.category_order == 4
 
     audit_mod = next(m for m in modules if m.code == "audit")
-    assert audit_mod.is_trasheable is False
+    assert audit_mod.supported_actions == ["READ", "EXPORT"]
 
     trash_mod = next(m for m in modules if m.code == "trash")
-    assert trash_mod.is_trasheable is False
+    assert trash_mod.supported_actions == ["READ", "DELETE", "RESTORE"]
+    assert trash_mod.requires_super_admin is False
+
+    settings_mod = next(m for m in modules if m.code == "settings")
+    assert settings_mod.supported_actions == ["READ", "UPDATE"]
+    assert settings_mod.requires_super_admin is True
 
     # 2. Verify 3 roles
     role_res = await dbsession.execute(select(Role))
@@ -116,6 +123,15 @@ async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:  # no
         )
     )
     assert tu_res.scalar_one_or_none() is not None
+
+    # Verify settings seeded including pagination
+    setting_res = await dbsession.execute(select(SystemSetting))
+    settings_records = setting_res.scalars().all()
+    assert len(settings_records) >= 9
+    setting_keys = {s.key for s in settings_records}
+    assert "pagination.default_page_size" in setting_keys
+    assert "pagination.page_size_options" in setting_keys
+    assert "pagination.max_page_size" in setting_keys
 
     # Run 2: Verify Idempotency (running again doesn't crash or duplicate)
     await run_all_seeds(dbsession)

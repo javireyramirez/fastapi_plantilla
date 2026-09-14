@@ -87,8 +87,11 @@ class RbacService(BaseAuditService[Role]):
             icon=data.icon,
             sort_order=data.sort_order,
             is_active=data.is_active,
-            is_trasheable=data.is_trasheable,
-            is_exportable=data.is_exportable,
+            supported_actions=[
+                a.value if hasattr(a, "value") else str(a)
+                for a in data.supported_actions
+            ],
+            requires_super_admin=data.requires_super_admin,
         )
         return ModuleResponse.model_validate(module)
 

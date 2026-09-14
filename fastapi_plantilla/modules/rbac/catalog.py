@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.modules.rbac.models import SystemModule
+from fastapi_plantilla.modules.rbac.schema import RbacActions
 
 __all__ = [
     "CORE_SYSTEM_MODULES",
@@ -52,8 +53,8 @@ class SystemModuleDefinition(TypedDict, total=False):
     icon: str | None
     sort_order: int
     is_active: bool
-    is_trasheable: bool
-    is_exportable: bool
+    supported_actions: list[RbacActions]
+    requires_super_admin: bool
 
 
 CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
@@ -68,8 +69,14 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "icon": "briefcase",
         "sort_order": 3,
         "is_active": True,
-        "is_trasheable": True,
-        "is_exportable": True,
+        "supported_actions": [
+            RbacActions.CREATE,
+            RbacActions.READ,
+            RbacActions.UPDATE,
+            RbacActions.DELETE,
+            RbacActions.RESTORE,
+            RbacActions.EXPORT,
+        ],
     },
     {
         "code": "storage",
@@ -82,8 +89,14 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "icon": "hard-drive",
         "sort_order": 4,
         "is_active": True,
-        "is_trasheable": True,
-        "is_exportable": True,
+        "supported_actions": [
+            RbacActions.CREATE,
+            RbacActions.READ,
+            RbacActions.UPDATE,
+            RbacActions.DELETE,
+            RbacActions.RESTORE,
+            RbacActions.EXPORT,
+        ],
     },
     {
         "code": "users",
@@ -96,8 +109,14 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "icon": "users",
         "sort_order": 0,
         "is_active": True,
-        "is_trasheable": True,
-        "is_exportable": True,
+        "supported_actions": [
+            RbacActions.CREATE,
+            RbacActions.READ,
+            RbacActions.UPDATE,
+            RbacActions.DELETE,
+            RbacActions.RESTORE,
+            RbacActions.EXPORT,
+        ],
     },
     {
         "code": "teams",
@@ -110,8 +129,14 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "icon": "users-round",
         "sort_order": 1,
         "is_active": True,
-        "is_trasheable": True,
-        "is_exportable": False,
+        "supported_actions": [
+            RbacActions.CREATE,
+            RbacActions.READ,
+            RbacActions.UPDATE,
+            RbacActions.DELETE,
+            RbacActions.RESTORE,
+            RbacActions.SETTINGS,
+        ],
     },
     {
         "code": "roles",
@@ -124,8 +149,13 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "icon": "shield",
         "sort_order": 2,
         "is_active": True,
-        "is_trasheable": True,
-        "is_exportable": False,
+        "supported_actions": [
+            RbacActions.CREATE,
+            RbacActions.READ,
+            RbacActions.UPDATE,
+            RbacActions.DELETE,
+            RbacActions.RESTORE,
+        ],
     },
     {
         "code": "rbac",
@@ -138,8 +168,13 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "icon": None,
         "sort_order": 0,
         "is_active": True,
-        "is_trasheable": True,
-        "is_exportable": False,
+        "supported_actions": [
+            RbacActions.CREATE,
+            RbacActions.READ,
+            RbacActions.UPDATE,
+            RbacActions.DELETE,
+            RbacActions.RESTORE,
+        ],
     },
     {
         "code": "audit",
@@ -152,8 +187,10 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "icon": "activity",
         "sort_order": 6,
         "is_active": True,
-        "is_trasheable": False,
-        "is_exportable": True,
+        "supported_actions": [
+            RbacActions.READ,
+            RbacActions.EXPORT,
+        ],
     },
     {
         "code": "trash",
@@ -166,8 +203,11 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "icon": "trash-2",
         "sort_order": 7,
         "is_active": True,
-        "is_trasheable": False,
-        "is_exportable": False,
+        "supported_actions": [
+            RbacActions.READ,
+            RbacActions.DELETE,
+            RbacActions.RESTORE,
+        ],
     },
     {
         "code": "settings",
@@ -180,8 +220,11 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "icon": "sliders",
         "sort_order": 8,
         "is_active": True,
-        "is_trasheable": False,
-        "is_exportable": False,
+        "supported_actions": [
+            RbacActions.READ,
+            RbacActions.UPDATE,
+        ],
+        "requires_super_admin": True,
     },
 ]
 
@@ -195,7 +238,7 @@ async def sync_system_modules(
     Ensures that all core system modules exist in `sys_modules`. If a module
     already exists by code, updates its human-readable name, description,
     category, category_name, category_icon, category_order, icon, sort_order,
-    is_active and is_trasheable.
+    is_active and supported_actions.
     """
     target_modules = modules or CORE_SYSTEM_MODULES
     synced: list[SystemModule] = []
@@ -216,8 +259,9 @@ async def sync_system_modules(
         icon_val = str(ico) if ico is not None else None
         sort_val = int(item.get("sort_order", 0))
         is_active_val = bool(item.get("is_active", True))
-        trasheable_val = bool(item.get("is_trasheable", True))
-        exportable_val = bool(item.get("is_exportable", True))
+        requires_super_admin_val = bool(item.get("requires_super_admin", False))
+        raw_actions = item.get("supported_actions", [])
+        actions_val = [a.value if hasattr(a, "value") else str(a) for a in raw_actions]
 
         if existing is None:
             new_mod = SystemModule(
@@ -233,8 +277,8 @@ async def sync_system_modules(
                 icon=icon_val,
                 sort_order=sort_val,
                 is_active=is_active_val,
-                is_trasheable=trasheable_val,
-                is_exportable=exportable_val,
+                supported_actions=actions_val,
+                requires_super_admin=requires_super_admin_val,
             )
             session.add(new_mod)
             synced.append(new_mod)
@@ -250,8 +294,8 @@ async def sync_system_modules(
             existing.icon = icon_val
             existing.sort_order = sort_val
             existing.is_active = is_active_val
-            existing.is_trasheable = trasheable_val
-            existing.is_exportable = exportable_val
+            existing.supported_actions = actions_val
+            existing.requires_super_admin = requires_super_admin_val
             synced.append(existing)
 
     await session.flush()

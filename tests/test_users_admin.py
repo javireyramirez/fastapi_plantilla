@@ -371,3 +371,126 @@ async def test_seed_initial_superadmin(dbsession: AsyncSession) -> None:
         settings.initial_superadmin_email = orig_email
         settings.initial_superadmin_password = orig_pass
         settings.initial_superadmin_name = orig_name
+
+
+@pytest.mark.anyio
+async def test_superadmin_privilege_escalation_guard(
+    users_client: AsyncClient,
+    users_admin_auth: UsersAdminAuthContext,
+    admin_and_targets: tuple[UserResponse, User, User],
+    dbsession: AsyncSession,
+) -> None:
+    """Verify that only superadmins can grant or revoke is_super_admin."""
+    from fastapi_plantilla.modules.rbac.catalog import sync_system_modules
+
+    admin, target1, _ = admin_and_targets
+    users_admin_auth.user = admin
+
+    # 1. Ensure system modules exist
+    await sync_system_modules(dbsession)
+    await dbsession.commit()
+
+    # 2. Create role granting GLOBAL CREATE and UPDATE on 'users'
+    role_res = await users_client.post(
+        "/api/rbac/roles",
+        json={
+            "name": "User Manager",
+            "slug": f"user_mgr_{uuid.uuid4().hex[:6]}",
+            "permissions": [
+                {"module_code": "users", "action": "CREATE", "scope": "GLOBAL"},
+                {"module_code": "users", "action": "UPDATE", "scope": "GLOBAL"},
+            ],
+        },
+    )
+    assert role_res.status_code == status.HTTP_201_CREATED
+    role_id = role_res.json()["id"]
+
+    # Assign role to target1 (regular user, not superadmin)
+    assign_res = await users_client.post(
+        "/api/rbac/assignments",
+        json={"role_id": role_id, "entity_type": "USER", "entity_id": str(target1.id)},
+    )
+    assert assign_res.status_code == status.HTTP_200_OK
+
+    # Switch identity to target1
+    users_admin_auth.user = _user_to_response(target1)
+
+    # 3. Regular user attempts to CREATE a superadmin -> 403 Forbidden
+    escalate_create_res = await users_client.post(
+        "/api/users",
+        json={
+            "name": "Hacked SuperAdmin",
+            "email": f"hacked_{uuid.uuid4().hex[:6]}@example.com",
+            "is_super_admin": True,
+        },
+    )
+    assert escalate_create_res.status_code == status.HTTP_403_FORBIDDEN
+    assert "super administrators" in escalate_create_res.json()["detail"].lower()
+
+    # 4. Regular user CAN create a normal user (is_super_admin: False)
+    valid_email = f"normal_{uuid.uuid4().hex[:6]}@example.com"
+    valid_create_res = await users_client.post(
+        "/api/users",
+        json={
+            "name": "Normal User",
+            "email": valid_email,
+            "is_super_admin": False,
+        },
+    )
+    assert valid_create_res.status_code == status.HTTP_201_CREATED
+    created_user_id = valid_create_res.json()["id"]
+
+    # 5. Regular user attempts to PATCH existing user to is_super_admin=True
+    # Expected result -> 403 Forbidden
+    escalate_patch_res = await users_client.patch(
+        f"/api/users/{created_user_id}",
+        json={"is_super_admin": True},
+    )
+    assert escalate_patch_res.status_code == status.HTTP_403_FORBIDDEN
+    assert "super administrators" in escalate_patch_res.json()["detail"].lower()
+
+    # 6. Switch identity back to real SuperAdmin -> CAN promote user
+    users_admin_auth.user = admin
+    promote_res = await users_client.patch(
+        f"/api/users/{created_user_id}",
+        json={"is_super_admin": True},
+    )
+    assert promote_res.status_code == status.HTTP_200_OK
+    assert promote_res.json()["is_super_admin"] is True
+
+
+@pytest.mark.anyio
+async def test_last_superadmin_protection(
+    users_client: AsyncClient,
+    users_admin_auth: UsersAdminAuthContext,
+    admin_and_targets: tuple[UserResponse, User, User],
+) -> None:
+    """Verify system prevents deactivating or deleting the last active superadmin."""
+    admin, _, _ = admin_and_targets
+    users_admin_auth.user = admin
+
+    # 1. Attempt to revoke is_super_admin when only 1 active superadmin exists
+    revoke_res = await users_client.patch(
+        f"/api/users/{admin.id}",
+        json={"is_super_admin": False},
+    )
+    assert revoke_res.status_code == status.HTTP_400_BAD_REQUEST
+    assert "last active super administrator" in revoke_res.json()["detail"].lower()
+
+    # 2. Attempt to deactivate last active superadmin -> 400 Bad Request
+    deact_res = await users_client.patch(
+        f"/api/users/{admin.id}",
+        json={"is_active": False},
+    )
+    assert deact_res.status_code == status.HTTP_400_BAD_REQUEST
+    assert "last active super administrator" in deact_res.json()["detail"].lower()
+
+    # 3. Attempt to suspend last active superadmin -> 400 Bad Request
+    suspend_res = await users_client.post(f"/api/users/{admin.id}/suspend")
+    assert suspend_res.status_code == status.HTTP_400_BAD_REQUEST
+    assert "last active super administrator" in suspend_res.json()["detail"].lower()
+
+    # 4. Attempt to delete last active superadmin -> 400 Bad Request
+    delete_res = await users_client.delete(f"/api/users/{admin.id}")
+    assert delete_res.status_code == status.HTTP_400_BAD_REQUEST
+    assert "last active super administrator" in delete_res.json()["detail"].lower()

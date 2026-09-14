@@ -30,6 +30,7 @@ def normalize_entity_types(raw_type: str) -> list[str]:
         "storage": "storages",
         "audit": "audits",
         "trash": "trash",
+        "setting": "settings",
     }
     for sing, plur in known_pairs.items():
         if raw == sing:
@@ -150,4 +151,27 @@ class AuditRepository(BaseRepository[AuditLog]):
             AuditLog.entity_id == entity_id,
             limit=500,
             order_by=desc(AuditLog.created_at),
+        )
+
+    async def get_logs_for_export(
+        self,
+        ids: list[uuid.UUID] | None = None,
+        filters: dict[str, Any] | None = None,
+        sort_by: str = "created_at",
+        sort_order: Any = "desc",
+        limit: int = 1000,
+    ) -> list[AuditLog]:
+        """Fetch audit log records for data export with optional filters."""
+        conditions: list[Any] = []
+        if ids:
+            conditions.append(AuditLog.id.in_(ids))
+        elif filters:
+            filter_params = AuditFilterParams.model_validate(filters)
+            conditions.extend(_build_audit_conditions(filter_params))
+
+        order_clause = _build_audit_order_by(sort_by, sort_order)
+        return await self.find_many(
+            *conditions,
+            limit=limit,
+            order_by=order_clause,
         )

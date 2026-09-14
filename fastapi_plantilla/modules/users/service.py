@@ -215,7 +215,7 @@ class UserAdminService(BaseAuditService[User]):
                 if user_id
                 else (scope.user_id if scope else None)
             )
-            return await self.create_user(data, actor_id=actor_uuid)
+            return await self.create_user(data, actor_id=actor_uuid, scope=scope)
         return await super().create(
             data,
             user_id=user_id,
@@ -226,9 +226,20 @@ class UserAdminService(BaseAuditService[User]):
         )
 
     async def create_user(
-        self, data: UserAdminCreate, actor_id: uuid.UUID | None = None
+        self,
+        data: UserAdminCreate,
+        actor_id: uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
     ) -> UserAdminResponse:
         """Administratively create a new user and assign initial roles."""
+        if data.is_super_admin:
+            is_actor_super_admin = bool(scope and scope.is_super_admin)
+            if actor_id is not None and not is_actor_super_admin:
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    "Only super administrators can grant super admin privileges",
+                )
+
         if await self.repository.get_by_email(data.email):
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
@@ -275,7 +286,7 @@ class UserAdminService(BaseAuditService[User]):
                 if user_id
                 else (scope.user_id if scope else None)
             )
-            return await self.update_user(id, data, actor_id=actor_uuid)
+            return await self.update_user(id, data, actor_id=actor_uuid, scope=scope)
         return await super().update(
             id,
             data,
@@ -287,15 +298,54 @@ class UserAdminService(BaseAuditService[User]):
             allow_immutable=allow_immutable,
         )
 
+    async def _validate_superadmin_update(
+        self,
+        user: User,
+        update_dict: dict[str, Any],
+        actor_id: uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
+    ) -> None:
+        """Enforce superadmin permissions and protect the last active superadmin."""
+        if "is_super_admin" in update_dict:
+            is_actor_super_admin = bool(scope and scope.is_super_admin)
+            if actor_id is not None and not is_actor_super_admin:
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    "Only super administrators can grant or revoke super admin "
+                    "privileges",
+                )
+            if user.is_super_admin and update_dict["is_super_admin"] is False:
+                active_count = await self.repository.count_active_superadmins()
+                if active_count <= 1:
+                    raise HTTPException(
+                        status.HTTP_400_BAD_REQUEST,
+                        "Cannot revoke privileges from the last active super "
+                        "administrator",
+                    )
+
+        if update_dict.get("is_active") is False and user.is_super_admin:
+            active_count = await self.repository.count_active_superadmins()
+            if active_count <= 1:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "Cannot deactivate the last active super administrator",
+                )
+
     async def update_user(
         self,
         user_id: uuid.UUID,
         data: UserAdminUpdate,
         actor_id: uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
     ) -> UserAdminResponse:
         """Update user administrative attributes."""
         user = await self._get_user_or_404(user_id)
         update_dict = data.model_dump(exclude_unset=True)
+
+        await self._validate_superadmin_update(
+            user, update_dict, actor_id=actor_id, scope=scope
+        )
+
         if "email" in update_dict:
             if update_dict["email"] != user.email:
                 if await self.repository.get_by_email(update_dict["email"]):
@@ -326,6 +376,13 @@ class UserAdminService(BaseAuditService[User]):
         """Soft-delete user into trash and invalidate active sessions."""
         user = await self._get_user_or_404(id)
         self._check_not_system(user, "deleted")
+        if user.is_super_admin:
+            active_superadmins = await self.repository.count_active_superadmins()
+            if active_superadmins <= 1:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "Cannot delete the last active super administrator",
+                )
         item = await super().delete(
             id, *where, user_id=user_id, scope=scope, options=options
         )
@@ -362,6 +419,13 @@ class UserAdminService(BaseAuditService[User]):
         """Suspend user and immediately invalidate all their active sessions."""
         user = await self._get_user_or_404(user_id)
         self._check_not_system(user, "suspended")
+        if user.is_super_admin:
+            active_superadmins = await self.repository.count_active_superadmins()
+            if active_superadmins <= 1:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "Cannot suspend the last active super administrator",
+                )
         old_active = user.is_active
         user.is_active = False
         await self.repository.invalidate_user_sessions(user.id)

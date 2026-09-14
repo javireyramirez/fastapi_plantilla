@@ -3,9 +3,11 @@ from datetime import UTC, datetime
 import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.mixins import generate_uuid7
+from fastapi_plantilla.modules.audit.models import AuditLog
 from fastapi_plantilla.modules.auth.dependencies import (
     get_current_active_superuser,
     get_current_user,
@@ -140,12 +142,42 @@ async def test_settings_api_public_and_admin(
         # Admin update setting
         res_patch = await client.patch(
             "/api/settings/storage.max_upload_size_bytes",
-            json={"value": 2097152},
+            json={"value": 2097152, "is_public": False},
         )
         assert res_patch.status_code == status.HTTP_200_OK
         assert res_patch.json()["value"] == 2097152
+        # is_public is immutable and cannot be changed via update
+        assert res_patch.json()["is_public"] is True
 
-        # Public endpoint immediately reflects new value
+        # Verify audit log was recorded for the setting update
+        audit_stmt = select(AuditLog).where(
+            AuditLog.entity_type == "settings",
+            AuditLog.entity_id == s.id,
+            AuditLog.action == "UPDATE",
+        )
+        audit_res = await dbsession.execute(audit_stmt)
+        audit_log = audit_res.scalar_one_or_none()
+        assert audit_log is not None
+        assert audit_log.actor_id == superuser.id
+        assert audit_log.actor_name == superuser.name
+        assert audit_log.entity_name == "storage.max_upload_size_bytes"
+        assert audit_log.changes == {"value": {"old": 1048576, "new": 2097152}}
+
+        # Type validation: reject string value for integer setting
+        res_invalid_type = await client.patch(
+            "/api/settings/storage.max_upload_size_bytes",
+            json={"value": "invalid_string"},
+        )
+        assert res_invalid_type.status_code == status.HTTP_400_BAD_REQUEST
+
+        # Type validation: reject negative integer
+        res_negative = await client.patch(
+            "/api/settings/storage.max_upload_size_bytes",
+            json={"value": -100},
+        )
+        assert res_negative.status_code == status.HTTP_400_BAD_REQUEST
+
+        # Public endpoint immediately reflects new valid value
         res_public_after = await client.get("/api/settings/public")
         assert res_public_after.json()["storage.max_upload_size_bytes"] == 2097152
 

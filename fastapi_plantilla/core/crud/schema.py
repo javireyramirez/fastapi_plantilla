@@ -65,7 +65,7 @@ class PaginationParams(BaseModel):
     """Query parameters for paginated list requests."""
 
     page: int = Field(default=1, ge=1, le=1000)
-    limit: int = Field(default=10, ge=1, le=100)
+    limit: int = Field(default=20, ge=1, le=100)
     sort_by: str = "created_at"
     sort_order: SortOrder = SortOrder.DESC
     is_trash: bool = False
