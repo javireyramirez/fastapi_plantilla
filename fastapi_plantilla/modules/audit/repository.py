@@ -1,5 +1,6 @@
 import re
 import uuid
+from datetime import UTC
 from typing import Any
 
 from fastapi import Depends
@@ -17,26 +18,31 @@ __all__ = ["AuditRepository", "normalize_entity_types"]
 
 
 def normalize_entity_types(raw_type: str) -> list[str]:
-    """Return candidate entity_type strings covering singular and plural variations."""
+    """Return candidate entity_type strings covering singular and plural forms."""
     raw = raw_type.strip().lower()
     candidates = {raw}
 
-    known_pairs = {
-        "user": "users",
-        "company": "companies",
-        "team": "teams",
-        "role": "roles",
-        "document": "documents",
-        "storage": "storages",
-        "audit": "audits",
-        "trash": "trash",
-        "setting": "settings",
+    module_synonyms: dict[str, set[str]] = {
+        "storage": {"storage", "storages", "document", "documents"},
+        "document": {"storage", "storages", "document", "documents"},
+        "documents": {"storage", "storages", "document", "documents"},
+        "roles": {"roles", "role", "rbac"},
+        "role": {"roles", "role", "rbac"},
+        "rbac": {"roles", "role", "rbac"},
+        "users": {"users", "user", "auth", "session", "sessions"},
+        "user": {"users", "user", "auth", "session", "sessions"},
+        "companies": {"companies", "company"},
+        "company": {"companies", "company"},
+        "teams": {"teams", "team"},
+        "team": {"teams", "team"},
+        "settings": {"settings", "setting"},
+        "setting": {"settings", "setting"},
+        "auth": {"users", "user", "auth", "session", "sessions"},
+        "trash": {"trash", "trashitem"},
+        "audit": {"audit", "audits"},
     }
-    for sing, plur in known_pairs.items():
-        if raw == sing:
-            candidates.add(plur)
-        elif raw == plur:
-            candidates.add(sing)
+    if raw in module_synonyms:
+        candidates.update(module_synonyms[raw])
 
     if raw.endswith("ies"):
         candidates.add(raw[:-3] + "y")
@@ -59,6 +65,22 @@ def _resolve_action_filter(action: str) -> Any:
     if act in ("REACTIVATE", "ACTIVATE"):
         return AuditLog.action.in_(["REACTIVATE", "ACTIVATE"])
     return AuditLog.action == act
+
+
+def _resolve_date_conditions(params: AuditFilterParams) -> list[Any]:
+    """Build date range comparison conditions with timezone normalization."""
+    conditions: list[Any] = []
+    effective_from = params.created_at_from or params.from_date
+    if effective_from:
+        if effective_from.tzinfo is None:
+            effective_from = effective_from.replace(tzinfo=UTC)
+        conditions.append(AuditLog.created_at >= effective_from)
+    effective_to = params.created_at_to or params.to_date
+    if effective_to:
+        if effective_to.tzinfo is None:
+            effective_to = effective_to.replace(tzinfo=UTC)
+        conditions.append(AuditLog.created_at <= adjust_end_of_day(effective_to))
+    return conditions
 
 
 def _build_audit_conditions(params: AuditFilterParams) -> list[Any]:
@@ -85,12 +107,7 @@ def _build_audit_conditions(params: AuditFilterParams) -> list[Any]:
     effective_actor_id = params.actor_id or params.user_id
     if effective_actor_id:
         conditions.append(AuditLog.actor_id == effective_actor_id)
-    effective_from = params.created_at_from or params.from_date
-    if effective_from:
-        conditions.append(AuditLog.created_at >= effective_from)
-    effective_to = params.created_at_to or params.to_date
-    if effective_to:
-        conditions.append(AuditLog.created_at <= adjust_end_of_day(effective_to))
+    conditions.extend(_resolve_date_conditions(params))
     return conditions
 
 

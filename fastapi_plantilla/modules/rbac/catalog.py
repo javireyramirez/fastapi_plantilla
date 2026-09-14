@@ -80,7 +80,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
     },
     {
         "code": "storage",
-        "name": "Almacenamiento y Documentos",
+        "name": "Almacenamiento",
         "description": "Gestión de archivos y documentos del sistema",
         "category": "files",
         "category_name": "Archivos",
@@ -158,25 +158,6 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         ],
     },
     {
-        "code": "rbac",
-        "name": "Roles y Permisos",
-        "description": "Control de acceso, roles y asignación de permisos",
-        "category": "system",
-        "category_name": "Sistema",
-        "category_icon": "cpu",
-        "category_order": 4,
-        "icon": None,
-        "sort_order": 0,
-        "is_active": True,
-        "supported_actions": [
-            RbacActions.CREATE,
-            RbacActions.READ,
-            RbacActions.UPDATE,
-            RbacActions.DELETE,
-            RbacActions.RESTORE,
-        ],
-    },
-    {
         "code": "audit",
         "name": "Auditoría",
         "description": "Logs y auditoría",
@@ -185,7 +166,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "category_icon": "cpu",
         "category_order": 4,
         "icon": "activity",
-        "sort_order": 6,
+        "sort_order": 5,
         "is_active": True,
         "supported_actions": [
             RbacActions.READ,
@@ -201,7 +182,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "category_icon": "cpu",
         "category_order": 4,
         "icon": "trash-2",
-        "sort_order": 7,
+        "sort_order": 6,
         "is_active": True,
         "supported_actions": [
             RbacActions.READ,
@@ -218,7 +199,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "category_icon": "cpu",
         "category_order": 4,
         "icon": "sliders",
-        "sort_order": 8,
+        "sort_order": 7,
         "is_active": True,
         "supported_actions": [
             RbacActions.READ,

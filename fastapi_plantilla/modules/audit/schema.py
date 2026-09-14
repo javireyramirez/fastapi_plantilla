@@ -45,6 +45,8 @@ class AuditLogResponse(BaseModel):
     entity_type: str
     entity_id: uuid.UUID | None = None
     entity_name: str | None = None
+    module_slug: str | None = None
+    module_name: str | None = None
     action: str
     user: UserReference | None = None
     ip_address: str | None = None
@@ -65,6 +67,8 @@ class AuditLogExportResponse(BaseModel):
     entity_type: str
     entity_id: uuid.UUID | None = None
     entity_name: str | None = None
+    module_slug: str | None = None
+    module_name: str | None = None
     actor_id: uuid.UUID | None = None
     actor_name: str | None = None
     actor_email: str | None = None

@@ -40,7 +40,13 @@ class CompanyService(BaseOwnedService[Company]):
             clauses.append(self.build_string_filter("nif", nif_val))
         sector_val = getattr(params, "sector", None)
         if sector_val:
-            clauses.append(Company.sector == sector_val)
+            if isinstance(sector_val, list):
+                if len(sector_val) == 1:
+                    clauses.append(Company.sector == sector_val[0])
+                elif len(sector_val) > 1:
+                    clauses.append(Company.sector.in_(sector_val))
+            else:
+                clauses.append(Company.sector == sector_val)
         return clauses
 
     async def create(

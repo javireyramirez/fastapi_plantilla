@@ -492,3 +492,73 @@ async def test_company_reuse_nif_when_in_trash_and_restore_conflict(
         f"/api/companies/{first_id}/restore",
     )
     assert restore_ok.status_code == status.HTTP_200_OK
+
+
+@pytest.mark.anyio
+async def test_companies_filter_by_multiple_sectors(
+    companies_client: tuple[AsyncClient, CompaniesAuthContext],
+    setup_companies_context: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify filtering companies by multiple sectors."""
+    client, context = companies_client
+    admin_user, _ = setup_companies_context
+    context.user = admin_user
+
+    suffix = uuid.uuid4().hex[:6]
+    # Create 3 companies across different sectors
+    c_tech = await client.post(
+        "/api/companies",
+        json={
+            "name": f"Tech Co {suffix}",
+            "nif": f"TC_{suffix}",
+            "sector": "Technology",
+        },
+    )
+    assert c_tech.status_code == status.HTTP_201_CREATED
+    tech_id = c_tech.json()["id"]
+
+    c_fin = await client.post(
+        "/api/companies",
+        json={
+            "name": f"Finance Co {suffix}",
+            "nif": f"FC_{suffix}",
+            "sector": "Finance",
+        },
+    )
+    assert c_fin.status_code == status.HTTP_201_CREATED
+    fin_id = c_fin.json()["id"]
+
+    c_health = await client.post(
+        "/api/companies",
+        json={
+            "name": f"Health Co {suffix}",
+            "nif": f"HC_{suffix}",
+            "sector": "Healthcare",
+        },
+    )
+    assert c_health.status_code == status.HTTP_201_CREATED
+    health_id = c_health.json()["id"]
+
+    # 1. Single sector filter
+    res_tech = await client.get("/api/companies?sector=Technology")
+    assert res_tech.status_code == status.HTTP_200_OK
+    tech_ids = [c["id"] for c in res_tech.json()["data"]]
+    assert tech_id in tech_ids
+    assert fin_id not in tech_ids
+    assert health_id not in tech_ids
+
+    # 2. Multi-sector filter via repeated query params
+    res_multi = await client.get("/api/companies?sector=Technology&sector=Finance")
+    assert res_multi.status_code == status.HTTP_200_OK
+    multi_ids = [c["id"] for c in res_multi.json()["data"]]
+    assert tech_id in multi_ids
+    assert fin_id in multi_ids
+    assert health_id not in multi_ids
+
+    # 3. Multi-sector filter via comma-separated query param
+    res_comma = await client.get("/api/companies?sector=Technology,Finance")
+    assert res_comma.status_code == status.HTTP_200_OK
+    comma_ids = [c["id"] for c in res_comma.json()["data"]]
+    assert tech_id in comma_ids
+    assert fin_id in comma_ids
+    assert health_id not in comma_ids

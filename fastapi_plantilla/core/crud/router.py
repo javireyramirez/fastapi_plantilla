@@ -1,9 +1,9 @@
 import uuid
 from collections.abc import Callable
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, Header, Response, status
+from fastapi import APIRouter, Body, Depends, Header, Query, Response, status
 from pydantic import BaseModel
 
 from fastapi_plantilla.core.crud.dependencies import get_scope_context
@@ -86,7 +86,7 @@ def create_crud_router[  # noqa: C901
         include_in_schema=False,
     )
     async def find_paginated(
-        params: PaginationParams = Depends(pagination_params),
+        params: Annotated[pagination_params, Query()],  # type: ignore[valid-type]
         service: BaseCRUDService[ModelT] = Depends(service_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.READ)),
     ) -> Any:

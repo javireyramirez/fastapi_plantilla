@@ -1,6 +1,7 @@
 import uuid
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from fastapi_plantilla.core.crud.schema import (
     AuditFieldsSchema,
@@ -56,4 +57,23 @@ class CompaniesPaginationParams(PaginationParams):
 
     name: str | None = None
     nif: str | None = None
-    sector: str | None = None
+    sector: list[str] | None = None
+
+    @field_validator("sector", mode="before")
+    @classmethod
+    def parse_sector(cls, v: Any) -> list[str] | None:
+        """Normalize comma-separated strings or sequences into a list of sectors."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            items = [s.strip() for s in v.split(",") if s.strip()]
+            return items if items else None
+        if isinstance(v, (list, tuple, set)):
+            result: list[str] = []
+            for item in v:
+                if isinstance(item, str):
+                    result.extend([s.strip() for s in item.split(",") if s.strip()])
+                elif item is not None:
+                    result.append(str(item).strip())
+            return result if result else None
+        return v

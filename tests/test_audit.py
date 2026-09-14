@@ -286,11 +286,17 @@ async def test_audit_api_endpoints(
     async with AsyncClient(
         transport=ASGITransport(app=test_app), base_url="http://test"
     ) as client:
+        # 1. SuperAdmin access: list
         resp = await client.get("/api/audit?entity_type=system_test")
         assert resp.status_code == 200
         data = resp.json()
         assert data["meta"]["total"] >= 1
         assert any(item["id"] == str(created_entry.id) for item in data["data"])
+        matched_item = next(
+            item for item in data["data"] if item["id"] == str(created_entry.id)
+        )
+        assert matched_item["module_slug"] == "system_test"
+        assert matched_item["module_name"] == "System Test"
 
         # 2. SuperAdmin access: detail
         detail_resp = await client.get(f"/api/audit/{created_entry.id}")
@@ -298,12 +304,15 @@ async def test_audit_api_endpoints(
         detail_data = detail_resp.json()
         assert detail_data["id"] == str(created_entry.id)
         assert detail_data["action"] == "UPDATE"
+        assert detail_data["module_slug"] == "system_test"
+        assert detail_data["module_name"] == "System Test"
 
         # 3. SuperAdmin access: entity history
         hist_resp = await client.get(f"/api/audit/entity/system_test/{entity_uuid}")
         assert hist_resp.status_code == 200
         hist_data = hist_resp.json()
         assert len(hist_data) >= 1
+        assert hist_data[0]["module_slug"] == "system_test"
 
     # 4. Non-admin access: 403 Forbidden
     async def override_forbidden() -> UserResponse:

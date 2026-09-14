@@ -33,9 +33,9 @@ async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:  # no
         "roles",
         "companies",
         "storage",
-        "rbac",
         "audit",
         "trash",
+        "settings",
     }
     assert expected_codes.issubset(mod_codes)
 
@@ -57,12 +57,12 @@ async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:  # no
     assert comp_mod.category_icon == "briefcase"
     assert comp_mod.category_order == 1
 
-    rbac_mod = next(m for m in modules if m.code == "rbac")
-    assert rbac_mod.name == "Roles y Permisos"
-    assert rbac_mod.category == "system"
-    assert rbac_mod.category_name == "Sistema"
-    assert rbac_mod.category_icon == "cpu"
-    assert rbac_mod.category_order == 4
+    roles_mod = next(m for m in modules if m.code == "roles")
+    assert roles_mod.name == "Roles"
+    assert roles_mod.category == "security"
+    assert roles_mod.category_name == "Seguridad"
+    assert roles_mod.category_icon == "shield"
+    assert roles_mod.category_order == 3
 
     audit_mod = next(m for m in modules if m.code == "audit")
     assert audit_mod.supported_actions == ["READ", "EXPORT"]

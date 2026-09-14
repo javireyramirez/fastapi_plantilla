@@ -24,12 +24,18 @@ from fastapi_plantilla.modules.audit.schema import (
 )
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.companies.models import Company
+from fastapi_plantilla.modules.rbac.catalog import CORE_SYSTEM_MODULES
 from fastapi_plantilla.modules.rbac.models import Role, SystemModule
 from fastapi_plantilla.modules.storage.models import Document
 from fastapi_plantilla.modules.teams.models import Team
 from fastapi_plantilla.modules.trash.models import TrashItem
 
-__all__ = ["AuditService", "enrich_entity_names"]
+__all__ = [
+    "AuditService",
+    "enrich_audit_modules",
+    "enrich_entity_names",
+    "resolve_audit_module",
+]
 
 
 MODEL_TYPE_MAP: dict[str, tuple[Any, bool]] = {
@@ -177,6 +183,56 @@ async def enrich_entity_names(
             item.entity_name = id_to_name[item.entity_id]
 
 
+AUDIT_MODULE_CATALOG: dict[str, tuple[str, str]] = {}
+for _m in CORE_SYSTEM_MODULES:
+    _code = _m["code"]
+    _name = _m["name"]
+    AUDIT_MODULE_CATALOG[_code.lower()] = (_code, _name)
+    if _code == "companies":
+        AUDIT_MODULE_CATALOG["company"] = (_code, _name)
+    elif _code == "users":
+        AUDIT_MODULE_CATALOG["user"] = (_code, _name)
+    elif _code == "teams":
+        AUDIT_MODULE_CATALOG["team"] = (_code, _name)
+    elif _code == "roles":
+        AUDIT_MODULE_CATALOG["role"] = (_code, _name)
+        AUDIT_MODULE_CATALOG["rbac"] = (_code, _name)
+    elif _code == "storage":
+        AUDIT_MODULE_CATALOG["document"] = (_code, _name)
+        AUDIT_MODULE_CATALOG["documents"] = (_code, _name)
+        AUDIT_MODULE_CATALOG["storages"] = (_code, _name)
+    elif _code == "settings":
+        AUDIT_MODULE_CATALOG["setting"] = (_code, _name)
+    elif _code == "trash":
+        AUDIT_MODULE_CATALOG["trashitem"] = (_code, _name)
+    elif _code == "audit":
+        AUDIT_MODULE_CATALOG["audits"] = (_code, _name)
+
+# Map auth / session events to the canonical users module
+AUDIT_MODULE_CATALOG["auth"] = ("users", "Usuarios")
+AUDIT_MODULE_CATALOG["session"] = ("users", "Usuarios")
+AUDIT_MODULE_CATALOG["sessions"] = ("users", "Usuarios")
+
+
+def resolve_audit_module(entity_type: str | None) -> tuple[str, str]:
+    """Resolve canonical module_slug and module_name from entity_type."""
+    if not entity_type:
+        return ("unknown", "Desconocido")
+    raw = entity_type.strip().lower()
+    if raw in AUDIT_MODULE_CATALOG:
+        return AUDIT_MODULE_CATALOG[raw]
+    clean_code = raw.rstrip("s") if raw.endswith("s") and len(raw) > 3 else raw
+    return (raw, clean_code.replace("_", " ").title())
+
+
+def enrich_audit_modules(items: Sequence[AuditLog]) -> None:
+    """Populate module_slug and module_name on AuditLog items in-place."""
+    for item in items:
+        slug, name = resolve_audit_module(item.entity_type)
+        item.module_slug = slug  # type: ignore[attr-defined]
+        item.module_name = name  # type: ignore[attr-defined]
+
+
 class AuditService:
     """Business service governing audit trail querying and emission."""
 
@@ -188,6 +244,7 @@ class AuditService:
         record = await self.repository.record_entry(entry)
         await enrich_actors(self.repository.session, [record])
         await enrich_entity_names(self.repository.session, [record])
+        enrich_audit_modules([record])
         return AuditLogResponse.model_validate(record)
 
     async def log(
@@ -227,6 +284,7 @@ class AuditService:
         items, total = await self.repository.list_logs(params)
         await enrich_actors(self.repository.session, items)
         await enrich_entity_names(self.repository.session, items)
+        enrich_audit_modules(items)
         return PaginatedResponse(
             data=[AuditLogResponse.model_validate(item) for item in items],
             meta=PaginationMeta.create(
@@ -246,6 +304,7 @@ class AuditService:
             )
         await enrich_actors(self.repository.session, [item])
         await enrich_entity_names(self.repository.session, [item])
+        enrich_audit_modules([item])
         return AuditLogResponse.model_validate(item)
 
     async def get_entity_history(
@@ -255,6 +314,7 @@ class AuditService:
         items = await self.repository.get_entity_history(entity_type, entity_id)
         await enrich_actors(self.repository.session, items)
         await enrich_entity_names(self.repository.session, items)
+        enrich_audit_modules(items)
         return [AuditLogResponse.model_validate(item) for item in items]
 
     async def export_data(
@@ -272,6 +332,7 @@ class AuditService:
         )
         await enrich_actors(self.repository.session, items)
         await enrich_entity_names(self.repository.session, items)
+        enrich_audit_modules(items)
 
         for item in items:
             user = getattr(item, "user", None)
