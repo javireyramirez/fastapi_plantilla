@@ -23,3 +23,20 @@ api_router.include_router(storage_router)
 api_router.include_router(trash_router)
 api_router.include_router(audit_router)
 api_router.include_router(settings_router)
+
+
+@api_router.get(
+    "/export/formats",
+    response_model=list[str],
+    tags=["Export"],
+    summary="Get globally supported export file formats",
+)
+async def get_global_export_formats() -> list[str]:
+    """Return all export formats supported by the system."""
+    from fastapi_plantilla.core.crud.exporter import openpyxl  # noqa: PLC0415
+    from fastapi_plantilla.core.crud.schema import ExportFormat  # noqa: PLC0415
+
+    formats = [f.value for f in ExportFormat]
+    if openpyxl is None and ExportFormat.EXCEL.value in formats:
+        formats.remove(ExportFormat.EXCEL.value)
+    return formats

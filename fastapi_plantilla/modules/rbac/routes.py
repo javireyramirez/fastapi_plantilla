@@ -14,7 +14,9 @@ from fastapi_plantilla.modules.auth.dependencies import (
     get_current_user,
 )
 from fastapi_plantilla.modules.auth.schema import UserResponse
-from fastapi_plantilla.modules.rbac.dependencies import get_rbac_service
+from fastapi_plantilla.modules.rbac.dependencies import (
+    get_rbac_service,
+)
 from fastapi_plantilla.modules.rbac.schema import (
     ModuleCreate,
     ModuleResponse,

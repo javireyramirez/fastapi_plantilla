@@ -129,13 +129,25 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         if req.ids:
             where_clauses.append(self.repository.pk.in_(req.ids))
         elif req.filters:
+            param_cls = getattr(self, "pagination_params_class", PaginationParams)
             valid_fields = {
                 k: v
                 for k, v in req.filters.items()
-                if hasattr(PaginationParams, k) and v is not None
+                if (hasattr(param_cls, k) or hasattr(PaginationParams, k))
+                and v is not None
             }
             if valid_fields:
-                filter_params = PaginationParams(is_trash=req.is_trash, **valid_fields)
+                try:
+                    filter_params = param_cls(is_trash=req.is_trash, **valid_fields)
+                except Exception:
+                    fallback_fields = {
+                        k: v
+                        for k, v in valid_fields.items()
+                        if hasattr(PaginationParams, k)
+                    }
+                    filter_params = PaginationParams(
+                        is_trash=req.is_trash, **fallback_fields
+                    )
                 where_clauses.extend(self.build_where_filters(filter_params))
 
         order_clause = self.build_order_by(req.sort_by, req.sort_order)

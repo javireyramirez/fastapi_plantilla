@@ -14,6 +14,7 @@ from fastapi_plantilla.core.crud.schema import (
     DEFAULT_MAX_BULK_LIMIT,
     BulkIdsRequest,
     BulkResponse,
+    ExportFormat,
     ListItemResponse,
     ListQueryParams,
     PaginatedResponse,
@@ -43,6 +44,22 @@ class BaseCRUDService[ModelT: Base]:
     mask_forbidden_as_not_found: bool = False
     MAX_BULK_LIMIT: int = DEFAULT_MAX_BULK_LIMIT
     export_schema: type[BaseModel] | None = None
+    supported_export_formats: ClassVar[tuple[ExportFormat, ...]] = (
+        ExportFormat.CSV,
+        ExportFormat.EXCEL,
+        ExportFormat.JSON,
+        ExportFormat.TSV,
+        ExportFormat.GOOGLE_SHEETS,
+    )
+
+    def get_export_formats(self) -> list[str]:
+        """Return supported export format values."""
+        from fastapi_plantilla.core.crud.exporter import openpyxl  # noqa: PLC0415
+
+        formats = list(self.supported_export_formats)
+        if openpyxl is None and ExportFormat.EXCEL in formats:
+            formats.remove(ExportFormat.EXCEL)
+        return [f.value for f in formats]
 
     IMMUTABLE_FIELDS: frozenset[str] = frozenset(
         {

@@ -36,6 +36,19 @@ async def export_audit_logs(
 
 
 @router.get(
+    "/export/formats",
+    response_model=list[str],
+    summary="Get supported export formats for audit logs",
+)
+async def get_audit_export_formats(
+    service: AuditService = Depends(get_audit_service),
+    _: UserResponse = Depends(get_current_active_superuser),
+) -> list[str]:
+    """Get list of supported export file formats for audit logs."""
+    return service.get_export_formats()
+
+
+@router.get(
     "",
     response_model=PaginatedResponse[AuditLogResponse],
     summary="List paginated audit logs with filtering",

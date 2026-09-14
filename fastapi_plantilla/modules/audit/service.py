@@ -291,3 +291,19 @@ class AuditService:
             slug="audit_logs",
             columns=req.columns,
         )
+
+    def get_export_formats(self) -> list[str]:
+        """Return supported export formats for audit logs."""
+        from fastapi_plantilla.core.crud.exporter import openpyxl  # noqa: PLC0415
+        from fastapi_plantilla.core.crud.schema import ExportFormat  # noqa: PLC0415
+
+        formats = [
+            ExportFormat.CSV.value,
+            ExportFormat.EXCEL.value,
+            ExportFormat.JSON.value,
+            ExportFormat.TSV.value,
+            ExportFormat.GOOGLE_SHEETS.value,
+        ]
+        if openpyxl is None and ExportFormat.EXCEL.value in formats:
+            formats.remove(ExportFormat.EXCEL.value)
+        return formats

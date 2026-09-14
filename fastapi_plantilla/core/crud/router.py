@@ -116,12 +116,27 @@ def create_crud_router[  # noqa: C901
     ) -> Response:
         if getattr(service, "export_schema", None) is None:
             service.export_schema = effective_export_schema
+        if getattr(service, "pagination_params_class", None) is None:
+            service.pagination_params_class = pagination_params
         content, media_type, filename = await service.export_data(req, scope=scope)
         return Response(
             content=content,
             media_type=media_type,
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    @router.get(
+        "/export/formats",
+        response_model=list[str],
+        summary=f"Get supported export formats for {resource_name or 'resource'}",
+    )
+    async def get_export_formats(
+        service: Any = Depends(service_getter),
+        scope: ScopeContext = Depends(_scope_dep(RbacActions.READ)),
+    ) -> list[str]:
+        if hasattr(service, "get_export_formats"):
+            return service.get_export_formats()
+        return ["csv", "excel", "json", "tsv", "google_sheets"]
 
     @router.post(
         "",
