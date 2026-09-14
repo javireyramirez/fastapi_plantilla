@@ -282,6 +282,18 @@ async def test_list_companies_pagination_and_filters(
     assert len(search_res.json()["data"]) == 1
     assert search_res.json()["data"][0]["name"] == f"Alpha {unique_tag}"
 
+    # 1b. Filter directly by name query param
+    name_res = await client.get(f"/api/companies?name=Alpha+{unique_tag}")
+    assert name_res.status_code == status.HTTP_200_OK
+    assert len(name_res.json()["data"]) == 1
+    assert name_res.json()["data"][0]["name"] == f"Alpha {unique_tag}"
+
+    # 1c. Filter directly by nif query param
+    nif_res = await client.get(f"/api/companies?nif=X2_{unique_tag}")
+    assert nif_res.status_code == status.HTTP_200_OK
+    assert len(nif_res.json()["data"]) == 1
+    assert nif_res.json()["data"][0]["nif"] == f"X2_{unique_tag}"
+
     # 2. Filter by sector (single)
     sector_res = await client.get(f"/api/companies?search={unique_tag}&sector=Fintech")
     assert sector_res.status_code == status.HTTP_200_OK

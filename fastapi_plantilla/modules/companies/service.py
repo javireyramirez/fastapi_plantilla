@@ -30,8 +30,14 @@ class CompanyService(BaseOwnedService[Company]):
         self.repository: CompanyRepository = repository
 
     def build_where_filters(self, params: PaginationParams) -> list[Any]:
-        """Build query clauses including sector."""
+        """Build query clauses including name, nif, and sector."""
         clauses = super().build_where_filters(params)
+        name_val = getattr(params, "name", None)
+        if name_val:
+            clauses.append(self.build_string_filter("name", name_val))
+        nif_val = getattr(params, "nif", None)
+        if nif_val:
+            clauses.append(self.build_string_filter("nif", nif_val))
         sector_val = getattr(params, "sector", None)
         if sector_val:
             clauses.append(Company.sector == sector_val)

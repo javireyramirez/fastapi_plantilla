@@ -82,12 +82,15 @@ def _build_audit_conditions(params: AuditFilterParams) -> list[Any]:
         conditions.append(AuditLog.entity_name.ilike(f"%{params.entity_name.strip()}%"))
     if params.action:
         conditions.append(_resolve_action_filter(params.action))
-    if params.actor_id:
-        conditions.append(AuditLog.actor_id == params.actor_id)
-    if params.from_date:
-        conditions.append(AuditLog.created_at >= params.from_date)
-    if params.to_date:
-        conditions.append(AuditLog.created_at <= adjust_end_of_day(params.to_date))
+    effective_actor_id = params.actor_id or params.user_id
+    if effective_actor_id:
+        conditions.append(AuditLog.actor_id == effective_actor_id)
+    effective_from = params.created_at_from or params.from_date
+    if effective_from:
+        conditions.append(AuditLog.created_at >= effective_from)
+    effective_to = params.created_at_to or params.to_date
+    if effective_to:
+        conditions.append(AuditLog.created_at <= adjust_end_of_day(effective_to))
     return conditions
 
 

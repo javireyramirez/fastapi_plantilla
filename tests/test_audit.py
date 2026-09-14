@@ -625,6 +625,23 @@ async def test_audit_entity_name_population_and_endpoints(
         assert len(data) >= 1
         assert data[0]["entity_name"] == "Audit Trail Team"
 
+        # Check list endpoint with date filter (today YYYY-MM-DD)
+        from datetime import UTC, datetime
+
+        today_str = datetime.now(UTC).strftime("%Y-%m-%d")
+        date_res = await client.get(
+            f"/api/audit?entity_id={team.id}&created_at_from={today_str}&created_at_to={today_str}"
+        )
+        assert date_res.status_code == 200
+        assert len(date_res.json()["data"]) >= 1
+
+        # Check list endpoint with past date (should return 0)
+        past_res = await client.get(
+            f"/api/audit?entity_id={team.id}&created_at_to=2020-01-01"
+        )
+        assert past_res.status_code == 200
+        assert len(past_res.json()["data"]) == 0
+
         # Check single get endpoint
         single_res = await client.get(f"/api/audit/{create_log['id']}")
         assert single_res.status_code == 200

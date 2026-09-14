@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from fastapi_plantilla.core.crud.schema import SortOrder, UserReference
 
@@ -99,18 +99,12 @@ class AuditFilterParams(BaseModel):
     entity_id: uuid.UUID | None = None
     entity_name: str | None = None
     action: str | None = None
-    actor_id: uuid.UUID | None = Field(
-        default=None,
-        validation_alias=AliasChoices("actor_id", "user_id"),
-    )
-    from_date: datetime | None = Field(
-        default=None,
-        validation_alias=AliasChoices("from_date", "created_at_from"),
-    )
-    to_date: datetime | None = Field(
-        default=None,
-        validation_alias=AliasChoices("to_date", "created_at_to"),
-    )
+    actor_id: uuid.UUID | None = None
+    user_id: uuid.UUID | None = None
+    from_date: datetime | None = None
+    to_date: datetime | None = None
+    created_at_from: datetime | None = None
+    created_at_to: datetime | None = None
     page: int = Field(default=1, ge=1, le=1000)
     limit: int = Field(default=20, ge=1, le=100)
     sort_by: str = "created_at"

@@ -136,3 +136,4 @@ class UsersPaginationParams(PaginationParams):
     is_active: bool | None = None
     is_super_admin: bool | None = None
     email_verified: bool | None = None
+    is_system: bool | None = None

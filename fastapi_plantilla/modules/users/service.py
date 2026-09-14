@@ -125,7 +125,12 @@ class UserAdminService(BaseAuditService[User]):
         email_val = getattr(params, "email", None)
         if email_val:
             clauses.append(self.build_string_filter("email", email_val))
-        for bool_field in ("is_active", "is_super_admin", "email_verified"):
+        for bool_field in (
+            "is_active",
+            "is_super_admin",
+            "email_verified",
+            "is_system",
+        ):
             val = getattr(params, bool_field, None)
             if val is not None:
                 clause = self.build_boolean_filter(bool_field, val)

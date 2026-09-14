@@ -195,6 +195,15 @@ async def test_users_admin_crud_and_listing(
     assert search_res.status_code == status.HTTP_200_OK
     assert len(search_res.json()["data"]) == 1
 
+    # is_system filter
+    system_res = await users_client.get("/api/users?is_system=true")
+    assert system_res.status_code == status.HTTP_200_OK
+    assert all(u["is_system"] is True for u in system_res.json()["data"])
+
+    non_system_res = await users_client.get("/api/users?is_system=false")
+    assert non_system_res.status_code == status.HTTP_200_OK
+    assert all(u["is_system"] is False for u in non_system_res.json()["data"])
+
     # Sort by email_verified and camelCase emailVerified
     sort_res1 = await users_client.get(
         "/api/users?sort_by=email_verified&sort_order=desc"
