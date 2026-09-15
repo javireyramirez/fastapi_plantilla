@@ -504,15 +504,19 @@ class BaseCRUDService[ModelT: Base]:
         else:
             total_count = len(items)
 
+        excluded = self.SENSITIVE_COLUMNS | {"version"}
         rows: list[dict[str, Any]] = []
+        allowed_columns: set[str] | frozenset[str]
         if effective_schema is not None:
             for item in items:
                 dumped = effective_schema.model_validate(item).model_dump(mode="json")
-                rows.append(
-                    {k: v for k, v in dumped.items() if k not in self.SENSITIVE_COLUMNS}
-                )
+                rows.append({k: v for k, v in dumped.items() if k not in excluded})
+            allowed_columns = (
+                set(effective_schema.model_fields.keys())
+                if hasattr(effective_schema, "model_fields")
+                else (set(rows[0].keys()) if rows else set())
+            )
         else:
-            excluded = self.SENSITIVE_COLUMNS | {"version"}
             for item in items:
                 mapper = inspect(item.__class__)
                 row = {
@@ -521,9 +525,10 @@ class BaseCRUDService[ModelT: Base]:
                     if col.key not in excluded and not col.key.startswith("_")
                 }
                 rows.append(row)
+            allowed_columns = self._column_names
 
         export_columns = (
-            [c for c in req.columns if c not in self.SENSITIVE_COLUMNS]
+            [c for c in req.columns if c in allowed_columns and c not in excluded]
             if req.columns
             else None
         )

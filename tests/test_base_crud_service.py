@@ -1273,3 +1273,64 @@ async def test_bulk_transition_unprocessed_ids(
     restore_res = await service.bulk_restore(BulkIdsRequest(ids=[u.id, missing_id]))
     assert restore_res.count == 1
     assert restore_res.unprocessed_ids == [missing_id]
+
+
+async def test_export_data_discards_nonexistent_columns(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify export_data discards non-existent column names requested by client."""
+    from fastapi_plantilla.core.crud.schema import ExportFormat, ExportRequest
+
+    repo = BaseRepository(User, dbsession)
+    service = BaseCRUDService(repo)
+    tag = uuid.uuid4().hex[:6]
+    u = await repo.create(
+        {"name": f"FilterCol_{tag}", "email": f"fc_{tag}@example.com"}
+    )
+
+    req = ExportRequest(
+        format=ExportFormat.JSON,
+        ids=[u.id],
+        columns=["name", "fake_nonexistent_column", "version"],
+    )
+    content, _, _ = await service.export_data(req)
+    assert f"FilterCol_{tag}" in str(content)
+    assert "fake_nonexistent_column" not in str(content)
+    assert '"version"' not in str(content)
+
+
+async def test_active_items_omit_deleted_and_restored_actors(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify active records skip deleted_by actor enrichment for UX efficiency."""
+    from fastapi_plantilla.core.crud.actors import enrich_actors
+
+    repo = BaseRepository(User, dbsession)
+    tag = uuid.uuid4().hex[:6]
+    dummy_deleted_id = uuid.uuid4()
+    u = await repo.create(
+        {
+            "name": f"ActiveUX_{tag}",
+            "email": f"ux_{tag}@example.com",
+            "deleted_by": str(dummy_deleted_id),
+        }
+    )
+
+    # When item status is ACTIVE, enrich_actors must NOT populate deletor
+    await enrich_actors(dbsession, [u])
+    assert getattr(u, "deletor", None) is None
+
+
+def test_parse_if_match_version() -> None:
+    """Verify parse_if_match_version handles raw, quoted, and weak ETags."""
+    from fastapi_plantilla.core.crud.router import parse_if_match_version
+
+    assert parse_if_match_version('W/"1"') == 1
+    assert parse_if_match_version('w/"42"') == 42
+    assert parse_if_match_version('"5"') == 5
+    assert parse_if_match_version("'12'") == 12
+    assert parse_if_match_version("7") == 7
+    assert parse_if_match_version(None) is None
+    assert parse_if_match_version("") is None
+    assert parse_if_match_version("invalid") is None
+    assert parse_if_match_version('W/"not_a_number"') is None

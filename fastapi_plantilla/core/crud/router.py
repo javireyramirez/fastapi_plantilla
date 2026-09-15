@@ -34,7 +34,21 @@ from fastapi_plantilla.core.database import Base
 from fastapi_plantilla.modules.auth.dependencies import get_current_user
 from fastapi_plantilla.modules.rbac.schema import RbacActions
 
-__all__ = ["create_crud_router"]
+__all__ = ["create_crud_router", "parse_if_match_version"]
+
+
+def parse_if_match_version(if_match: str | None) -> int | None:
+    """Parse integer entity version from If-Match header value.
+
+    Supports standard and weak ETags (e.g., '1', '"1"', 'W/"1"').
+    """
+    if not if_match:
+        return None
+    cleaned = if_match.strip()
+    if cleaned.upper().startswith("W/"):
+        cleaned = cleaned[2:]
+    cleaned = cleaned.strip('"').strip("'").strip()
+    return int(cleaned) if cleaned.isdigit() else None
 
 
 def create_crud_router[  # noqa: C901, PLR0912, PLR0915
@@ -351,11 +365,14 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
             current_user: Any = Depends(current_user_getter),
             scope: ScopeContext = Depends(_scope_dep(RbacActions.UPDATE)),
         ) -> Any:
-            resolved_version = expected_version
-            if resolved_version is None and if_match:
-                cleaned = if_match.strip().removeprefix("W/").strip('"').strip("'")
-                if cleaned.isdigit():
-                    resolved_version = int(cleaned)
+            """Update record with optimistic locking.
+
+            Version precedence:
+            If-Match header > expected_version query param > data.version body field.
+            """
+            resolved_version = parse_if_match_version(if_match)
+            if resolved_version is None:
+                resolved_version = expected_version
             if resolved_version is None and hasattr(data, "version"):
                 data_version = getattr(data, "version", None)
                 if isinstance(data_version, int):

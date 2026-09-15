@@ -550,9 +550,12 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             status_clause = (
                 [status_col == target_status] if status_col is not None else []
             )
+            scope_clauses = self.build_scope_filters(opts.scope)
             processed_items = await self.repository.find_many(
                 self.repository.pk.in_(req.ids),
                 *status_clause,
+                *scope_clauses,
+                *where,
             )
             processed_ids_set = {
                 it_id
@@ -623,6 +626,8 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         user_id: str | uuid.UUID | None = None,
     ) -> None:
         """Hook executed after bulk soft-deleting items."""
+        if not _TRASH_SYNC_HOOKS or not ids:
+            return
         items = await self.repository.find_many(self.repository.pk.in_(ids))
         for item in items:
             await self.on_after_trash(item, user_id=user_id)
@@ -633,6 +638,8 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         user_id: str | uuid.UUID | None = None,
     ) -> None:
         """Hook executed after bulk restoring items."""
+        if not _TRASH_SYNC_HOOKS or not ids:
+            return
         items = await self.repository.find_many(self.repository.pk.in_(ids))
         for item in items:
             await self.on_after_restore(item, user_id=user_id)

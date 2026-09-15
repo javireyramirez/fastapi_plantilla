@@ -36,7 +36,6 @@ ACTOR_ATTRS = (
     "created_by",
     "updated_by",
     "deleted_by",
-    "restored_by",
     "actor_id",
 )
 
@@ -57,7 +56,13 @@ def _collect_actor_uuids(items: Sequence[Any]) -> dict[str, uuid.UUID]:
     """Collect unique UUIDs for actor attributes present on items."""
     raw_to_uuid: dict[str, uuid.UUID] = {}
     for item in items:
+        item_status = getattr(item, "status", None)
+        status_val = getattr(item_status, "value", item_status)
+        is_active = status_val == "ACTIVE"
+
         for attr in ACTOR_ATTRS:
+            if attr == "deleted_by" and is_active:
+                continue
             raw_val = getattr(item, attr, None)
             if raw_val is not None:
                 parsed = to_uuid(raw_val)
@@ -118,7 +123,6 @@ def _attach_item_actors(item: Any, users_map: dict[str, UserReference]) -> None:
     for raw_attr, target_attr in (
         ("created_by", "creator"),
         ("updated_by", "updater"),
-        ("deleted_by", "deletor"),
     ):
         if hasattr(item, raw_attr):
             setattr(
@@ -126,6 +130,11 @@ def _attach_item_actors(item: Any, users_map: dict[str, UserReference]) -> None:
                 target_attr,
                 _resolve_actor(getattr(item, raw_attr, None), users_map),
             )
+
+    item_status = getattr(item, "status", None)
+    status_val = getattr(item_status, "value", item_status)
+    if status_val != "ACTIVE" and hasattr(item, "deleted_by"):
+        item.deletor = _resolve_actor(getattr(item, "deleted_by", None), users_map)
 
     if hasattr(item, "actor_id"):
         raw_actor_id = getattr(item, "actor_id", None)
