@@ -841,3 +841,168 @@ async def test_role_audit_logging(
     assert "SET_ROLE_PERMISSIONS" in actions
     assert "ASSIGN_ROLE" in actions
     assert "UNASSIGN_ROLE" in actions
+
+
+@pytest.mark.anyio
+async def test_trashed_role_revokes_permissions_and_prevents_assignment(
+    rbac_client: AsyncClient,
+    rbac_auth: RbacAuthContext,
+    rbac_test_users: tuple[UserResponse, UserResponse],
+    dbsession: AsyncSession,
+) -> None:
+    """Verify trashed roles revoke permissions immediately and cannot be assigned."""
+    admin, regular = rbac_test_users
+
+    # Ensure test module exists
+    mod_repo = BaseRepository(SystemModule, dbsession)
+    mod = await mod_repo.find_first(SystemModule.code == "test_module")
+    if not mod:
+        await mod_repo.create(
+            {"id": generate_uuid7(), "code": "test_module", "name": "Test"}
+        )
+
+    # 1. Create role with READ permission on test_module
+    role_res = await rbac_client.post(
+        "/api/rbac/roles",
+        json={
+            "name": "Revocable Role",
+            "slug": f"revocable_{uuid.uuid4().hex[:6]}",
+            "permissions": [
+                {"module_code": "test_module", "action": "READ", "scope": "GLOBAL"}
+            ],
+        },
+    )
+    assert role_res.status_code == status.HTTP_201_CREATED
+    role_id = role_res.json()["id"]
+
+    # 2. Assign role to regular user
+    assign_res = await rbac_client.post(
+        "/api/rbac/assignments",
+        json={"role_id": role_id, "entity_type": "USER", "entity_id": str(regular.id)},
+    )
+    assert assign_res.status_code == status.HTTP_200_OK
+
+    # 3. User passes protected check
+    rbac_auth.user = regular
+    check_ok = await rbac_client.get("/api/test-protected")
+    assert check_ok.status_code == status.HTTP_200_OK
+
+    # 4. Soft-delete role into trash as admin
+    rbac_auth.user = admin
+    trash_res = await rbac_client.delete(f"/api/rbac/roles/{role_id}")
+    assert trash_res.status_code == status.HTTP_200_OK
+    assert trash_res.json()["status"] == "TRASHED"
+
+    # 5. User immediately loses permission (403 Forbidden)!
+    rbac_auth.user = regular
+    check_forbidden = await rbac_client.get("/api/test-protected")
+    assert check_forbidden.status_code == status.HTTP_403_FORBIDDEN
+
+    # 6. Attempting to assign the trashed role fails with 400
+    rbac_auth.user = admin
+    assign_trashed = await rbac_client.post(
+        "/api/rbac/assignments",
+        json={"role_id": role_id, "entity_type": "USER", "entity_id": str(admin.id)},
+    )
+    assert assign_trashed.status_code == status.HTTP_400_BAD_REQUEST
+    assert "Cannot assign a trashed role" in assign_trashed.json()["detail"]
+
+    # 7. Restore role -> User regains permissions
+    restore_res = await rbac_client.post(f"/api/rbac/roles/{role_id}/restore")
+    assert restore_res.status_code == status.HTTP_200_OK
+    assert restore_res.json()["status"] == "ACTIVE"
+
+    rbac_auth.user = regular
+    check_restored = await rbac_client.get("/api/test-protected")
+    assert check_restored.status_code == status.HTTP_200_OK
+
+
+@pytest.mark.anyio
+async def test_role_etag_headers_and_permissions_concurrency(
+    rbac_client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify ETags are emitted in GET, PATCH, and PUT permissions."""
+    mod_repo = BaseRepository(SystemModule, dbsession)
+    mod = await mod_repo.find_first(SystemModule.code == "test_module")
+    if not mod:
+        await mod_repo.create(
+            {"id": generate_uuid7(), "code": "test_module", "name": "Test"}
+        )
+
+    # 1. Create role
+    create_res = await rbac_client.post(
+        "/api/rbac/roles",
+        json={"name": "ETag Role", "slug": f"etag_{uuid.uuid4().hex[:6]}"},
+    )
+    role_id = create_res.json()["id"]
+
+    # 2. GET emits ETag
+    get_res = await rbac_client.get(f"/api/rbac/roles/{role_id}")
+    assert get_res.status_code == status.HTTP_200_OK
+    assert "ETag" in get_res.headers
+    assert get_res.headers["ETag"] == 'W/"1"'
+
+    # 3. PUT permissions with stale If-Match returns 409
+    stale_perm = await rbac_client.put(
+        f"/api/rbac/roles/{role_id}/permissions",
+        headers={"If-Match": 'W/"99"'},
+        json={
+            "permissions": [
+                {"module_code": "test_module", "action": "READ", "scope": "OWN"}
+            ]
+        },
+    )
+    assert stale_perm.status_code == status.HTTP_409_CONFLICT
+
+    # 4. PUT permissions with valid If-Match increments version and updates ETag
+    ok_perm = await rbac_client.put(
+        f"/api/rbac/roles/{role_id}/permissions",
+        headers={"If-Match": 'W/"1"'},
+        json={
+            "permissions": [
+                {"module_code": "test_module", "action": "READ", "scope": "OWN"}
+            ]
+        },
+    )
+    assert ok_perm.status_code == status.HTTP_200_OK
+    assert ok_perm.json()["version"] == 2
+    assert ok_perm.headers.get("ETag") == 'W/"2"'
+
+
+@pytest.mark.anyio
+async def test_create_module_audit_logging(
+    rbac_client: AsyncClient,
+    dbsession: AsyncSession,
+    rbac_test_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify registering a module produces a CREATE_MODULE audit entry with actor."""
+    admin, _ = rbac_test_users
+    code = f"mod_{uuid.uuid4().hex[:6]}"
+    res = await rbac_client.post(
+        "/api/rbac/modules",
+        json={"code": code, "name": "Audited Module"},
+    )
+    assert res.status_code == status.HTTP_201_CREATED
+    mod_id = uuid.UUID(res.json()["id"])
+
+    audit_repo = AuditRepository(dbsession)
+    logs = await audit_repo.get_entity_history("role", mod_id)
+    entry = next((e for e in logs if e.action == "CREATE_MODULE"), None)
+    assert entry is not None
+    assert entry.actor_id == admin.id
+
+
+@pytest.mark.anyio
+async def test_assignments_endpoints_privacy_superuser_only(
+    rbac_client: AsyncClient,
+    rbac_auth: RbacAuthContext,
+    rbac_test_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify assignment listing endpoints require superuser privileges."""
+    _, regular = rbac_test_users
+    rbac_auth.user = regular
+
+    res = await rbac_client.get("/api/rbac/assignments")
+    assert res.status_code == status.HTTP_403_FORBIDDEN
+    assert "SuperAdmin required" in res.json()["detail"]

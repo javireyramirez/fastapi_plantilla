@@ -46,6 +46,16 @@ class RbacRepository(BaseRepository[Role]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_modules_by_codes(
+        self, codes: set[str] | list[str]
+    ) -> list[SystemModule]:
+        """Fetch multiple system modules by their unique code slugs."""
+        if not codes:
+            return []
+        stmt = select(SystemModule).where(SystemModule.code.in_(codes))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_modules(self) -> list[SystemModule]:
         """Fetch all registered modules ordered by category order and sort order."""
         stmt = select(SystemModule).order_by(
@@ -369,11 +379,16 @@ class RbacRepository(BaseRepository[Role]):
         """Fetch effective roles and permissions for a user.
 
         Combines direct user roles, team membership roles, and team-assigned roles.
+        Filters out trashed roles and teams, eagerly loading permissions to prevent N+1.
         Returns a tuple of:
         (role_slugs, permissions, team_ids, teammate_ids)
         """
-        # 1. User teams & team membership roles
-        team_stmt = select(TeamUser).where(TeamUser.user_id == user_id)
+        # 1. Active user teams & team membership roles
+        team_stmt = (
+            select(TeamUser)
+            .join(Team, Team.id == TeamUser.team_id)
+            .where(TeamUser.user_id == user_id, Team.status != RecordStatus.TRASHED)
+        )
         team_users = list((await self.session.execute(team_stmt)).scalars().all())
         team_ids = [tu.team_id for tu in team_users]
 
@@ -381,11 +396,16 @@ class RbacRepository(BaseRepository[Role]):
             tu.role_id for tu in team_users if tu.role_id is not None
         }
 
-        # 2. Teammates
+        # 2. Teammates in active teams
         teammate_ids: set[uuid.UUID] = set()
         if team_ids:
-            teammates_stmt = select(TeamUser.user_id).where(
-                TeamUser.team_id.in_(team_ids)
+            teammates_stmt = (
+                select(TeamUser.user_id)
+                .join(Team, Team.id == TeamUser.team_id)
+                .where(
+                    TeamUser.team_id.in_(team_ids),
+                    Team.status != RecordStatus.TRASHED,
+                )
             )
             teammates_res = await self.session.execute(teammates_stmt)
             teammate_ids = set(teammates_res.scalars().all())
@@ -406,8 +426,12 @@ class RbacRepository(BaseRepository[Role]):
         if not role_ids:
             return [], [], team_ids, list(teammate_ids)
 
-        # 4. Fetch Role details and permissions
-        roles_stmt = select(Role).where(Role.id.in_(role_ids))
+        # 4. Fetch Role details and permissions (excluding TRASHED roles)
+        roles_stmt = (
+            select(Role)
+            .where(Role.id.in_(role_ids), Role.status != RecordStatus.TRASHED)
+            .options(selectinload(Role.permissions).selectinload(RolePermission.module))
+        )
         roles = list((await self.session.execute(roles_stmt)).scalars().all())
         role_slugs = [r.slug for r in roles]
 

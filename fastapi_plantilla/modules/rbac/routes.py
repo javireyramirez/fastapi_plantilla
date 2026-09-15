@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 
 from fastapi_plantilla.core.crud.router import parse_if_match_version
 from fastapi_plantilla.core.crud.schema import (
@@ -55,11 +55,11 @@ async def list_modules(
 )
 async def create_module(
     data: ModuleCreate,
-    _: UserResponse = Depends(get_current_active_superuser),
+    current_user: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
 ) -> ModuleResponse:
     """Register a new system module (SuperAdmin only)."""
-    return await service.create_module(data)
+    return await service.create_module(data, user_id=current_user.id)
 
 
 # ==========================================
@@ -124,17 +124,21 @@ async def bulk_permanent_delete_roles(
 @router.get("/roles/{role_id}", response_model=RoleDetailResponse)
 async def get_role(
     role_id: uuid.UUID,
+    response: Response,
     _: UserResponse = Depends(get_current_user),
     service: RbacService = Depends(get_rbac_service),
 ) -> RoleDetailResponse:
     """Get role details by ID with assigned permissions."""
-    return await service.get_role(role_id)
+    role = await service.get_role(role_id)
+    response.headers["ETag"] = f'W/"{role.version}"'
+    return role
 
 
 @router.patch("/roles/{role_id}", response_model=RoleDetailResponse)
 async def update_role(
     role_id: uuid.UUID,
     data: RoleUpdate,
+    response: Response,
     expected_version: int | None = Query(default=None),
     if_match: str | None = Header(default=None, alias="If-Match"),
     current_user: UserResponse = Depends(get_current_active_superuser),
@@ -145,20 +149,21 @@ async def update_role(
     effective_version = (
         parsed_version if parsed_version is not None else expected_version
     )
-    return await service.update_role(
+    role = await service.update_role(
         role_id, data, user_id=current_user.id, expected_version=effective_version
     )
+    response.headers["ETag"] = f'W/"{role.version}"'
+    return role
 
 
-@router.delete("/roles/{role_id}", response_model=MessageResponse)
+@router.delete("/roles/{role_id}", response_model=RoleDetailResponse)
 async def delete_role(
     role_id: uuid.UUID,
     current_user: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
-) -> MessageResponse:
+) -> RoleDetailResponse:
     """Delete a non-system role (SuperAdmin only)."""
-    await service.delete_role(role_id, user_id=current_user.id)
-    return MessageResponse(message="Role deleted successfully")
+    return await service.delete_role(role_id, user_id=current_user.id)
 
 
 @router.post("/roles/{role_id}/restore", response_model=RoleDetailResponse)
@@ -176,13 +181,25 @@ async def restore_role(
 async def set_role_permissions(
     role_id: uuid.UUID,
     data: RolePermissionsUpdate,
+    response: Response,
+    expected_version: int | None = Query(default=None),
+    if_match: str | None = Header(default=None, alias="If-Match"),
     current_user: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
 ) -> RoleDetailResponse:
     """Replace all permissions for a role (SuperAdmin only)."""
-    return await service.set_role_permissions(
-        role_id, data.permissions, user_id=current_user.id
+    parsed_version = parse_if_match_version(if_match)
+    effective_version = (
+        parsed_version if parsed_version is not None else expected_version
     )
+    role = await service.set_role_permissions(
+        role_id,
+        data.permissions,
+        user_id=current_user.id,
+        expected_version=effective_version,
+    )
+    response.headers["ETag"] = f'W/"{role.version}"'
+    return role
 
 
 @router.get(
@@ -192,7 +209,7 @@ async def set_role_permissions(
 async def list_role_assignments(
     role_id: uuid.UUID,
     params: Annotated[RoleAssignmentQueryParams, Depends()],
-    _: UserResponse = Depends(get_current_user),
+    _: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
 ) -> PaginatedResponse[RoleAssignmentResponse]:
     """List paginated assignments specifically for a given role."""
@@ -207,7 +224,7 @@ async def list_role_assignments(
 async def get_role_assignment(
     role_id: uuid.UUID,
     assignment_id: uuid.UUID,
-    _: UserResponse = Depends(get_current_user),
+    _: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
 ) -> RoleAssignmentResponse:
     """Get specific assignment details scoped to a given role."""
@@ -222,7 +239,7 @@ async def get_role_assignment(
 @router.get("/assignments", response_model=PaginatedResponse[RoleAssignmentResponse])
 async def list_assignments(
     params: Annotated[RoleAssignmentQueryParams, Depends()],
-    _: UserResponse = Depends(get_current_user),
+    _: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
 ) -> PaginatedResponse[RoleAssignmentResponse]:
     """List paginated role assignments with filtering and sorting."""
@@ -232,7 +249,7 @@ async def list_assignments(
 @router.get("/assignments/{assignment_id}", response_model=RoleAssignmentResponse)
 async def get_assignment(
     assignment_id: uuid.UUID,
-    _: UserResponse = Depends(get_current_user),
+    _: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
 ) -> RoleAssignmentResponse:
     """Get specific role assignment details by assignment ID."""

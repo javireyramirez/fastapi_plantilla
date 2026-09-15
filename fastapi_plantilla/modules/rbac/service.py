@@ -3,6 +3,7 @@ from typing import Any
 
 from fastapi import Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 
 from fastapi_plantilla.core.crud.schema import (
@@ -69,7 +70,9 @@ class RbacService(BaseAuditService[Role]):
         modules = await self.repository.list_modules()
         return [ModuleResponse.model_validate(m) for m in modules]
 
-    async def create_module(self, data: ModuleCreate) -> ModuleResponse:
+    async def create_module(
+        self, data: ModuleCreate, user_id: str | uuid.UUID | None = None
+    ) -> ModuleResponse:
         """Register a new system module ensuring unique code."""
         existing = await self.repository.get_module_by_code(data.code)
         if existing:
@@ -82,7 +85,7 @@ class RbacService(BaseAuditService[Role]):
         cat_icon = data.category_icon or cat_meta.get("icon")
         cat_order = (
             data.category_order
-            if data.category_order != 0
+            if data.category_order is not None
             else int(cat_meta.get("order", 0))
         )
         module = await self.repository.create_module(
@@ -101,6 +104,14 @@ class RbacService(BaseAuditService[Role]):
                 for a in data.supported_actions
             ],
             requires_super_admin=data.requires_super_admin,
+        )
+        await self._emit_audit(
+            item=module,
+            action="CREATE_MODULE",
+            user_id=user_id,
+            entity_id=module.id,
+            entity_name=module.name,
+            details=f"Registered system module '{module.code}'",
         )
         return ModuleResponse.model_validate(module)
 
@@ -297,9 +308,11 @@ class RbacService(BaseAuditService[Role]):
 
     async def delete_role(
         self, role_id: uuid.UUID, user_id: uuid.UUID | None = None
-    ) -> None:
+    ) -> RoleDetailResponse:
         """Delete role (soft delete into trash) preventing removal of system roles."""
-        await self.delete(role_id, user_id=user_id)
+        role = await self.delete(role_id, user_id=user_id)
+        refreshed = await self._get_role_or_404(role.id, load_permissions=True)
+        return RoleDetailResponse.model_validate(refreshed)
 
     async def bulk_trash(
         self,
@@ -342,9 +355,20 @@ class RbacService(BaseAuditService[Role]):
                         "is already in use by an active role."
                     ),
                 )
-        return await super().restore(
-            id, *where, user_id=user_id, scope=scope, options=options
-        )
+        try:
+            return await super().restore(
+                id, *where, user_id=user_id, scope=scope, options=options
+            )
+        except IntegrityError as exc:
+            name_val = role.name if role else "role"
+            slug_val = role.slug if role else ""
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Cannot restore role '{name_val}': slug '{slug_val}' "
+                    "is already in use by an active role."
+                ),
+            ) from exc
 
     async def bulk_restore(
         self,
@@ -397,22 +421,53 @@ class RbacService(BaseAuditService[Role]):
         role_id: uuid.UUID,
         permissions: list[RolePermissionItem],
         user_id: uuid.UUID | None = None,
+        expected_version: int | None = None,
     ) -> RoleDetailResponse:
-        """Replace all permissions for a role."""
+        """Replace all permissions for a role with concurrency and batch validation."""
         role = await self._get_role_or_404(role_id, load_permissions=False)
-        items: list[dict[str, Any]] = []
-        for perm in permissions:
-            module = await self.repository.get_module_by_code(perm.module_code)
-            if not module:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"System module '{perm.module_code}' not found",
-                )
-            items.append(
-                {"module_id": module.id, "action": perm.action, "scope": perm.scope}
+        if expected_version is not None and role.version != expected_version:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Concurrent modification conflict: "
+                    "record was modified by another transaction"
+                ),
             )
 
+        codes = {perm.module_code for perm in permissions}
+        modules = await self.repository.get_modules_by_codes(codes)
+        modules_map = {m.code: m for m in modules}
+        missing = codes - set(modules_map.keys())
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"System module '{sorted(missing)[0]}' not found",
+            )
+
+        items: list[dict[str, Any]] = [
+            {
+                "module_id": modules_map[perm.module_code].id,
+                "action": perm.action,
+                "scope": perm.scope,
+            }
+            for perm in permissions
+        ]
+
         async with self.repository.session.begin_nested():
+            stmt = update(Role).where(Role.id == role_id)
+            if expected_version is not None:
+                stmt = stmt.where(Role.version == expected_version)
+            stmt = stmt.values(version=Role.version + 1)
+            res = await self.repository.session.execute(stmt)
+            if getattr(res, "rowcount", 0) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Concurrent modification conflict: "
+                        "record was modified by another transaction"
+                    ),
+                )
+            self.repository.session.expire(role)
             await self.repository.set_role_permissions(role_id, items)
 
         await self._emit_audit(
@@ -439,6 +494,12 @@ class RbacService(BaseAuditService[Role]):
     ) -> None:
         """Assign role to user or team."""
         role = await self._get_role_or_404(role_id, load_permissions=False)
+        if role.status == RecordStatus.TRASHED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot assign a trashed role",
+            )
+
         norm_type = entity_type.strip().upper()
         if norm_type not in ("USER", "TEAM"):
             raise HTTPException(

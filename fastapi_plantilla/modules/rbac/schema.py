@@ -13,7 +13,6 @@ __all__ = [
     "AssignedUserBasic",
     "ModuleCreate",
     "ModuleResponse",
-    "ModuleUpdate",
     "RbacActions",
     "RoleAssignmentQueryParams",
     "RoleAssignmentRequest",
@@ -51,28 +50,12 @@ class ModuleCreate(BaseModel):
     category: str = Field(default="system", max_length=50)
     category_name: str | None = Field(default=None, max_length=100)
     category_icon: str | None = Field(default=None, max_length=50)
-    category_order: int = 0
+    category_order: int | None = None
     icon: str | None = Field(default=None, max_length=50)
     sort_order: int = 0
     is_active: bool = True
     supported_actions: list[RbacActions] = Field(default_factory=list)
     requires_super_admin: bool = False
-
-
-class ModuleUpdate(BaseModel):
-    """Payload to update an existing system module."""
-
-    name: str | None = Field(default=None, min_length=2, max_length=100)
-    description: str | None = Field(default=None, max_length=255)
-    category: str | None = Field(default=None, max_length=50)
-    category_name: str | None = Field(default=None, max_length=100)
-    category_icon: str | None = Field(default=None, max_length=50)
-    category_order: int | None = None
-    icon: str | None = Field(default=None, max_length=50)
-    sort_order: int | None = None
-    is_active: bool | None = None
-    supported_actions: list[RbacActions] | None = None
-    requires_super_admin: bool | None = None
 
 
 class ModuleResponse(BaseModel):
