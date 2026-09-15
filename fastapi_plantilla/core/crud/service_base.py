@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import re
 import uuid
 from collections.abc import Sequence
 from datetime import datetime, time
-from typing import Any, ClassVar, NoReturn
+from typing import Any, ClassVar, NoReturn, Self
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel
@@ -27,7 +29,34 @@ from fastapi_plantilla.core.crud.schema import (
 )
 from fastapi_plantilla.core.database import Base
 
-__all__ = ["BaseCRUDService", "adjust_end_of_day"]
+__all__ = ["BaseCRUDService", "ExportResult", "adjust_end_of_day"]
+
+
+class ExportResult(tuple[Any, ...]):
+    """3-tuple with optional export truncation metadata."""
+
+    content: bytes | str
+    media_type: str
+    filename: str
+    total_count: int
+    is_truncated: bool
+
+    def __new__(
+        cls,
+        content: bytes | str,
+        media_type: str,
+        filename: str,
+        total_count: int = 0,
+        is_truncated: bool = False,
+    ) -> Self:
+        """Create a new ExportResult instance."""
+        instance = super().__new__(cls, (content, media_type, filename))
+        instance.content = content
+        instance.media_type = media_type
+        instance.filename = filename
+        instance.total_count = total_count
+        instance.is_truncated = is_truncated
+        return instance
 
 
 def adjust_end_of_day(dt: datetime | None) -> datetime | None:
@@ -109,6 +138,21 @@ class BaseCRUDService[ModelT: Base]:
             return uuid.UUID(str(val))
         except (ValueError, AttributeError):
             return None
+
+    @staticmethod
+    def _resolve_write_options(
+        options: WriteOptions | None = None,
+        user_id: str | uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
+    ) -> WriteOptions:
+        """Resolve WriteOptions as SSOT, merging fallback arguments."""
+        if options is not None:
+            if user_id is not None and options.user_id is None:
+                options = options.model_copy(update={"user_id": user_id})
+            if scope is not None and options.scope is None:
+                options = options.model_copy(update={"scope": scope})
+            return options
+        return WriteOptions(user_id=user_id, scope=scope)
 
     def _get_column(self, field_name: str) -> Any | None:
         """Safely resolve an attribute to a mapped database column."""
@@ -369,10 +413,18 @@ class BaseCRUDService[ModelT: Base]:
         effective_extra = (
             extra_fields if extra_fields is not None else self.list_extra_fields
         )
+
+        def _resolve_name(it: Any) -> str:
+            val = getattr(it, target_field, None)
+            if val is not None and str(val).strip():
+                return str(val)
+            pk_val = getattr(it, pk_name, None)
+            return str(pk_val) if pk_val is not None else ""
+
         return [
             ListItemResponse(
                 id=getattr(item, pk_name),
-                name=str(getattr(item, target_field, getattr(item, pk_name))),
+                name=_resolve_name(item),
                 extra=(
                     {k: getattr(item, k) for k in effective_extra if hasattr(item, k)}
                     if effective_extra
@@ -393,17 +445,26 @@ class BaseCRUDService[ModelT: Base]:
         req: ExportRequest,
         *where: Any,
         scope: ScopeContext | None = None,
-    ) -> tuple[bytes | str, str, str]:
+        export_schema: type[BaseModel] | None = None,
+        pagination_params_class: type[PaginationParams] | None = None,
+    ) -> ExportResult:
         """Export records matching filters or IDs to CSV, Excel, or JSON format."""
         where_clauses: list[Any] = list(where) + self.build_scope_filters(scope)
         status_filter = self.get_status_filter(req.is_trash)
         if status_filter is not None:
             where_clauses.append(status_filter)
 
+        effective_schema = export_schema or self.export_schema
+        effective_param_cls: type[PaginationParams] = (
+            pagination_params_class
+            or getattr(self, "pagination_params_class", None)
+            or PaginationParams
+        )
+
         if req.ids:
             where_clauses.append(self.repository.pk.in_(req.ids))
         elif req.filters:
-            param_cls = getattr(self, "pagination_params_class", PaginationParams)
+            param_cls: type[PaginationParams] = effective_param_cls
             valid_fields = {
                 k: v
                 for k, v in req.filters.items()
@@ -427,14 +488,21 @@ class BaseCRUDService[ModelT: Base]:
         order_clause = self.build_order_by(req.sort_by, req.sort_order)
         items = await self.repository.find_many(
             *where_clauses,
-            limit=self.export_limit,
+            limit=self.export_limit + 1,
             order_by=order_clause,
         )
 
+        is_truncated = len(items) > self.export_limit
+        if is_truncated:
+            items = items[: self.export_limit]
+            total_count = await self.repository.count(*where_clauses)
+        else:
+            total_count = len(items)
+
         rows: list[dict[str, Any]] = []
-        if self.export_schema is not None:
+        if effective_schema is not None:
             for item in items:
-                dumped = self.export_schema.model_validate(item).model_dump(mode="json")
+                dumped = effective_schema.model_validate(item).model_dump(mode="json")
                 rows.append(dumped)
         else:
             excluded = {"version", "password", "password_hash", "token"}
@@ -448,11 +516,18 @@ class BaseCRUDService[ModelT: Base]:
                 rows.append(row)
 
         slug = getattr(self, "resource_name", "export").lower()
-        return format_export(
+        content, media_type, filename = format_export(
             format=req.format,
             data=rows,
             slug=slug,
             columns=req.columns,
+        )
+        return ExportResult(
+            content=content,
+            media_type=media_type,
+            filename=filename,
+            total_count=total_count,
+            is_truncated=is_truncated,
         )
 
     # ==========================================
@@ -501,7 +576,8 @@ class BaseCRUDService[ModelT: Base]:
             payload = {
                 k: v for k, v in payload.items() if k not in self.IMMUTABLE_FIELDS
             }
-        where_clauses = list(where) + self.build_scope_filters(scope)
+        opts = self._resolve_write_options(options, user_id, scope)
+        where_clauses = list(where) + self.build_scope_filters(opts.scope)
 
         if not payload:
             item = await self.repository.find_first(
@@ -561,7 +637,8 @@ class BaseCRUDService[ModelT: Base]:
         options: WriteOptions | None = None,
     ) -> ModelT:
         """Physically delete a record by ID or raise 404/403."""
-        where_clauses = list(where) + self.build_scope_filters(scope)
+        opts = self._resolve_write_options(options, user_id, scope)
+        where_clauses = list(where) + self.build_scope_filters(opts.scope)
         deleted = await self.repository.delete(id, *where_clauses)
         if deleted is None:
             await self._raise_not_found_or_forbidden(id)
@@ -608,9 +685,11 @@ class BaseCRUDService[ModelT: Base]:
         *where: Any,
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Physically delete multiple records by their IDs."""
-        where_clauses = list(where) + self.build_scope_filters(scope)
+        opts = self._resolve_write_options(options, user_id, scope)
+        where_clauses = list(where) + self.build_scope_filters(opts.scope)
         count = await self.repository.delete_many(req.ids, *where_clauses)
         return BulkResponse(
             count=count, message=f"Successfully deleted {count} records"

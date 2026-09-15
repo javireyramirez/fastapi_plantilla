@@ -1046,3 +1046,91 @@ async def test_base_audit_service_bulk_create_emits_audit(
     assert latest.ip_address == "10.0.0.1"
     assert latest.actor_name == "BulkTester"
     assert "Bulk created 2 User records" in (latest.details or "")
+
+
+async def test_bulk_permanent_delete_partial_and_no_ghost_audits(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify bulk_permanent_delete only audits and purges actually deleted records."""
+    from fastapi_plantilla.core.crud.schema import AuditEntry, BulkIdsRequest
+    from fastapi_plantilla.core.crud.service_audit import (
+        register_audit_sync_hook,
+        register_purge_sync_hook,
+    )
+
+    audits: list[AuditEntry] = []
+    purged_ids: list[uuid.UUID] = []
+
+    async def a_hook(_sess: AsyncSession, entry: AuditEntry) -> None:
+        audits.append(entry)
+
+    async def p_hook(_sess: AsyncSession, _etype: str, entity_id: uuid.UUID) -> None:
+        purged_ids.append(entity_id)
+
+    register_audit_sync_hook(a_hook)
+    register_purge_sync_hook(p_hook)
+
+    repo = BaseRepository(User, dbsession)
+    service = BaseAuditService(repo)
+    service.resource_name = "User"
+
+    tag = uuid.uuid4().hex[:6]
+    u1 = await service.create({"name": f"P1_{tag}", "email": f"p1_{tag}@example.com"})
+    await service.trash(u1.id)
+
+    fake_id = uuid.uuid4()
+    res = await service.bulk_permanent_delete(BulkIdsRequest(ids=[u1.id, fake_id]))
+
+    assert res.count == 1
+    assert fake_id in res.unprocessed_ids
+    assert u1.id not in res.unprocessed_ids
+
+    # Purge hooks must ONLY have been called for u1.id, NEVER for fake_id
+    assert u1.id in purged_ids
+    assert fake_id not in purged_ids
+
+    # Audit entries for PERMANENT_DELETE must ONLY reference u1.id
+    perm_audits = [e for e in audits if e.action == "PERMANENT_DELETE"]
+    assert any(e.entity_id == u1.id for e in perm_audits)
+    assert not any(e.entity_id == fake_id for e in perm_audits)
+
+
+async def test_export_data_truncation_feedback(dbsession: AsyncSession) -> None:
+    """Verify export_data returns total_count and is_truncated metadata."""
+    from fastapi_plantilla.core.crud.schema import ExportFormat, ExportRequest
+
+    repo = BaseRepository(User, dbsession)
+    service = BaseAuditService(repo)
+    service.resource_name = "User"
+    service.export_limit = 2
+
+    tag = uuid.uuid4().hex[:6]
+    for i in range(3):
+        await repo.create(
+            {"name": f"Trunc_{tag}_{i}", "email": f"t_{tag}_{i}@example.com"}
+        )
+
+    req = ExportRequest(format=ExportFormat.JSON, filters={"search": f"Trunc_{tag}"})
+    result = await service.export_data(req)
+    assert result.is_truncated is True
+    assert result.total_count >= 3
+
+
+async def test_find_list_avoids_literal_none_string(dbsession: AsyncSession) -> None:
+    """Verify find_list does not produce 'None' when display field is None."""
+    repo = BaseRepository(User, dbsession)
+    service = BaseCRUDService(repo)
+    service.display_field = "image"
+
+    tag = uuid.uuid4().hex[:6]
+    user = await repo.create(
+        {"name": f"User_{tag}", "email": f"img_{tag}@example.com", "image": None}
+    )
+
+    items = await service.find_list(
+        ListQueryParams(search=None, limit=10),
+        User.id == user.id,
+    )
+    assert len(items) == 1
+    assert items[0].name != "None"
+    assert items[0].name == str(user.id)

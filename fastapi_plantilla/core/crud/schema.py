@@ -143,6 +143,7 @@ class BulkResponse(BaseModel):
 
     count: int = Field(..., ge=0)
     message: str | None = None
+    unprocessed_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class ExportRequest(BaseModel):

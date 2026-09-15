@@ -15,7 +15,10 @@ from fastapi import (
 )
 from pydantic import BaseModel
 
-from fastapi_plantilla.core.crud.dependencies import get_scope_context
+from fastapi_plantilla.core.crud.dependencies import (
+    build_write_options,
+    get_scope_context,
+)
 from fastapi_plantilla.core.crud.schema import (
     BulkIdsRequest,
     BulkResponse,
@@ -25,7 +28,6 @@ from fastapi_plantilla.core.crud.schema import (
     PaginatedResponse,
     PaginationParams,
     ScopeContext,
-    WriteOptions,
 )
 from fastapi_plantilla.core.crud.service import BaseAuditService, BaseCRUDService
 from fastapi_plantilla.core.database import Base
@@ -33,24 +35,6 @@ from fastapi_plantilla.modules.auth.dependencies import get_current_user
 from fastapi_plantilla.modules.rbac.schema import RbacActions
 
 __all__ = ["create_crud_router"]
-
-
-def _build_write_options(
-    current_user: Any,
-    scope: ScopeContext | None = None,
-    request: Request | None = None,
-) -> WriteOptions:
-    user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
-    ip_address = request.client.host if request and request.client else None
-    user_agent = request.headers.get("user-agent") if request else None
-    return WriteOptions(
-        user_id=user_id,
-        actor_name=getattr(current_user, "name", None),
-        actor_email=getattr(current_user, "email", None),
-        scope=scope,
-        ip_address=ip_address,
-        user_agent=user_agent,
-    )
 
 
 def create_crud_router[  # noqa: C901
@@ -129,15 +113,23 @@ def create_crud_router[  # noqa: C901
         service: Any = Depends(service_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.EXPORT)),
     ) -> Response:
-        if getattr(service, "export_schema", None) is None:
-            service.export_schema = effective_export_schema
-        if getattr(service, "pagination_params_class", None) is None:
-            service.pagination_params_class = pagination_params
-        content, media_type, filename = await service.export_data(req, scope=scope)
+        result = await service.export_data(
+            req,
+            scope=scope,
+            export_schema=effective_export_schema,
+            pagination_params_class=pagination_params,
+        )
+        content, media_type, filename = result[0], result[1], result[2]
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        total_count = getattr(result, "total_count", None)
+        if total_count is not None:
+            headers["X-Total-Count"] = str(total_count)
+        if getattr(result, "is_truncated", False):
+            headers["X-Export-Truncated"] = "true"
         return Response(
             content=content,
             media_type=media_type,
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers=headers,
         )
 
     @router.post(
@@ -159,7 +151,7 @@ def create_crud_router[  # noqa: C901
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.CREATE)),
     ) -> Any:
-        options = _build_write_options(current_user, scope, request)
+        options = build_write_options(current_user, scope, request)
         return await service.create(
             data=data, user_id=options.user_id, scope=scope, options=options
         )
@@ -183,7 +175,7 @@ def create_crud_router[  # noqa: C901
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.CREATE)),
     ) -> BulkResponse:
-        options = _build_write_options(current_user, scope, request)
+        options = build_write_options(current_user, scope, request)
         return await service.bulk_create(
             items=items, user_id=options.user_id, scope=scope, options=options
         )
@@ -200,7 +192,7 @@ def create_crud_router[  # noqa: C901
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> BulkResponse:
-        options = _build_write_options(current_user, scope, request)
+        options = build_write_options(current_user, scope, request)
         return await service.bulk_trash(
             req=req, user_id=options.user_id, scope=scope, options=options
         )
@@ -217,7 +209,7 @@ def create_crud_router[  # noqa: C901
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.RESTORE)),
     ) -> BulkResponse:
-        options = _build_write_options(current_user, scope, request)
+        options = build_write_options(current_user, scope, request)
         return await service.bulk_restore(
             req=req, user_id=options.user_id, scope=scope, options=options
         )
@@ -239,7 +231,7 @@ def create_crud_router[  # noqa: C901
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> BulkResponse:
-        options = _build_write_options(current_user, scope, request)
+        options = build_write_options(current_user, scope, request)
         return await service.bulk_permanent_delete(
             req=req, scope=scope, options=options
         )
@@ -285,7 +277,7 @@ def create_crud_router[  # noqa: C901
             if isinstance(data_version, int):
                 resolved_version = data_version
 
-        options = _build_write_options(current_user, scope, request)
+        options = build_write_options(current_user, scope, request)
         return await service.update(
             id=id,
             data=data,
@@ -307,7 +299,7 @@ def create_crud_router[  # noqa: C901
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> Any:
-        options = _build_write_options(current_user, scope, request)
+        options = build_write_options(current_user, scope, request)
         return await service.delete(
             id=id, user_id=options.user_id, scope=scope, options=options
         )
@@ -324,7 +316,7 @@ def create_crud_router[  # noqa: C901
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.RESTORE)),
     ) -> Any:
-        options = _build_write_options(current_user, scope, request)
+        options = build_write_options(current_user, scope, request)
         return await service.restore(
             id=id, user_id=options.user_id, scope=scope, options=options
         )
@@ -341,7 +333,7 @@ def create_crud_router[  # noqa: C901
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> Any:
-        options = _build_write_options(current_user, scope, request)
+        options = build_write_options(current_user, scope, request)
         return await service.permanent_delete(id=id, scope=scope, options=options)
 
     return router

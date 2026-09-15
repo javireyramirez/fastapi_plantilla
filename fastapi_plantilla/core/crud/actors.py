@@ -11,23 +11,25 @@ from fastapi_plantilla.core.crud.schema import UserReference
 
 __all__ = ["enrich_actors", "register_actor_model"]
 
-_ACTOR_HOLDER: dict[str, type[Any]] = {}
+_user_model_cache: type[Any] | None = None
 
 
 def register_actor_model(model: type[Any]) -> None:
     """Register the user model class used for resolving actor references."""
-    _ACTOR_HOLDER["model"] = model
+    global _user_model_cache  # noqa: PLW0603
+    _user_model_cache = model
 
 
 def _get_actor_model() -> type[Any] | None:
-    if "model" not in _ACTOR_HOLDER:
+    global _user_model_cache  # noqa: PLW0603
+    if _user_model_cache is None:
         try:
             from fastapi_plantilla.modules.auth.models import User  # noqa: PLC0415
 
-            _ACTOR_HOLDER["model"] = User
+            _user_model_cache = User
         except ImportError:
             return None
-    return _ACTOR_HOLDER.get("model")
+    return _user_model_cache
 
 
 ACTOR_ATTRS = (

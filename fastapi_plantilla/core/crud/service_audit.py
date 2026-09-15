@@ -41,17 +41,20 @@ _AUDIT_SYNC_HOOKS: list[AuditSyncHook] = []
 
 def register_trash_sync_hook(hook: TrashSyncHook) -> None:
     """Register a hook to be called on soft-delete or restore."""
-    _TRASH_SYNC_HOOKS.append(hook)
+    if hook not in _TRASH_SYNC_HOOKS:
+        _TRASH_SYNC_HOOKS.append(hook)
 
 
 def register_purge_sync_hook(hook: PurgeSyncHook) -> None:
     """Register a hook to be called on permanent delete/purge."""
-    _PURGE_SYNC_HOOKS.append(hook)
+    if hook not in _PURGE_SYNC_HOOKS:
+        _PURGE_SYNC_HOOKS.append(hook)
 
 
 def register_audit_sync_hook(hook: AuditSyncHook) -> None:
     """Register a hook to be called on audit event emission."""
-    _AUDIT_SYNC_HOOKS.append(hook)
+    if hook not in _AUDIT_SYNC_HOOKS:
+        _AUDIT_SYNC_HOOKS.append(hook)
 
 
 async def dispatch_audit_event(session: AsyncSession, entry: AuditEntry) -> None:
@@ -185,7 +188,8 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         options: WriteOptions | None = None,
     ) -> ModelT:
         """Create a record with created_by and updated_by actor stamping."""
-        effective_user_id = (options.user_id if options else None) or user_id
+        opts = self._resolve_write_options(options, user_id, scope)
+        effective_user_id = opts.user_id
         payload = data.model_dump() if isinstance(data, BaseModel) else dict(data)
         if not allow_immutable and self._get_column("status") is not None:
             payload["status"] = RecordStatus.ACTIVE
@@ -194,13 +198,14 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             data=payload,
             user_id=effective_user_id,
             owner_id=owner_id,
-            scope=scope,
+            scope=opts.scope,
             allow_immutable=allow_immutable,
+            options=opts,
         )
         await self._emit_audit(
             item=created,
             action="CREATE",
-            options=options,
+            options=opts,
             user_id=effective_user_id,
             new_data=payload,
         )
@@ -218,7 +223,8 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         options: WriteOptions | None = None,
     ) -> ModelT:
         """Update a record with updated_by actor stamping and trash protection."""
-        effective_user_id = (options.user_id if options else None) or user_id
+        opts = self._resolve_write_options(options, user_id, scope)
+        effective_user_id = opts.user_id
         payload = (
             data.model_dump(exclude_unset=True)
             if isinstance(data, BaseModel)
@@ -244,13 +250,14 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
                 payload,
                 *extra_where,
                 expected_version=expected_version,
-                scope=scope,
+                scope=opts.scope,
                 allow_immutable=allow_immutable,
+                options=opts,
             )
             await self._emit_audit(
                 item=updated,
                 action="UPDATE",
-                options=options,
+                options=opts,
                 user_id=effective_user_id,
                 snapshot_before=snapshot_before,
                 updated_payload=payload,
@@ -295,7 +302,8 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Bulk create multiple records with actor stamping."""
-        effective_user_id = (options.user_id if options else None) or user_id
+        opts = self._resolve_write_options(options, user_id, scope)
+        effective_user_id = opts.user_id
         payload: list[dict[str, Any]] = []
         has_status = self._get_column("status") is not None
         for data in items:
@@ -308,15 +316,15 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             payload,
             user_id=effective_user_id,
             owner_id=owner_id,
-            scope=scope,
+            scope=opts.scope,
             allow_immutable=allow_immutable,
-            options=options,
+            options=opts,
         )
         if res.count > 0:
             await self._emit_audit(
                 item=None,
                 action="BULK_CREATE",
-                options=options,
+                options=opts,
                 user_id=effective_user_id,
                 details=f"Bulk created {res.count} {self.resource_name} records",
             )
@@ -328,9 +336,12 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         *where: Any,
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Safely bulk soft-delete (trash) records instead of physical delete."""
-        return await self.bulk_trash(req, *where, user_id=user_id, scope=scope)
+        return await self.bulk_trash(
+            req, *where, user_id=user_id, scope=scope, options=options
+        )
 
     # ==========================================
     # 3. PAPELERA Y RECUPERACIÓN
@@ -397,7 +408,8 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         options: WriteOptions | None = None,
     ) -> ModelT:
         """Move a single record to the trash bin (soft delete)."""
-        effective_user_id = (options.user_id if options else None) or user_id
+        opts = self._resolve_write_options(options, user_id, scope)
+        effective_user_id = opts.user_id
         item = await self._transition_status(
             id,
             RecordStatus.TRASHED,
@@ -407,13 +419,13 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             "Record is already in the trash bin",
             *where,
             user_id=effective_user_id,
-            scope=scope,
+            scope=opts.scope,
         )
         await self.on_after_trash(item, user_id=effective_user_id)
         await self._emit_audit(
             item=item,
             action="TRASH",
-            options=options,
+            options=opts,
             user_id=effective_user_id,
             status_transition=(RecordStatus.ACTIVE.value, RecordStatus.TRASHED.value),
         )
@@ -428,7 +440,8 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         options: WriteOptions | None = None,
     ) -> ModelT:
         """Restore a single record from the trash bin."""
-        effective_user_id = (options.user_id if options else None) or user_id
+        opts = self._resolve_write_options(options, user_id, scope)
+        effective_user_id = opts.user_id
         item = await self._transition_status(
             id,
             RecordStatus.ACTIVE,
@@ -438,13 +451,13 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             "Record is not in the trash bin",
             *where,
             user_id=effective_user_id,
-            scope=scope,
+            scope=opts.scope,
         )
         await self.on_after_restore(item, user_id=effective_user_id)
         await self._emit_audit(
             item=item,
             action="RESTORE",
-            options=options,
+            options=opts,
             user_id=effective_user_id,
             status_transition=(RecordStatus.TRASHED.value, RecordStatus.ACTIVE.value),
         )
@@ -458,8 +471,9 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         options: WriteOptions | None = None,
     ) -> ModelT:
         """Permanently delete a record from the trash in a single atomic query."""
+        opts = self._resolve_write_options(options, scope=scope)
         status_filter = self.get_status_filter(is_trash=True)
-        scope_clauses = self.build_scope_filters(scope)
+        scope_clauses = self.build_scope_filters(opts.scope)
         extra: list[Any] = [status_filter] if status_filter is not None else []
         extra.extend(where)
         extra.extend(scope_clauses)
@@ -482,7 +496,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         await self._emit_audit(
             item=deleted,
             action="PERMANENT_DELETE",
-            options=options,
+            options=opts,
             status_transition=(RecordStatus.TRASHED.value, "PURGED"),
             details=f"Permanently deleted {self.resource_name}",
         )
@@ -502,8 +516,9 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Bulk transition status between ACTIVE and TRASHED."""
-        effective_user_id = (options.user_id if options else None) or user_id
-        where_clauses = list(where) + self.build_scope_filters(scope)
+        opts = self._resolve_write_options(options, user_id, scope)
+        effective_user_id = opts.user_id
+        where_clauses = list(where) + self.build_scope_filters(opts.scope)
         status_filter = self.get_status_filter(is_trash=is_trash_filter)
         if status_filter is not None:
             where_clauses.append(status_filter)
@@ -540,7 +555,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             await self._emit_audit(
                 item=None,
                 action=action_name,
-                options=options,
+                options=opts,
                 user_id=effective_user_id,
                 details=(
                     f"Successfully {action_verb} {count} {self.resource_name} records"
@@ -650,30 +665,37 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Permanently delete records from the trash in a single atomic query."""
+        opts = self._resolve_write_options(options, scope=scope)
         status_filter = self.get_status_filter(is_trash=True)
-        scope_clauses = self.build_scope_filters(scope)
+        scope_clauses = self.build_scope_filters(opts.scope)
         extra: list[Any] = [status_filter] if status_filter is not None else []
         extra.extend(where)
         extra.extend(scope_clauses)
         items_to_delete = await self.repository.find_many(
             self.repository.pk.in_(req.ids), *extra
         )
-        item_map = {getattr(it, "id", None): it for it in items_to_delete}
-        count = await self.repository.delete_many(req.ids, *extra)
-        for item_id in req.ids:
-            it = item_map.get(item_id)
+        item_map: dict[uuid.UUID, ModelT] = {
+            it_id: it
+            for it in items_to_delete
+            if isinstance((it_id := getattr(it, "id", None)), uuid.UUID)
+        }
+        count = await self.repository.delete_many(list(item_map.keys()), *extra)
+        for item_id, it in item_map.items():
             await self.on_after_permanent_delete(item_id)
             await self._emit_audit(
                 item=it,
                 action="PERMANENT_DELETE",
-                options=options,
+                options=opts,
                 entity_id=item_id,
                 status_transition=(RecordStatus.TRASHED.value, "PURGED"),
                 details=f"Permanently deleted {self.resource_name} via bulk action",
             )
+        deleted_ids_set = set(item_map.keys())
+        unprocessed_ids = [uid for uid in req.ids if uid not in deleted_ids_set]
         return BulkResponse(
             count=count,
             message=f"Successfully permanently deleted {count} records from trash",
+            unprocessed_ids=unprocessed_ids,
         )
 
     # ==========================================

@@ -170,18 +170,20 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
         options: WriteOptions | None = None,
     ) -> ModelT:
         """Create a record assigning owner and team stamping."""
-        effective_user_id = (options.user_id if options else None) or user_id
+        opts = self._resolve_write_options(options, user_id, scope)
+        effective_user_id = opts.user_id
+        effective_scope = opts.scope
         payload = data.model_dump() if isinstance(data, BaseModel) else dict(data)
         self._resolve_owner_and_team(
-            payload, user_id=effective_user_id, owner_id=owner_id, scope=scope
+            payload, user_id=effective_user_id, owner_id=owner_id, scope=effective_scope
         )
         return await super().create(
             data=payload,
             user_id=effective_user_id,
             owner_id=owner_id,
-            scope=scope,
+            scope=effective_scope,
             allow_immutable=allow_immutable,
-            options=options,
+            options=opts,
         )
 
     async def update(
@@ -196,7 +198,9 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
         options: WriteOptions | None = None,
     ) -> ModelT:
         """Update a record verifying ownership and team assignment permissions."""
-        effective_user_id = (options.user_id if options else None) or user_id
+        opts = self._resolve_write_options(options, user_id, scope)
+        effective_user_id = opts.user_id
+        effective_scope = opts.scope
         payload = (
             data.model_dump(exclude_unset=True)
             if isinstance(data, BaseModel)
@@ -207,7 +211,7 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
         if has_owner and self.owner_field in payload:
             target_owner_id = self._to_uuid(payload[self.owner_field])
             if target_owner_id is not None:
-                if not self.can_reassign_owner(target_owner_id, scope):
+                if not self.can_reassign_owner(target_owner_id, effective_scope):
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Forbidden: cannot transfer ownership to this user",
@@ -215,13 +219,13 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
                 payload[self.owner_field] = target_owner_id
             else:
                 is_admin = bool(
-                    scope
+                    effective_scope
                     and (
-                        scope.is_super_admin
-                        or str(scope.scope).upper() == ScopeType.GLOBAL
+                        effective_scope.is_super_admin
+                        or str(effective_scope.scope).upper() == ScopeType.GLOBAL
                     )
                 )
-                if scope is not None and not is_admin:
+                if effective_scope is not None and not is_admin:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Forbidden: cannot unassign record owner",
@@ -231,8 +235,8 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
         if has_team and self.team_field in payload:
             target_team_id = self._to_uuid(payload[self.team_field])
             if target_team_id is not None:
-                if scope is not None and not self.can_assign_team(
-                    target_team_id, scope
+                if effective_scope is not None and not self.can_assign_team(
+                    target_team_id, effective_scope
                 ):
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
@@ -241,13 +245,13 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
                 payload[self.team_field] = target_team_id
             else:
                 is_admin = bool(
-                    scope
+                    effective_scope
                     and (
-                        scope.is_super_admin
-                        or str(scope.scope).upper() == ScopeType.GLOBAL
+                        effective_scope.is_super_admin
+                        or str(effective_scope.scope).upper() == ScopeType.GLOBAL
                     )
                 )
-                if scope is not None and not is_admin:
+                if effective_scope is not None and not is_admin:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Forbidden: cannot unassign record team",
@@ -259,9 +263,9 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
             *where,
             expected_version=expected_version,
             user_id=effective_user_id,
-            scope=scope,
+            scope=effective_scope,
             allow_immutable=allow_immutable,
-            options=options,
+            options=opts,
         )
 
     async def bulk_create(
@@ -274,19 +278,21 @@ class BaseOwnedService[ModelT: Base](BaseAuditService[ModelT]):
         options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Bulk create multiple records assigning actor, owner, and team stamping."""
-        effective_user_id = (options.user_id if options else None) or user_id
+        opts = self._resolve_write_options(options, user_id, scope)
+        effective_user_id = opts.user_id
+        effective_scope = opts.scope
         stamped_items: list[dict[str, Any]] = []
         for item in items:
             d = item.model_dump() if isinstance(item, BaseModel) else dict(item)
             self._resolve_owner_and_team(
-                d, user_id=effective_user_id, owner_id=owner_id, scope=scope
+                d, user_id=effective_user_id, owner_id=owner_id, scope=effective_scope
             )
             stamped_items.append(d)
         return await super().bulk_create(
             stamped_items,
             user_id=effective_user_id,
             owner_id=owner_id,
-            scope=scope,
+            scope=effective_scope,
             allow_immutable=allow_immutable,
-            options=options,
+            options=opts,
         )

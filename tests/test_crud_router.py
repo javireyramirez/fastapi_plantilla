@@ -428,3 +428,45 @@ async def test_crud_router_write_options_captures_client_metadata(
     matching = [e for e in captured_entries if e.action == "CREATE"]
     assert len(matching) >= 1
     assert matching[-1].user_agent == "CustomAuditAgent/1.0"
+
+
+async def test_crud_router_export_truncation_headers(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify POST /export adds X-Total-Count and truncation header."""
+    repo = BaseRepository(RouterTestItem, dbsession)
+    service = BaseAuditService(repo)
+    service.resource_name = "RouterTestItem"
+    service.export_limit = 2
+
+    # Create 3 items
+    tag = uuid.uuid4().hex[:6]
+    for i in range(3):
+        await repo.create({"name": f"ExportItem_{tag}_{i}"})
+
+    def _get_test_scope() -> ScopeContext:
+        return ScopeContext()
+
+    router = create_crud_router(
+        service_getter=lambda: service,
+        schema_out=ItemOut,
+        schema_create=ItemCreate,
+        schema_update=ItemUpdate,
+        prefix="/test-export-trunc",
+        current_user_getter=lambda: None,
+        scope_getter=_get_test_scope,
+    )
+    app = FastAPI()
+    app.include_router(router)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        res = await client.post(
+            "/test-export-trunc/export",
+            json={"format": "json", "filters": {"search": f"ExportItem_{tag}"}},
+        )
+        assert res.status_code == 200
+        assert "x-total-count" in res.headers
+        assert int(res.headers["x-total-count"]) >= 3
+        assert res.headers.get("x-export-truncated") == "true"
