@@ -542,11 +542,33 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
                     ),
                 ) from exc
             raise
+        if count == len(req.ids):
+            unprocessed_ids: list[uuid.UUID] = []
+            processed_ids = req.ids
+        else:
+            status_col = self._get_column("status")
+            status_clause = (
+                [status_col == target_status] if status_col is not None else []
+            )
+            processed_items = await self.repository.find_many(
+                self.repository.pk.in_(req.ids),
+                *status_clause,
+            )
+            processed_ids_set = {
+                it_id
+                for it in processed_items
+                if isinstance((it_id := getattr(it, "id", None)), uuid.UUID)
+            }
+            unprocessed_ids = [uid for uid in req.ids if uid not in processed_ids_set]
+            processed_ids = [uid for uid in req.ids if uid in processed_ids_set]
+
         if count > 0:
             if target_status == RecordStatus.TRASHED:
-                await self.on_after_bulk_trash(req.ids, user_id=effective_user_id)
+                await self.on_after_bulk_trash(processed_ids, user_id=effective_user_id)
             elif target_status == RecordStatus.ACTIVE:
-                await self.on_after_bulk_restore(req.ids, user_id=effective_user_id)
+                await self.on_after_bulk_restore(
+                    processed_ids, user_id=effective_user_id
+                )
             action_name = (
                 "BULK_TRASH"
                 if target_status == RecordStatus.TRASHED
@@ -563,7 +585,9 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             )
 
         return BulkResponse(
-            count=count, message=f"Successfully {action_verb} {count} records"
+            count=count,
+            message=f"Successfully {action_verb} {count} records",
+            unprocessed_ids=unprocessed_ids,
         )
 
     # ==========================================

@@ -2,8 +2,6 @@ import csv
 import io
 import json
 import uuid
-from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -17,8 +15,7 @@ except ImportError:
     openpyxl = None  # type: ignore[assignment]
 
 __all__ = [
-    "EXPORT_STRATEGIES",
-    "ExportStrategy",
+    "export_delimited",
     "export_to_csv",
     "export_to_excel",
     "export_to_google_sheets",
@@ -41,27 +38,21 @@ def serialize_cell(value: Any) -> Any:
     return value
 
 
-def export_to_csv(data: list[dict[str, Any]], columns: list[str] | None = None) -> str:
-    """Serialize list of dictionaries to CSV string."""
+def export_delimited(
+    data: list[dict[str, Any]],
+    columns: list[str] | None = None,
+    delimiter: str = ",",
+    prefix_bom: bool = False,
+) -> str:
+    """Serialize list of dictionaries to delimited text (CSV/TSV) string."""
     if not data:
         return ""
     fieldnames = columns if columns is not None else list(data[0].keys())
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
-    writer.writeheader()
-    for row in data:
-        writer.writerow({k: serialize_cell(row.get(k)) for k in fieldnames})
-    return output.getvalue()
-
-
-def export_to_tsv(data: list[dict[str, Any]], columns: list[str] | None = None) -> str:
-    """Serialize list of dictionaries to TSV (Tab Separated Values) string."""
-    if not data:
-        return ""
-    fieldnames = columns if columns is not None else list(data[0].keys())
-    output = io.StringIO()
+    if prefix_bom:
+        output.write("\ufeff")
     writer = csv.DictWriter(
-        output, fieldnames=fieldnames, delimiter="\t", extrasaction="ignore"
+        output, fieldnames=fieldnames, delimiter=delimiter, extrasaction="ignore"
     )
     writer.writeheader()
     for row in data:
@@ -69,18 +60,21 @@ def export_to_tsv(data: list[dict[str, Any]], columns: list[str] | None = None) 
     return output.getvalue()
 
 
+def export_to_csv(data: list[dict[str, Any]], columns: list[str] | None = None) -> str:
+    """Serialize list of dictionaries to CSV string."""
+    return export_delimited(data, columns, delimiter=",")
+
+
+def export_to_tsv(data: list[dict[str, Any]], columns: list[str] | None = None) -> str:
+    """Serialize list of dictionaries to TSV (Tab Separated Values) string."""
+    return export_delimited(data, columns, delimiter="\t")
+
+
 def export_to_google_sheets(
     data: list[dict[str, Any]], columns: list[str] | None = None
 ) -> str:
-    """
-    Serialize data optimized for Google Sheets.
-
-    Uses Tab-Separated Values (TSV) with a UTF-8 Byte Order Mark (BOM).
-    This enables Google Sheets / Drive to automatically split columns and
-    correctly render accents without encoding warnings.
-    """
-    tsv_content = export_to_tsv(data, columns)
-    return f"\ufeff{tsv_content}" if tsv_content else ""
+    """Serialize data optimized for Google Sheets (TSV with UTF-8 BOM)."""
+    return export_delimited(data, columns, delimiter="\t", prefix_bom=True)
 
 
 def export_to_json(data: list[dict[str, Any]], columns: list[str] | None = None) -> str:
@@ -115,40 +109,14 @@ def export_to_excel(
     return output.getvalue()
 
 
-@dataclass(frozen=True)
-class ExportStrategy:
-    """Specification of an export format strategy."""
-
-    extension: str
-    media_type: str
-    handler: Callable[[list[dict[str, Any]], list[str] | None], bytes | str]
-
-
-EXPORT_STRATEGIES: dict[ExportFormat, ExportStrategy] = {
-    ExportFormat.CSV: ExportStrategy(
-        extension="csv",
-        media_type="text/csv; charset=utf-8",
-        handler=export_to_csv,
-    ),
-    ExportFormat.TSV: ExportStrategy(
-        extension="tsv",
-        media_type="text/tab-separated-values; charset=utf-8",
-        handler=export_to_tsv,
-    ),
-    ExportFormat.GOOGLE_SHEETS: ExportStrategy(
-        extension="tsv",
-        media_type="text/tab-separated-values; charset=utf-8",
-        handler=export_to_google_sheets,
-    ),
-    ExportFormat.JSON: ExportStrategy(
-        extension="json",
-        media_type="application/json",
-        handler=export_to_json,
-    ),
-    ExportFormat.EXCEL: ExportStrategy(
-        extension="xlsx",
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        handler=export_to_excel,
+_FORMAT_META: dict[ExportFormat, tuple[str, str]] = {
+    ExportFormat.CSV: ("csv", "text/csv; charset=utf-8"),
+    ExportFormat.TSV: ("tsv", "text/tab-separated-values; charset=utf-8"),
+    ExportFormat.GOOGLE_SHEETS: ("tsv", "text/tab-separated-values; charset=utf-8"),
+    ExportFormat.JSON: ("json", "application/json"),
+    ExportFormat.EXCEL: (
+        "xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ),
 }
 
@@ -159,23 +127,30 @@ def format_export(
     slug: str,
     columns: list[str] | None = None,
 ) -> tuple[bytes | str, str, str]:
-    """
-    Format dataset using the resolved ExportStrategy.
-
-    Returns:
-        (content, media_type, filename)
-    """
-    strategy = EXPORT_STRATEGIES.get(format)
-    if not strategy:
+    """Format dataset using resolved format into content, media_type, and filename."""
+    meta = _FORMAT_META.get(format)
+    if not meta:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported export format: '{format}'",
         )
 
-    content = strategy.handler(data, columns)
+    extension, media_type = meta
+    match format:
+        case ExportFormat.CSV:
+            content: bytes | str = export_to_csv(data, columns)
+        case ExportFormat.TSV:
+            content = export_to_tsv(data, columns)
+        case ExportFormat.GOOGLE_SHEETS:
+            content = export_to_google_sheets(data, columns)
+        case ExportFormat.JSON:
+            content = export_to_json(data, columns)
+        case ExportFormat.EXCEL:
+            content = export_to_excel(data, columns)
+
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    filename = f"{slug}_{timestamp}.{strategy.extension}"
-    return content, strategy.media_type, filename
+    filename = f"{slug}_{timestamp}.{extension}"
+    return content, media_type, filename
 
 
 def get_supported_export_formats() -> list[str]:

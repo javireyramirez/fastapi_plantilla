@@ -158,6 +158,7 @@ async def test_crud_router_update(
     )
     assert res_update.status_code == 200
     assert res_update.json()["name"] == "Modified Name"
+    assert res_update.headers.get("etag") == 'W/"2"'
 
     # 2. Update with stale If-Match header -> 409 Conflict
     res_conflict = await router_client.patch(
@@ -174,9 +175,11 @@ async def test_crud_router_update(
         headers={"If-Match": '"2"'},
     )
     assert res_update2.status_code == 200
+    assert res_update2.headers.get("etag") == 'W/"3"'
 
     res_get = await router_client.get(f"/items/{item_id}")
     assert res_get.json()["name"] == "Second Update"
+    assert res_get.headers.get("etag") == 'W/"3"'
 
 
 async def test_crud_router_lifecycle_trash_restore_permanent(

@@ -1206,3 +1206,70 @@ def test_canonical_to_uuid() -> None:
     assert to_uuid("   ") is None
     assert to_uuid("invalid-uuid-string") is None
     assert to_uuid(12345) is None
+
+
+async def test_export_data_sensitive_columns_protection(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify export_data strips sensitive columns even if requested explicitly."""
+    from fastapi_plantilla.core.crud.schema import ExportFormat, ExportRequest
+    from fastapi_plantilla.modules.auth.models import Account
+
+    user_repo = BaseRepository(User, dbsession)
+    tag = uuid.uuid4().hex[:6]
+    u = await user_repo.create(
+        {"name": f"SecretUser_{tag}", "email": f"secret_{tag}@example.com"}
+    )
+
+    repo = BaseRepository(Account, dbsession)
+    service = BaseCRUDService(repo)
+    acc = await repo.create(
+        {
+            "user_id": u.id,
+            "provider_id": "credentials",
+            "account_id": f"acc_{tag}",
+            "password": "super-secret-password",
+        }
+    )
+
+    # 1. Fallback without schema: password should NOT appear
+    req = ExportRequest(format=ExportFormat.JSON, ids=[acc.id])
+    content, _, _ = await service.export_data(req)
+    assert "super-secret-password" not in str(content)
+    assert "password" not in str(content)
+
+    # 2. Explicitly requesting sensitive column should be ignored
+    req_sensitive = ExportRequest(
+        format=ExportFormat.JSON,
+        ids=[acc.id],
+        columns=["provider_id", "password"],
+    )
+    content2, _, _ = await service.export_data(req_sensitive)
+    assert "super-secret-password" not in str(content2)
+    assert "password" not in str(content2)
+    assert "credentials" in str(content2)
+
+
+async def test_bulk_transition_unprocessed_ids(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify bulk_trash and bulk_restore track unprocessed_ids."""
+    from fastapi_plantilla.core.crud.schema import BulkIdsRequest
+
+    repo = BaseRepository(User, dbsession)
+    service = BaseAuditService(repo)
+    tag = uuid.uuid4().hex[:6]
+    u = await repo.create(
+        {"name": f"BulkTrack_{tag}", "email": f"bt_{tag}@example.com"}
+    )
+    missing_id = uuid.uuid4()
+
+    # bulk_trash with 1 valid ID and 1 non-existent ID
+    trash_res = await service.bulk_trash(BulkIdsRequest(ids=[u.id, missing_id]))
+    assert trash_res.count == 1
+    assert trash_res.unprocessed_ids == [missing_id]
+
+    # bulk_restore with 1 valid trashed ID and 1 non-existent ID
+    restore_res = await service.bulk_restore(BulkIdsRequest(ids=[u.id, missing_id]))
+    assert restore_res.count == 1
+    assert restore_res.unprocessed_ids == [missing_id]

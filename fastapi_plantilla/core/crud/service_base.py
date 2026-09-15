@@ -508,9 +508,11 @@ class BaseCRUDService[ModelT: Base]:
         if effective_schema is not None:
             for item in items:
                 dumped = effective_schema.model_validate(item).model_dump(mode="json")
-                rows.append(dumped)
+                rows.append(
+                    {k: v for k, v in dumped.items() if k not in self.SENSITIVE_COLUMNS}
+                )
         else:
-            excluded = {"version", "password", "password_hash", "token"}
+            excluded = self.SENSITIVE_COLUMNS | {"version"}
             for item in items:
                 mapper = inspect(item.__class__)
                 row = {
@@ -520,12 +522,18 @@ class BaseCRUDService[ModelT: Base]:
                 }
                 rows.append(row)
 
+        export_columns = (
+            [c for c in req.columns if c not in self.SENSITIVE_COLUMNS]
+            if req.columns
+            else None
+        )
+
         slug = getattr(self, "resource_name", "export").lower()
         content, media_type, filename = format_export(
             format=req.format,
             data=rows,
             slug=slug,
-            columns=req.columns,
+            columns=export_columns,
         )
         return ExportResult(
             content=content,

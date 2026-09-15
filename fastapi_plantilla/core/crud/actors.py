@@ -95,49 +95,48 @@ async def _fetch_users_map(
     }
 
 
+def _resolve_actor(
+    raw: Any,
+    users_map: dict[str, UserReference],
+    fallback_name: str | None = None,
+    fallback_email: str | None = None,
+) -> UserReference | None:
+    """Resolve raw actor reference against known users or fallbacks."""
+    key = str(raw).strip() if raw is not None else ""
+    user_ref = users_map.get(key)
+    if user_ref:
+        return user_ref
+    name = fallback_name or (str(raw) if raw else None)
+    email = fallback_email
+    if name or email or raw:
+        return UserReference(id=to_uuid(raw), name=name, email=email)
+    return None
+
+
 def _attach_item_actors(item: Any, users_map: dict[str, UserReference]) -> None:
     """Attach actor objects to a single item in-place."""
-    for attr, ref_attr in (
+    for raw_attr, target_attr in (
         ("created_by", "creator"),
         ("updated_by", "updater"),
+        ("deleted_by", "deletor"),
     ):
-        if hasattr(item, attr):
-            raw = getattr(item, attr, None)
-            key = str(raw).strip() if raw is not None else ""
-            user_ref = users_map.get(key)
-            name = user_ref.name if user_ref else (str(raw) if raw else None)
-            ref = user_ref or (
-                UserReference(id=to_uuid(raw), name=name) if name or raw else None
+        if hasattr(item, raw_attr):
+            setattr(
+                item,
+                target_attr,
+                _resolve_actor(getattr(item, raw_attr, None), users_map),
             )
-            setattr(item, ref_attr, ref)
-
-    if hasattr(item, "deleted_by"):
-        raw = getattr(item, "deleted_by", None)
-        key = str(raw).strip() if raw is not None else ""
-        user_ref = users_map.get(key)
-        name = user_ref.name if user_ref else (str(raw) if raw else None)
-        email = user_ref.email if user_ref else None
-        ref = user_ref or (
-            UserReference(id=to_uuid(raw), name=name, email=email)
-            if name or email or raw
-            else None
-        )
-        item.deletor = ref  # type: ignore[attr-defined]
 
     if hasattr(item, "actor_id"):
-        raw = getattr(item, "actor_id", None)
-        key = str(raw).strip() if raw is not None else ""
-        user_ref = users_map.get(key)
-        name = user_ref.name if user_ref else getattr(item, "actor_name", None)
-        email = user_ref.email if user_ref else getattr(item, "actor_email", None)
-        if user_ref:
-            item.user = user_ref  # type: ignore[attr-defined]
-        elif name or email or raw:
-            item.user = UserReference(  # type: ignore[attr-defined]
-                id=to_uuid(raw), name=name, email=email
-            )
-        else:
-            item.user = None  # type: ignore[attr-defined]
+        raw_actor_id = getattr(item, "actor_id", None)
+        fallback_name = getattr(item, "actor_name", None)
+        fallback_email = getattr(item, "actor_email", None)
+        item.user = _resolve_actor(  # type: ignore[attr-defined]
+            raw_actor_id,
+            users_map,
+            fallback_name=fallback_name,
+            fallback_email=fallback_email,
+        )
 
 
 async def enrich_actors(

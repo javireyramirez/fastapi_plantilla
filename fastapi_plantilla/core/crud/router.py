@@ -323,10 +323,15 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
         )
         async def get_by_id(
             id: uuid.UUID,
+            response: Response,
             service: BaseCRUDService[ModelT] = Depends(service_getter),
             scope: ScopeContext = Depends(_scope_dep(RbacActions.READ)),
         ) -> Any:
-            return await service.get_by_id(id, scope=scope)
+            item = await service.get_by_id(id, scope=scope)
+            version = getattr(item, "version", None)
+            if version is not None:
+                response.headers["ETag"] = f'W/"{version}"'
+            return item
 
     if can_update:
 
@@ -339,6 +344,7 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
             id: uuid.UUID,
             data: schema_update,  # type: ignore[valid-type]
             request: Request,
+            response: Response,
             if_match: str | None = Header(default=None, alias="If-Match"),
             expected_version: int | None = None,
             service: BaseCRUDService[ModelT] = Depends(service_getter),
@@ -356,7 +362,7 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
                     resolved_version = data_version
 
             options = build_write_options(current_user, scope, request)
-            return await service.update(
+            updated = await service.update(
                 id=id,
                 data=data,
                 expected_version=resolved_version,
@@ -364,6 +370,10 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
                 scope=scope,
                 options=options,
             )
+            version = getattr(updated, "version", None)
+            if version is not None:
+                response.headers["ETag"] = f'W/"{version}"'
+            return updated
 
     if can_delete:
         delete_summary = (
