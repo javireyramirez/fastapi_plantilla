@@ -1,8 +1,9 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Header, Query, status
 
+from fastapi_plantilla.core.crud.router import parse_if_match_version
 from fastapi_plantilla.core.crud.schema import (
     BulkIdsRequest,
     BulkResponse,
@@ -111,9 +112,6 @@ async def bulk_restore_roles(
 
 
 @router.delete("/roles/bulk/permanent", response_model=BulkResponse)
-@router.post(
-    "/roles/bulk/permanent", response_model=BulkResponse, include_in_schema=False
-)
 async def bulk_permanent_delete_roles(
     req: BulkIdsRequest,
     _: UserResponse = Depends(get_current_active_superuser),
@@ -137,11 +135,19 @@ async def get_role(
 async def update_role(
     role_id: uuid.UUID,
     data: RoleUpdate,
+    expected_version: int | None = Query(default=None),
+    if_match: str | None = Header(default=None, alias="If-Match"),
     current_user: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
 ) -> RoleDetailResponse:
     """Update role metadata (SuperAdmin only)."""
-    return await service.update_role(role_id, data, user_id=current_user.id)
+    parsed_version = parse_if_match_version(if_match)
+    effective_version = (
+        parsed_version if parsed_version is not None else expected_version
+    )
+    return await service.update_role(
+        role_id, data, user_id=current_user.id, expected_version=effective_version
+    )
 
 
 @router.delete("/roles/{role_id}", response_model=MessageResponse)
@@ -170,11 +176,13 @@ async def restore_role(
 async def set_role_permissions(
     role_id: uuid.UUID,
     data: RolePermissionsUpdate,
-    _: UserResponse = Depends(get_current_active_superuser),
+    current_user: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
 ) -> RoleDetailResponse:
     """Replace all permissions for a role (SuperAdmin only)."""
-    return await service.set_role_permissions(role_id, data.permissions)
+    return await service.set_role_permissions(
+        role_id, data.permissions, user_id=current_user.id
+    )
 
 
 @router.get(
@@ -234,22 +242,26 @@ async def get_assignment(
 @router.post("/assignments", response_model=MessageResponse)
 async def assign_role(
     data: RoleAssignmentRequest,
-    _: UserResponse = Depends(get_current_active_superuser),
+    current_user: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
 ) -> MessageResponse:
     """Assign role to a user or a team (SuperAdmin only)."""
-    await service.assign_role(data.role_id, data.entity_type, data.entity_id)
+    await service.assign_role(
+        data.role_id, data.entity_type, data.entity_id, user_id=current_user.id
+    )
     return MessageResponse(message="Role assigned successfully")
 
 
 @router.delete("/assignments", response_model=MessageResponse)
 async def unassign_role(
     data: RoleAssignmentRequest,
-    _: UserResponse = Depends(get_current_active_superuser),
+    current_user: UserResponse = Depends(get_current_active_superuser),
     service: RbacService = Depends(get_rbac_service),
 ) -> MessageResponse:
     """Remove role assignment from a user or team (SuperAdmin only)."""
-    await service.unassign_role(data.role_id, data.entity_type, data.entity_id)
+    await service.unassign_role(
+        data.role_id, data.entity_type, data.entity_id, user_id=current_user.id
+    )
     return MessageResponse(message="Role assignment removed successfully")
 
 

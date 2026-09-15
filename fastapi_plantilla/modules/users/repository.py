@@ -23,11 +23,14 @@ class UserAdminRepository(BaseRepository[User]):
     def __init__(self, session: AsyncSession = Depends(get_db_session)) -> None:
         super().__init__(User, session)
 
-    async def get_by_email(self, email: str) -> User | None:
-        """Fetch user by email."""
-        return await self.find_first(
-            User.email == email, User.status != RecordStatus.TRASHED
-        )
+    async def get_by_email(
+        self, email: str, include_trashed: bool = True
+    ) -> User | None:
+        """Fetch user by email, optionally including trashed records."""
+        where = [User.email == email]
+        if not include_trashed:
+            where.append(User.status != RecordStatus.TRASHED)
+        return await self.find_first(*where)
 
     async def count_active_superadmins(self) -> int:
         """Count active, non-trashed super admin users."""

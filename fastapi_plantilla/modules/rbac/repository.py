@@ -220,6 +220,24 @@ class RbacRepository(BaseRepository[Role]):
             return int(result.rowcount) > 0
         return False
 
+    async def user_exists(self, user_id: uuid.UUID) -> bool:
+        """Check whether a non-trashed user exists in the database."""
+        stmt = select(
+            select(User.id)
+            .where(User.id == user_id, User.status != RecordStatus.TRASHED)
+            .exists()
+        )
+        return bool(await self.session.scalar(stmt))
+
+    async def team_exists(self, team_id: uuid.UUID) -> bool:
+        """Check whether a non-trashed team exists in the database."""
+        stmt = select(
+            select(Team.id)
+            .where(Team.id == team_id, Team.status != RecordStatus.TRASHED)
+            .exists()
+        )
+        return bool(await self.session.scalar(stmt))
+
     async def get_assignments(
         self, entity_type: str, entity_id: uuid.UUID
     ) -> list[RoleAssignment]:

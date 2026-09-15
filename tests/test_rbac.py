@@ -11,6 +11,7 @@ from fastapi_plantilla.core.crud.repository import BaseRepository
 from fastapi_plantilla.core.crud.schema import ScopeContext, ScopeType
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import generate_uuid7
+from fastapi_plantilla.modules.audit.repository import AuditRepository
 from fastapi_plantilla.modules.auth.dependencies import (
     get_current_active_superuser,
     get_current_user,
@@ -655,3 +656,188 @@ async def test_role_reuse_slug_when_in_trash_and_restore_conflict(
     )
     assert restore_ok.status_code == status.HTTP_200_OK
     assert restore_ok.json()["count"] == 1
+
+
+@pytest.mark.anyio
+async def test_role_optimistic_concurrency_and_versioning(
+    rbac_client: AsyncClient,
+) -> None:
+    """Verify role versioning and optimistic concurrency control with ETags."""
+    # 1. Create role with initial version 1
+    create_res = await rbac_client.post(
+        "/api/rbac/roles",
+        json={"name": "Locking Role", "slug": f"lock_{uuid.uuid4().hex[:6]}"},
+    )
+    assert create_res.status_code == status.HTTP_201_CREATED
+    role_data = create_res.json()
+    role_id = role_data["id"]
+    assert role_data["version"] == 1
+
+    # 2. Conflicting update with wrong If-Match returns 409
+    stale_res = await rbac_client.patch(
+        f"/api/rbac/roles/{role_id}",
+        headers={"If-Match": '"99"'},
+        json={"name": "Should Fail"},
+    )
+    assert stale_res.status_code == status.HTTP_409_CONFLICT
+    assert "Concurrent modification conflict" in stale_res.json()["detail"]
+
+    # 3. Successful update with valid If-Match increments version to 2
+    ok_res = await rbac_client.patch(
+        f"/api/rbac/roles/{role_id}",
+        headers={"If-Match": '"1"'},
+        json={"name": "Updated Role"},
+    )
+    assert ok_res.status_code == status.HTTP_200_OK
+    assert ok_res.json()["name"] == "Updated Role"
+    assert ok_res.json()["version"] == 2
+
+    # 4. Old If-Match: 1 now fails with 409
+    stale_res2 = await rbac_client.patch(
+        f"/api/rbac/roles/{role_id}",
+        headers={"If-Match": '"1"'},
+        json={"name": "Should Fail Again"},
+    )
+    assert stale_res2.status_code == status.HTTP_409_CONFLICT
+
+
+@pytest.mark.anyio
+async def test_role_assignment_validation(
+    rbac_client: AsyncClient,
+    rbac_test_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify entity_type validation and destination entity existence checks."""
+    admin, _ = rbac_test_users
+    role_res = await rbac_client.post(
+        "/api/rbac/roles",
+        json={"name": "Validator Role", "slug": f"val_{uuid.uuid4().hex[:6]}"},
+    )
+    role_id = role_res.json()["id"]
+
+    # 1. Invalid entity_type returns 400
+    invalid_type_res = await rbac_client.post(
+        "/api/rbac/assignments",
+        json={
+            "role_id": role_id,
+            "entity_type": "ORGANIZATION",
+            "entity_id": str(admin.id),
+        },
+    )
+    assert invalid_type_res.status_code == status.HTTP_400_BAD_REQUEST
+    assert "Invalid entity_type" in invalid_type_res.json()["detail"]
+
+    # 2. Non-existent user returns 404
+    fake_user_id = uuid.uuid4()
+    user_404_res = await rbac_client.post(
+        "/api/rbac/assignments",
+        json={
+            "role_id": role_id,
+            "entity_type": "USER",
+            "entity_id": str(fake_user_id),
+        },
+    )
+    assert user_404_res.status_code == status.HTTP_404_NOT_FOUND
+    assert f"User with ID {fake_user_id} not found" in user_404_res.json()["detail"]
+
+    # 3. Non-existent team returns 404
+    fake_team_id = uuid.uuid4()
+    team_404_res = await rbac_client.post(
+        "/api/rbac/assignments",
+        json={
+            "role_id": role_id,
+            "entity_type": "TEAM",
+            "entity_id": str(fake_team_id),
+        },
+    )
+    assert team_404_res.status_code == status.HTTP_404_NOT_FOUND
+    assert f"Team with ID {fake_team_id} not found" in team_404_res.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_role_create_atomic_rollback_on_invalid_module(
+    rbac_client: AsyncClient,
+) -> None:
+    """Verify create_role atomically rolls back if module validation fails."""
+    slug = f"atomic_fail_{uuid.uuid4().hex[:6]}"
+    res = await rbac_client.post(
+        "/api/rbac/roles",
+        json={
+            "name": "Atomic Fail",
+            "slug": slug,
+            "permissions": [
+                {
+                    "module_code": "non_existent_module_slug",
+                    "action": "READ",
+                    "scope": "GLOBAL",
+                }
+            ],
+        },
+    )
+    assert res.status_code == status.HTTP_404_NOT_FOUND
+    assert "non_existent_module_slug" in res.json()["detail"]
+
+    # Ensure role was not left behind in the database
+    roles_list = await rbac_client.get(f"/api/rbac/roles?name={slug}")
+    assert len(roles_list.json()) == 0
+
+
+@pytest.mark.anyio
+async def test_role_audit_logging(
+    rbac_client: AsyncClient,
+    rbac_test_users: tuple[UserResponse, UserResponse],
+    dbsession: AsyncSession,
+) -> None:
+    """Verify audit entries for SET_ROLE_PERMISSIONS, ASSIGN_ROLE, UNASSIGN_ROLE."""
+    _, regular = rbac_test_users
+
+    # Ensure documents module exists
+    mod_repo = BaseRepository(SystemModule, dbsession)
+    mod = await mod_repo.find_first(SystemModule.code == "users")
+    if not mod:
+        await mod_repo.create(
+            {"id": generate_uuid7(), "code": "users", "name": "Users"}
+        )
+
+    # 1. Create role
+    role_res = await rbac_client.post(
+        "/api/rbac/roles",
+        json={"name": "Audited Role", "slug": f"audit_{uuid.uuid4().hex[:6]}"},
+    )
+    assert role_res.status_code == status.HTTP_201_CREATED
+    role_id = role_res.json()["id"]
+
+    # 2. Set permissions
+    perm_res = await rbac_client.put(
+        f"/api/rbac/roles/{role_id}/permissions",
+        json={
+            "permissions": [
+                {"module_code": "users", "action": "READ", "scope": "GLOBAL"}
+            ]
+        },
+    )
+    assert perm_res.status_code == status.HTTP_200_OK
+
+    # 3. Assign role
+    assign_res = await rbac_client.post(
+        "/api/rbac/assignments",
+        json={"role_id": role_id, "entity_type": "USER", "entity_id": str(regular.id)},
+    )
+    assert assign_res.status_code == status.HTTP_200_OK
+
+    # 4. Unassign role
+    unassign_res = await rbac_client.request(
+        "DELETE",
+        "/api/rbac/assignments",
+        json={"role_id": role_id, "entity_type": "USER", "entity_id": str(regular.id)},
+    )
+    assert unassign_res.status_code == status.HTTP_200_OK
+
+    # 5. Verify audit logs via AuditRepository
+    audit_repo = AuditRepository(dbsession)
+    logs = await audit_repo.get_entity_history("role", uuid.UUID(role_id))
+    actions = [entry.action for entry in logs]
+
+    assert "CREATE" in actions
+    assert "SET_ROLE_PERMISSIONS" in actions
+    assert "ASSIGN_ROLE" in actions
+    assert "UNASSIGN_ROLE" in actions

@@ -65,17 +65,6 @@ async def bulk_reactivate(
     return await service.bulk_reactivate(data.user_ids, user_id_actor=current_user.id)
 
 
-@router.post("/bulk/activate", response_model=BulkResponse, include_in_schema=False)
-async def bulk_activate(
-    data: UserBulkActionRequest,
-    _: ScopeContext = Depends(require_permission("users", RbacActions.UPDATE)),
-    service: UserAdminService = Depends(get_user_admin_service),
-    current_user: UserResponse = Depends(get_current_user),
-) -> BulkResponse:
-    """Activate multiple users in bulk (alias for bulk_reactivate)."""
-    return await service.bulk_reactivate(data.user_ids, user_id_actor=current_user.id)
-
-
 @router.post("/{user_id}/suspend", response_model=MessageResponse)
 async def suspend_user(
     user_id: uuid.UUID,
@@ -96,20 +85,6 @@ async def reactivate_user(
     current_user: UserResponse = Depends(get_current_user),
 ) -> MessageResponse:
     """Reactivate a suspended user."""
-    await service.reactivate_user(user_id, user_id_actor=current_user.id)
-    return MessageResponse(message="User reactivated successfully")
-
-
-@router.post(
-    "/{user_id}/activate", response_model=MessageResponse, include_in_schema=False
-)
-async def activate_user(
-    user_id: uuid.UUID,
-    _: ScopeContext = Depends(require_permission("users", RbacActions.UPDATE)),
-    service: UserAdminService = Depends(get_user_admin_service),
-    current_user: UserResponse = Depends(get_current_user),
-) -> MessageResponse:
-    """Activate a suspended user (alias for reactivate)."""
     await service.reactivate_user(user_id, user_id_actor=current_user.id)
     return MessageResponse(message="User reactivated successfully")
 

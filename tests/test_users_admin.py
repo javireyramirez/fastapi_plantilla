@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import FastAPI, HTTPException, status
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.repository import BaseRepository
@@ -503,3 +504,78 @@ async def test_last_superadmin_protection(
     delete_res = await users_client.delete(f"/api/users/{admin.id}")
     assert delete_res.status_code == status.HTTP_400_BAD_REQUEST
     assert "last active super administrator" in delete_res.json()["detail"].lower()
+
+
+@pytest.mark.anyio
+async def test_users_hardening_and_precedence(
+    users_client: AsyncClient,
+    admin_and_targets: tuple[UserResponse, User, User],
+    dbsession: AsyncSession,
+) -> None:
+    """Verify version precedence, FK 404 validation, and bulk unprocessed reporting."""
+    _, target1, _ = admin_and_targets
+    fake_id = uuid.uuid4()
+
+    # 1. Version precedence: If-Match takes precedence over body.version
+    etag_fail = await users_client.patch(
+        f"/api/users/{target1.id}",
+        headers={"If-Match": '"99"'},
+        json={"name": "New Name", "version": target1.version},
+    )
+    assert etag_fail.status_code == status.HTTP_409_CONFLICT
+    assert "Concurrent modification conflict" in etag_fail.json()["detail"]
+
+    # 2. Invalid role on create -> 404 Not Found (not 409 or 500)
+    invalid_role_create = await users_client.post(
+        "/api/users",
+        json={
+            "name": "Invalid Role User",
+            "email": f"inv_role_{uuid.uuid4().hex[:6]}@example.com",
+            "password": "ValidPassword123!",
+            "role_ids": [str(fake_id)],
+        },
+    )
+    assert invalid_role_create.status_code == status.HTTP_404_NOT_FOUND
+    assert "Roles not found" in invalid_role_create.json()["detail"]
+
+    # 3. Invalid role on assign_roles -> 404 Not Found
+    invalid_role_assign = await users_client.post(
+        f"/api/users/{target1.id}/roles",
+        json={"role_ids": [str(fake_id)]},
+    )
+    assert invalid_role_assign.status_code == status.HTTP_404_NOT_FOUND
+    assert "Roles not found" in invalid_role_assign.json()["detail"]
+
+    # 4. Invalid team on assign_teams -> 404 Not Found
+    invalid_team_assign = await users_client.post(
+        f"/api/users/{target1.id}/teams",
+        json={"team_ids": [str(fake_id)]},
+    )
+    assert invalid_team_assign.status_code == status.HTTP_404_NOT_FOUND
+    assert "Teams not found" in invalid_team_assign.json()["detail"]
+
+    # 5. Bulk suspend returns unprocessed_ids for missing users and supports 'ids'
+    bulk_res = await users_client.post(
+        "/api/users/bulk/suspend",
+        json={"ids": [str(target1.id), str(fake_id)]},
+    )
+    assert bulk_res.status_code == status.HTTP_200_OK
+    data = bulk_res.json()
+    assert data["count"] == 1
+    assert str(fake_id) in data["unprocessed_ids"]
+
+    # 6. resend_invitation clears previous tokens
+    await users_client.post(f"/api/users/{target1.id}/resend-invitation")
+    await users_client.post(f"/api/users/{target1.id}/resend-invitation")
+    from fastapi_plantilla.modules.auth.models import Verification
+
+    tokens = (
+        (
+            await dbsession.execute(
+                select(Verification).where(Verification.identifier == target1.email)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(tokens) == 1

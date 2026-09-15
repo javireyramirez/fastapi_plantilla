@@ -142,6 +142,7 @@ class RoleUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=255)
     color: str | None = Field(default=None, max_length=50)
     icon: str | None = Field(default=None, max_length=50)
+    version: int | None = None
 
 
 class RoleResponse(BaseModel):
@@ -157,6 +158,7 @@ class RoleResponse(BaseModel):
     icon: str | None = None
     is_system: bool
     status: RecordStatus = RecordStatus.ACTIVE
+    version: int = 1
     created_at: datetime
     updated_at: datetime
 

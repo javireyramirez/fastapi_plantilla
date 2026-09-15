@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field
 
 from fastapi_plantilla.core.crud.schema import PaginationParams
 
@@ -71,12 +71,23 @@ class UserAdminUpdate(BaseModel):
     email: EmailStr | None = None
     is_active: bool | None = None
     is_super_admin: bool | None = None
+    version: int | None = None
 
 
 class UserBulkActionRequest(BaseModel):
-    """Payload for bulk operations on users."""
+    """Payload for bulk operations on users supporting both ids and legacy user_ids."""
 
-    user_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=1000)
+    ids: list[uuid.UUID] = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        validation_alias=AliasChoices("ids", "user_ids"),
+    )
+
+    @property
+    def user_ids(self) -> list[uuid.UUID]:
+        """Backward-compatibility accessor for user_ids."""
+        return self.ids
 
 
 class UserAssignRolesRequest(BaseModel):
