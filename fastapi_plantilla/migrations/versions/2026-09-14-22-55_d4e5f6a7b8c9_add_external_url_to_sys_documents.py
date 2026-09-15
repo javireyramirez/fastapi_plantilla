@@ -1,4 +1,4 @@
-"""add_external_url_to_sys_documents.
+"""add_external_url_to_sys_storage.
 
 Revision ID: d4e5f6a7b8c9
 Revises: c3d4e5f6a7b8
@@ -19,11 +19,11 @@ depends_on = None
 def upgrade() -> None:
     """Run the migration."""
     op.add_column(
-        "sys_documents",
+        "sys_storage",
         sa.Column("external_url", sa.Text(), nullable=True),
     )
 
 
 def downgrade() -> None:
     """Revert the migration."""
-    op.drop_column("sys_documents", "external_url")
+    op.drop_column("sys_storage", "external_url")

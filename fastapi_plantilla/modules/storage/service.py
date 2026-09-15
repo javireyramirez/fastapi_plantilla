@@ -19,12 +19,12 @@ from fastapi_plantilla.core.crud.schema import (
 from fastapi_plantilla.core.crud.service_owned import BaseOwnedService
 from fastapi_plantilla.core.mixins import RecordStatus, generate_uuid7
 from fastapi_plantilla.modules.settings.service import SystemSettingService
-from fastapi_plantilla.modules.storage.models import Document
+from fastapi_plantilla.modules.storage.models import Storage
 from fastapi_plantilla.modules.storage.providers import (
     PresignedUrlMethod,
     StorageProvider,
 )
-from fastapi_plantilla.modules.storage.repository import DocumentRepository
+from fastapi_plantilla.modules.storage.repository import StorageRepository
 from fastapi_plantilla.modules.storage.schema import (
     ConfirmUploadRequest,
     CreateExternalUrlRequest,
@@ -35,12 +35,12 @@ from fastapi_plantilla.modules.storage.schema import (
 )
 
 DEFAULT_PRESIGNED_EXPIRY_SECONDS: int = 3600
-DEFAULT_ZIP_FILENAME: str = "documents.zip"
+DEFAULT_ZIP_FILENAME: str = "storage.zip"
 
 __all__ = [
     "DEFAULT_PRESIGNED_EXPIRY_SECONDS",
     "DEFAULT_ZIP_FILENAME",
-    "DocumentService",
+    "StorageService",
     "sanitize_filename",
 ]
 
@@ -51,22 +51,22 @@ def sanitize_filename(filename: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_.-]", "_", clean)
 
 
-class DocumentService(BaseOwnedService[Document]):
-    """Domain service managing document lifecycle, storage and RBAC."""
+class StorageService(BaseOwnedService[Storage]):
+    """Domain service managing storage lifecycle, storage providers and RBAC."""
 
-    resource_name: str = "Document"
+    resource_name: str = "Storage"
     display_field: str = "name"
     mask_forbidden_as_not_found: bool = True
     owner_field: str = "owner_id"
 
     def __init__(
         self,
-        repository: DocumentRepository,
+        repository: StorageRepository,
         storage_provider: StorageProvider,
         settings_service: SystemSettingService | None = None,
     ) -> None:
         super().__init__(repository)
-        self.doc_repo = repository
+        self.storage_repo = repository
         self.storage_provider = storage_provider
         self.settings_service = settings_service
 
@@ -76,8 +76,8 @@ class DocumentService(BaseOwnedService[Document]):
         *where: Any,
         scope: ScopeContext | None = None,
         order_by: Any = None,
-    ) -> PaginatedResponse[Document]:
-        """Fetch paginated documents enriched with principal entity metadata."""
+    ) -> PaginatedResponse[Storage]:
+        """Fetch paginated storage records enriched with principal entity metadata."""
         res = await super().find_paginated(
             params, *where, scope=scope, order_by=order_by
         )
@@ -89,22 +89,22 @@ class DocumentService(BaseOwnedService[Document]):
         id: uuid.UUID,
         *where: Any,
         scope: ScopeContext | None = None,
-    ) -> Document:
-        """Fetch document by ID enriched with principal entity metadata."""
-        doc = await super().get_by_id(id, *where, scope=scope)
-        await enrich_principal_entities(self.repository.session, [doc])
-        return doc
+    ) -> Storage:
+        """Fetch storage record by ID enriched with principal entity metadata."""
+        record = await super().get_by_id(id, *where, scope=scope)
+        await enrich_principal_entities(self.repository.session, [record])
+        return record
 
     def build_storage_key(
         self,
         entity_type: str,
         entity_id: uuid.UUID,
-        doc_id: uuid.UUID,
+        storage_id: uuid.UUID,
         filename: str,
     ) -> str:
         """Construct canonical, safe storage key path."""
         safe_name = sanitize_filename(filename)
-        return f"documents/{entity_type}/{entity_id}/{doc_id}_{safe_name}"
+        return f"storage/{entity_type}/{entity_id}/{storage_id}_{safe_name}"
 
     async def _validate_file_size(self, size_bytes: int | None) -> None:
         """Verify upload size does not exceed dynamic maximum limit."""
@@ -185,8 +185,8 @@ class DocumentService(BaseOwnedService[Document]):
         data: PresignedUploadRequest,
         options: WriteOptions | None = None,
     ) -> PresignedUploadResponse:
-        """Generate presigned upload URL and register pending document."""
-        doc_id = generate_uuid7()
+        """Generate presigned upload URL and register pending storage record."""
+        storage_id = generate_uuid7()
         safe_name = sanitize_filename(data.name)
         extension = Path(safe_name).suffix.lstrip(".").lower() or None
         content_type = (
@@ -197,7 +197,7 @@ class DocumentService(BaseOwnedService[Document]):
         await self._validate_upload_limits(data.size_bytes, extension, content_type)
 
         file_key = self.build_storage_key(
-            data.entity_type, data.entity_id, doc_id, safe_name
+            data.entity_type, data.entity_id, storage_id, safe_name
         )
 
         upload_url = await self.storage_provider.get_presigned_url(
@@ -207,7 +207,7 @@ class DocumentService(BaseOwnedService[Document]):
         )
 
         create_payload: dict[str, Any] = {
-            "id": doc_id,
+            "id": storage_id,
             "entity_type": data.entity_type,
             "entity_id": data.entity_id,
             "name": safe_name,
@@ -229,7 +229,7 @@ class DocumentService(BaseOwnedService[Document]):
         )
 
         return PresignedUploadResponse(
-            document_id=doc_id,
+            storage_id=storage_id,
             upload_url=upload_url,
             file_key=file_key,
             expires_in=DEFAULT_PRESIGNED_EXPIRY_SECONDS,
@@ -241,13 +241,13 @@ class DocumentService(BaseOwnedService[Document]):
         id: uuid.UUID,
         data: ConfirmUploadRequest | None = None,
         options: WriteOptions | None = None,
-    ) -> Document:
+    ) -> Storage:
         """Confirm that file was uploaded to storage provider."""
         scope = options.scope if options else None
         user_id = options.user_id if options else None
-        document = await self.get_by_id(id, scope=scope)
+        storage_record = await self.get_by_id(id, scope=scope)
 
-        exists = await self.storage_provider.exists(document.file_key)
+        exists = await self.storage_provider.exists(storage_record.file_key)
         if not exists:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -279,9 +279,9 @@ class DocumentService(BaseOwnedService[Document]):
         content_type: str | None = None,
         description: str | None = None,
         options: WriteOptions | None = None,
-    ) -> Document:
+    ) -> Storage:
         """Direct file upload bypassing client-side presigned URLs."""
-        doc_id = generate_uuid7()
+        storage_id = generate_uuid7()
         safe_name = sanitize_filename(filename)
         extension = Path(safe_name).suffix.lstrip(".").lower() or None
         mime = (
@@ -289,7 +289,7 @@ class DocumentService(BaseOwnedService[Document]):
             or mimetypes.guess_type(safe_name)[0]
             or "application/octet-stream"
         )
-        file_key = self.build_storage_key(entity_type, entity_id, doc_id, safe_name)
+        file_key = self.build_storage_key(entity_type, entity_id, storage_id, safe_name)
 
         await self.storage_provider.upload(
             key=file_key,
@@ -298,7 +298,7 @@ class DocumentService(BaseOwnedService[Document]):
         )
 
         create_payload: dict[str, Any] = {
-            "id": doc_id,
+            "id": storage_id,
             "entity_type": entity_type,
             "entity_id": entity_id,
             "name": safe_name,
@@ -312,31 +312,31 @@ class DocumentService(BaseOwnedService[Document]):
 
         user_id = options.user_id if options else None
         scope = options.scope if options else None
-        doc = await self.create(
+        record = await self.create(
             create_payload,
             user_id=user_id,
             scope=scope,
             allow_immutable=True,
         )
-        await enrich_principal_entities(self.repository.session, [doc])
-        return doc
+        await enrich_principal_entities(self.repository.session, [record])
+        return record
 
     async def create_external_url(
         self,
         data: CreateExternalUrlRequest,
         options: WriteOptions | None = None,
-    ) -> Document:
-        """Register an external URL resource directly as an active document."""
-        doc_id = generate_uuid7()
+    ) -> Storage:
+        """Register an external URL resource directly as an active storage record."""
+        storage_id = generate_uuid7()
         name = data.name.strip()
         url_str = str(data.url)
         url_path = url_str.split("?", 1)[0]
         extension = Path(url_path).suffix.lstrip(".").lower() or None
         content_type = mimetypes.guess_type(url_path)[0] or "application/x-external-url"
-        file_key = f"external/{doc_id}"
+        file_key = f"external/{storage_id}"
 
         create_payload: dict[str, Any] = {
-            "id": doc_id,
+            "id": storage_id,
             "entity_type": data.entity_type,
             "entity_id": data.entity_id,
             "name": name,
@@ -351,14 +351,14 @@ class DocumentService(BaseOwnedService[Document]):
 
         user_id = options.user_id if options else None
         scope = options.scope if options else None
-        doc = await self.create(
+        record = await self.create(
             create_payload,
             user_id=user_id,
             scope=scope,
             allow_immutable=True,
         )
-        await enrich_principal_entities(self.repository.session, [doc])
-        return doc
+        await enrich_principal_entities(self.repository.session, [record])
+        return record
 
     async def get_presigned_download(
         self,
@@ -366,36 +366,36 @@ class DocumentService(BaseOwnedService[Document]):
         expires_in: int = DEFAULT_PRESIGNED_EXPIRY_SECONDS,
         scope: ScopeContext | None = None,
     ) -> PresignedDownloadResponse:
-        """Generate presigned download URL for an active document."""
-        document = await self.get_by_id(id, scope=scope)
+        """Generate presigned download URL for an active storage file."""
+        storage_record = await self.get_by_id(id, scope=scope)
 
-        if not document.is_uploaded:
+        if not storage_record.is_uploaded:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Document file has not been uploaded yet.",
+                detail="File has not been uploaded yet.",
             )
 
-        if document.external_url:
+        if storage_record.external_url:
             return PresignedDownloadResponse(
-                document_id=document.id,
-                download_url=document.external_url,
+                storage_id=storage_record.id,
+                download_url=storage_record.external_url,
                 expires_in=expires_in,
-                name=document.name,
-                content_type=document.content_type,
+                name=storage_record.name,
+                content_type=storage_record.content_type,
             )
 
         download_url = await self.storage_provider.get_presigned_url(
-            key=document.file_key,
+            key=storage_record.file_key,
             expires_in=expires_in,
             method=PresignedUrlMethod.GET,
         )
 
         return PresignedDownloadResponse(
-            document_id=document.id,
+            storage_id=storage_record.id,
             download_url=download_url,
             expires_in=expires_in,
-            name=document.name,
-            content_type=document.content_type,
+            name=storage_record.name,
+            content_type=storage_record.content_type,
         )
 
     async def download_content(
@@ -403,42 +403,42 @@ class DocumentService(BaseOwnedService[Document]):
         id: uuid.UUID,
         scope: ScopeContext | None = None,
     ) -> tuple[bytes, str, str]:
-        """Download document content bytes directly from storage."""
-        document = await self.get_by_id(id, scope=scope)
+        """Download file content bytes directly from storage."""
+        storage_record = await self.get_by_id(id, scope=scope)
 
-        if not document.is_uploaded:
+        if not storage_record.is_uploaded:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Document file has not been uploaded yet.",
+                detail="File has not been uploaded yet.",
             )
 
-        if document.external_url:
+        if storage_record.external_url:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="External URL documents must be accessed via download-url.",
+                detail="External URL resources must be accessed via download-url.",
             )
 
-        data = await self.storage_provider.download(document.file_key)
-        return data, document.name, document.content_type
+        data = await self.storage_provider.download(storage_record.file_key)
+        return data, storage_record.name, storage_record.content_type
 
-    def _filter_accessible_docs(
+    def _filter_accessible_items(
         self,
-        docs: list[Document],
+        items: list[Storage],
         scope: ScopeContext | None,
-    ) -> list[Document]:
-        """Filter documents matching upload state and RBAC scope."""
-        accessible: list[Document] = []
+    ) -> list[Storage]:
+        """Filter storage records matching upload state and RBAC scope."""
+        accessible: list[Storage] = []
         is_own_scope = bool(
             scope
             and not scope.is_super_admin
             and str(scope.scope).upper() == ScopeType.OWN
         )
-        for doc in docs:
-            if not doc.is_uploaded or doc.status == RecordStatus.TRASHED:
+        for item in items:
+            if not item.is_uploaded or item.status == RecordStatus.TRASHED:
                 continue
-            if is_own_scope and scope and doc.owner_id != scope.user_id:
+            if is_own_scope and scope and item.owner_id != scope.user_id:
                 continue
-            accessible.append(doc)
+            accessible.append(item)
         return accessible
 
     async def download_zip(
@@ -446,22 +446,24 @@ class DocumentService(BaseOwnedService[Document]):
         request: ZipDownloadRequest,
         scope: ScopeContext | None = None,
     ) -> tuple[bytes, str]:
-        """Download multiple documents bundled in a ZIP archive."""
-        if request.document_ids:
-            candidates = await self.doc_repo.find_uploaded_by_ids(request.document_ids)
+        """Download multiple storage files bundled in a ZIP archive."""
+        if request.storage_ids:
+            candidates = await self.storage_repo.find_uploaded_by_ids(
+                request.storage_ids
+            )
         elif request.entity_type and request.entity_id:
-            candidates = await self.doc_repo.find_by_entity(
+            candidates = await self.storage_repo.find_by_entity(
                 request.entity_type, request.entity_id
             )
         else:
             candidates = []
 
-        accessible_docs = self._filter_accessible_docs(candidates, scope)
+        accessible_items = self._filter_accessible_items(candidates, scope)
 
-        if not accessible_docs:
+        if not accessible_items:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No accessible uploaded documents found for criteria.",
+                detail="No accessible uploaded files found for criteria.",
             )
 
         zip_buffer = io.BytesIO()
@@ -470,51 +472,51 @@ class DocumentService(BaseOwnedService[Document]):
         with zipfile.ZipFile(
             zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED
         ) as zf:
-            for doc in accessible_docs:
-                count = seen_names.get(doc.name, 0) + 1
-                seen_names[doc.name] = count
+            for item in accessible_items:
+                count = seen_names.get(item.name, 0) + 1
+                seen_names[item.name] = count
                 filename = (
-                    doc.name
+                    item.name
                     if count == 1
-                    else f"{Path(doc.name).stem}_{count}{Path(doc.name).suffix}"
+                    else f"{Path(item.name).stem}_{count}{Path(item.name).suffix}"
                 )
 
-                if doc.external_url:
+                if item.external_url:
                     shortcut_data = (
-                        f"[InternetShortcut]\r\nURL={doc.external_url}\r\n"
+                        f"[InternetShortcut]\r\nURL={item.external_url}\r\n"
                     ).encode()
                     shortcut_name = f"{sanitize_filename(Path(filename).stem)}.url"
                     zf.writestr(shortcut_name, shortcut_data)
                     continue
 
                 try:
-                    file_bytes = await self.storage_provider.download(doc.file_key)
+                    file_bytes = await self.storage_provider.download(item.file_key)
                 except Exception as err:
-                    logger.warning(f"Failed downloading {doc.file_key} for zip: {err}")
+                    logger.warning(f"Failed downloading {item.file_key} for zip: {err}")
                     continue
 
                 zf.writestr(filename, file_bytes)
 
         return zip_buffer.getvalue(), DEFAULT_ZIP_FILENAME
 
-    async def permanent_delete_document(
+    async def permanent_delete_storage(
         self,
         id: uuid.UUID,
         options: WriteOptions | None = None,
     ) -> None:
-        """Permanently delete file from storage and database."""
+        """Permanently delete file from storage provider and database."""
         scope = options.scope if options else None
         user_id = options.user_id if options else None
-        document = await self.get_by_id(id, scope=scope)
+        record = await self.get_by_id(id, scope=scope)
 
-        if not document.external_url:
+        if not record.external_url:
             try:
-                await self.storage_provider.delete(document.file_key)
+                await self.storage_provider.delete(record.file_key)
             except Exception as err:
                 logger.warning(
-                    f"Failed to delete storage file {document.file_key}: {err}"
+                    f"Failed to delete storage file {record.file_key}: {err}"
                 )
 
-        if document.status != RecordStatus.TRASHED:
+        if record.status != RecordStatus.TRASHED:
             await self.trash(id, user_id=user_id, scope=scope, options=options)
         await self.permanent_delete(id, scope=scope, options=options)

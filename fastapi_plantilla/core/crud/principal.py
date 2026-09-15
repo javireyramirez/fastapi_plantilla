@@ -8,12 +8,15 @@ from loguru import logger
 from sqlalchemy import inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi_plantilla.core.crud.schema import PrincipalEntityModule
+from fastapi_plantilla.core.crud.schema import (
+    EntityType,
+    PrincipalEntityModule,
+)
 from fastapi_plantilla.core.database import Base
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.companies.models import Company
 from fastapi_plantilla.modules.rbac.models import Role
-from fastapi_plantilla.modules.storage.models import Document
+from fastapi_plantilla.modules.storage.models import Storage
 from fastapi_plantilla.modules.teams.models import Team
 from fastapi_plantilla.modules.trash.repository import resolve_model
 from fastapi_plantilla.modules.trash.service import resolve_module
@@ -24,17 +27,11 @@ __all__ = [
 ]
 
 _KNOWN_MODELS: dict[str, type[Base]] = {
-    "company": Company,
-    "companies": Company,
-    "user": User,
-    "users": User,
-    "team": Team,
-    "teams": Team,
-    "role": Role,
-    "roles": Role,
-    "document": Document,
-    "documents": Document,
-    "storage": Document,
+    EntityType.COMPANY.value: Company,
+    EntityType.USER.value: User,
+    EntityType.TEAM.value: Team,
+    EntityType.ROLE.value: Role,
+    EntityType.STORAGE.value: Storage,
 }
 
 

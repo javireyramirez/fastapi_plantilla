@@ -16,10 +16,10 @@ from fastapi_plantilla.core.mixins import (
     UUID7PrimaryKeyMixin,
 )
 
-__all__ = ["Document"]
+__all__ = ["Storage"]
 
 
-class Document(
+class Storage(
     UUID7PrimaryKeyMixin,
     PolymorphicTargetMixin,
     OwnedMixin,
@@ -27,9 +27,9 @@ class Document(
     OptimisticLockMixin,
     Base,
 ):
-    """Polymorphic storage document associating files with any domain entity."""
+    """Polymorphic storage record associating files with any domain entity."""
 
-    __tablename__ = "sys_documents"
+    __tablename__ = "sys_storage"
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     file_key: Mapped[str] = mapped_column(
@@ -46,4 +46,4 @@ class Document(
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    __table_args__ = (Index("ix_sys_documents_entity", "entity_type", "entity_id"),)
+    __table_args__ = (Index("ix_sys_storage_entity", "entity_type", "entity_id"),)

@@ -17,6 +17,7 @@ __all__ = [
     "AuditLevel",
     "BulkIdsRequest",
     "BulkResponse",
+    "EntityType",
     "ExportFormat",
     "ExportRequest",
     "ListItemResponse",
@@ -34,6 +35,16 @@ __all__ = [
 ]
 
 DEFAULT_MAX_BULK_LIMIT: int = 1000
+
+
+class EntityType(enum.StrEnum):
+    """Canonical entity types for polymorphic associations across modules."""
+
+    COMPANY = "company"
+    USER = "user"
+    TEAM = "team"
+    ROLE = "role"
+    STORAGE = "storage"
 
 
 class ScopeType(enum.StrEnum):
@@ -237,7 +248,7 @@ class AuditEntry(BaseModel):
 
 
 class PrincipalEntityModule(BaseModel):
-    """Metadata of the parent entity to which a document belongs."""
+    """Metadata of the parent entity to which a storage item belongs."""
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

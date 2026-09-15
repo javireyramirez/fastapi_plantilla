@@ -14,47 +14,7 @@ from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.modules.audit.models import AuditLog
 from fastapi_plantilla.modules.audit.schema import AuditFilterParams
 
-__all__ = ["AuditRepository", "normalize_entity_types"]
-
-
-def normalize_entity_types(raw_type: str) -> list[str]:
-    """Return candidate entity_type strings covering singular and plural forms."""
-    raw = raw_type.strip().lower()
-    candidates = {raw}
-
-    module_synonyms: dict[str, set[str]] = {
-        "storage": {"storage", "storages", "document", "documents"},
-        "document": {"storage", "storages", "document", "documents"},
-        "documents": {"storage", "storages", "document", "documents"},
-        "roles": {"roles", "role", "rbac"},
-        "role": {"roles", "role", "rbac"},
-        "rbac": {"roles", "role", "rbac"},
-        "users": {"users", "user", "auth", "session", "sessions"},
-        "user": {"users", "user", "auth", "session", "sessions"},
-        "companies": {"companies", "company"},
-        "company": {"companies", "company"},
-        "teams": {"teams", "team"},
-        "team": {"teams", "team"},
-        "settings": {"settings", "setting"},
-        "setting": {"settings", "setting"},
-        "auth": {"users", "user", "auth", "session", "sessions"},
-        "trash": {"trash", "trashitem"},
-        "audit": {"audit", "audits"},
-    }
-    if raw in module_synonyms:
-        candidates.update(module_synonyms[raw])
-
-    if raw.endswith("ies"):
-        candidates.add(raw[:-3] + "y")
-    elif raw.endswith("es"):
-        candidates.add(raw[:-2])
-        candidates.add(raw[:-1])
-    elif raw.endswith("s"):
-        candidates.add(raw[:-1])
-    else:
-        candidates.add(raw + "s")
-
-    return list(candidates)
+__all__ = ["AuditRepository"]
 
 
 def _resolve_action_filter(action: str) -> Any:
@@ -87,17 +47,13 @@ def _build_audit_conditions(params: AuditFilterParams) -> list[Any]:
     """Construct SQLAlchemy query filters from AuditFilterParams."""
     conditions: list[Any] = []
     if params.entity_type:
-        raw_types = [t.strip() for t in params.entity_type.split(",") if t.strip()]
-        all_candidates: set[str] = set()
-        for rt in raw_types:
-            all_candidates.update(normalize_entity_types(rt))
-        if all_candidates:
-            candidates = list(all_candidates)
-            conditions.append(
-                AuditLog.entity_type == candidates[0]
-                if len(candidates) == 1
-                else AuditLog.entity_type.in_(candidates)
-            )
+        raw_types = [
+            t.strip().lower() for t in params.entity_type.split(",") if t.strip()
+        ]
+        if len(raw_types) == 1:
+            conditions.append(AuditLog.entity_type == raw_types[0])
+        elif raw_types:
+            conditions.append(AuditLog.entity_type.in_(raw_types))
     if params.entity_id:
         conditions.append(AuditLog.entity_id == params.entity_id)
     if params.entity_name:
@@ -160,14 +116,8 @@ class AuditRepository(BaseRepository[AuditLog]):
         self, entity_type: str, entity_id: uuid.UUID
     ) -> list[AuditLog]:
         """Fetch all chronological audit logs for a specific entity."""
-        candidates = normalize_entity_types(entity_type)
-        cond = (
-            AuditLog.entity_type == candidates[0]
-            if len(candidates) == 1
-            else AuditLog.entity_type.in_(candidates)
-        )
         return await self.find_many(
-            cond,
+            AuditLog.entity_type == entity_type.strip().lower(),
             AuditLog.entity_id == entity_id,
             limit=500,
             order_by=desc(AuditLog.created_at),

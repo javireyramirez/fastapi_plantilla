@@ -26,7 +26,7 @@ from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.companies.models import Company
 from fastapi_plantilla.modules.rbac.catalog import CORE_SYSTEM_MODULES
 from fastapi_plantilla.modules.rbac.models import Role, SystemModule
-from fastapi_plantilla.modules.storage.models import Document
+from fastapi_plantilla.modules.storage.models import Storage
 from fastapi_plantilla.modules.teams.models import Team
 from fastapi_plantilla.modules.trash.models import TrashItem
 
@@ -40,21 +40,12 @@ __all__ = [
 
 MODEL_TYPE_MAP: dict[str, tuple[Any, bool]] = {
     "user": (User, True),
-    "users": (User, True),
     "company": (Company, False),
-    "companies": (Company, False),
     "team": (Team, False),
-    "teams": (Team, False),
     "role": (Role, False),
-    "roles": (Role, False),
     "module": (SystemModule, False),
-    "modules": (SystemModule, False),
-    "systemmodule": (SystemModule, False),
-    "document": (Document, False),
-    "documents": (Document, False),
-    "storage": (Document, False),
+    "storage": (Storage, False),
     "trash": (TrashItem, False),
-    "trashitem": (TrashItem, False),
 }
 
 
@@ -183,35 +174,24 @@ async def enrich_entity_names(
             item.entity_name = id_to_name[item.entity_id]
 
 
+_CODE_TO_ENTITY: dict[str, str] = {
+    "companies": "company",
+    "users": "user",
+    "teams": "team",
+    "roles": "role",
+    "storage": "storage",
+}
+
 AUDIT_MODULE_CATALOG: dict[str, tuple[str, str]] = {}
 for _m in CORE_SYSTEM_MODULES:
     _code = _m["code"]
     _name = _m["name"]
     AUDIT_MODULE_CATALOG[_code.lower()] = (_code, _name)
-    if _code == "companies":
-        AUDIT_MODULE_CATALOG["company"] = (_code, _name)
-    elif _code == "users":
-        AUDIT_MODULE_CATALOG["user"] = (_code, _name)
-    elif _code == "teams":
-        AUDIT_MODULE_CATALOG["team"] = (_code, _name)
-    elif _code == "roles":
-        AUDIT_MODULE_CATALOG["role"] = (_code, _name)
-        AUDIT_MODULE_CATALOG["rbac"] = (_code, _name)
-    elif _code == "storage":
-        AUDIT_MODULE_CATALOG["document"] = (_code, _name)
-        AUDIT_MODULE_CATALOG["documents"] = (_code, _name)
-        AUDIT_MODULE_CATALOG["storages"] = (_code, _name)
-    elif _code == "settings":
-        AUDIT_MODULE_CATALOG["setting"] = (_code, _name)
-    elif _code == "trash":
-        AUDIT_MODULE_CATALOG["trashitem"] = (_code, _name)
-    elif _code == "audit":
-        AUDIT_MODULE_CATALOG["audits"] = (_code, _name)
+    if _code in _CODE_TO_ENTITY:
+        AUDIT_MODULE_CATALOG[_CODE_TO_ENTITY[_code]] = (_code, _name)
 
-# Map auth / session events to the canonical users module
+# Map auth events to the canonical users module
 AUDIT_MODULE_CATALOG["auth"] = ("users", "Usuarios")
-AUDIT_MODULE_CATALOG["session"] = ("users", "Usuarios")
-AUDIT_MODULE_CATALOG["sessions"] = ("users", "Usuarios")
 
 
 def resolve_audit_module(entity_type: str | None) -> tuple[str, str]:
@@ -352,19 +332,3 @@ class AuditService:
             slug="audit_logs",
             columns=req.columns,
         )
-
-    def get_export_formats(self) -> list[str]:
-        """Return supported export formats for audit logs."""
-        from fastapi_plantilla.core.crud.exporter import openpyxl  # noqa: PLC0415
-        from fastapi_plantilla.core.crud.schema import ExportFormat  # noqa: PLC0415
-
-        formats = [
-            ExportFormat.CSV.value,
-            ExportFormat.EXCEL.value,
-            ExportFormat.JSON.value,
-            ExportFormat.TSV.value,
-            ExportFormat.GOOGLE_SHEETS.value,
-        ]
-        if openpyxl is None and ExportFormat.EXCEL.value in formats:
-            formats.remove(ExportFormat.EXCEL.value)
-        return formats

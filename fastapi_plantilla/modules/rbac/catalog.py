@@ -81,7 +81,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
     {
         "code": "storage",
         "name": "Almacenamiento",
-        "description": "Gestión de archivos y documentos del sistema",
+        "description": "Gestión de archivos y almacenamiento del sistema",
         "category": "files",
         "category_name": "Archivos",
         "category_icon": "file-text",

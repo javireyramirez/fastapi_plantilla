@@ -28,7 +28,7 @@ from fastapi_plantilla.modules.storage.dependencies import (
     get_storage_provider,
     set_storage_provider_override,
 )
-from fastapi_plantilla.modules.storage.models import Document
+from fastapi_plantilla.modules.storage.models import Storage
 from fastapi_plantilla.modules.storage.providers import LocalStorageProvider
 from fastapi_plantilla.modules.storage.routes import router as storage_router
 from fastapi_plantilla.modules.trash.repository import TrashRepository
@@ -162,7 +162,7 @@ async def test_soft_delete_creates_trash_item(
 
     # 1. Upload a document
     res = await client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("report_q1.pdf", io.BytesIO(file_bytes), "application/pdf")},
         data={"entity_type": "invoice", "entity_id": str(entity_id)},
     )
@@ -170,16 +170,16 @@ async def test_soft_delete_creates_trash_item(
     doc_id = uuid.UUID(res.json()["id"])
 
     # 2. Soft delete the document
-    del_res = await client.delete(f"/api/storage/documents/{doc_id}")
+    del_res = await client.delete(f"/api/storage/{doc_id}")
     assert del_res.status_code == 200
 
     # 3. Query sys_trash_bin to verify sync hook created the item
     trash_repo = TrashRepository(dbsession)
-    trash_item = await trash_repo.get_by_entity("document", doc_id)
+    trash_item = await trash_repo.get_by_entity("storage", doc_id)
     assert trash_item is not None
     assert trash_item.name == "report_q1.pdf"
     assert trash_item.entity_id == doc_id
-    assert trash_item.entity_type == "document"
+    assert trash_item.entity_type == "storage"
     assert trash_item.expires_at > datetime.now(UTC)
 
 
@@ -192,21 +192,21 @@ async def test_trash_list_and_filters(
 
     # Upload and soft-delete two distinct documents
     res1 = await client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("tax_2025.pdf", io.BytesIO(b"tax data"), "application/pdf")},
         data={"entity_type": "finance", "entity_id": str(entity_id)},
     )
     doc1_id = res1.json()["id"]
 
     res2 = await client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("readme.txt", io.BytesIO(b"readme text"), "text/plain")},
         data={"entity_type": "project", "entity_id": str(entity_id)},
     )
     doc2_id = res2.json()["id"]
 
-    await client.delete(f"/api/storage/documents/{doc1_id}")
-    await client.delete(f"/api/storage/documents/{doc2_id}")
+    await client.delete(f"/api/storage/{doc1_id}")
+    await client.delete(f"/api/storage/{doc2_id}")
 
     # List all trash
     list_res = await client.get("/api/trash")
@@ -215,7 +215,7 @@ async def test_trash_list_and_filters(
     assert data["meta"]["total"] >= 2
 
     # Filter by entity_type
-    filtered_res = await client.get("/api/trash?entity_type=document")
+    filtered_res = await client.get("/api/trash?entity_type=storage")
     assert filtered_res.status_code == 200
     assert filtered_res.json()["meta"]["total"] >= 2
 
@@ -235,15 +235,15 @@ async def test_trash_get_single_item(
     """Verify GET /api/trash/{id} retrieves trash item and 404s for unknown IDs."""
     entity_id = uuid.uuid4()
     res = await client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("contract.pdf", io.BytesIO(b"contract"), "application/pdf")},
         data={"entity_type": "vendor", "entity_id": str(entity_id)},
     )
     doc_id = uuid.UUID(res.json()["id"])
-    await client.delete(f"/api/storage/documents/{doc_id}")
+    await client.delete(f"/api/storage/{doc_id}")
 
     trash_repo = TrashRepository(dbsession)
-    trash_item = await trash_repo.get_by_entity("document", doc_id)
+    trash_item = await trash_repo.get_by_entity("storage", doc_id)
     assert trash_item is not None
 
     get_res = await client.get(f"/api/trash/{trash_item.id}")
@@ -265,15 +265,15 @@ async def test_trash_restore_item(
     """Verify POST /api/trash/{id}/restore restores entity and cleans trash bin."""
     entity_id = uuid.uuid4()
     res = await client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("restore_me.txt", io.BytesIO(b"restore"), "text/plain")},
         data={"entity_type": "note", "entity_id": str(entity_id)},
     )
     doc_id = uuid.UUID(res.json()["id"])
-    await client.delete(f"/api/storage/documents/{doc_id}")
+    await client.delete(f"/api/storage/{doc_id}")
 
     trash_repo = TrashRepository(dbsession)
-    trash_item = await trash_repo.get_by_entity("document", doc_id)
+    trash_item = await trash_repo.get_by_entity("storage", doc_id)
     assert trash_item is not None
 
     # Call restore endpoint
@@ -281,10 +281,10 @@ async def test_trash_restore_item(
     assert restore_res.status_code == 200
 
     # Trash item should be deleted from sys_trash_bin
-    assert await trash_repo.get_by_entity("document", doc_id) is None
+    assert await trash_repo.get_by_entity("storage", doc_id) is None
 
     # Document should now be ACTIVE again in storage
-    doc_res = await client.get(f"/api/storage/documents/{doc_id}")
+    doc_res = await client.get(f"/api/storage/{doc_id}")
     assert doc_res.status_code == 200
     assert doc_res.json()["status"] == RecordStatus.ACTIVE
 
@@ -299,7 +299,7 @@ async def test_trash_purge_item(
     entity_id = uuid.uuid4()
     file_bytes = b"Physical file bytes to be purged completely"
     res = await client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={
             "file": (
                 "purge_me.bin",
@@ -317,10 +317,10 @@ async def test_trash_purge_item(
     assert await local_storage.exists(file_key)
 
     # Soft-delete the document
-    await client.delete(f"/api/storage/documents/{doc_id}")
+    await client.delete(f"/api/storage/{doc_id}")
 
     trash_repo = TrashRepository(dbsession)
-    trash_item = await trash_repo.get_by_entity("document", doc_id)
+    trash_item = await trash_repo.get_by_entity("storage", doc_id)
     assert trash_item is not None
 
     # Purge the item permanently
@@ -331,7 +331,7 @@ async def test_trash_purge_item(
     assert await trash_repo.get_by_id(trash_item.id) is None
 
     # 2. Document record must be removed from DB
-    doc_repo = BaseRepository(Document, dbsession)
+    doc_repo = BaseRepository(Storage, dbsession)
     assert await doc_repo.get_by_id(doc_id) is None
 
     # 3. Physical file must be deleted from storage provider
@@ -352,7 +352,7 @@ async def test_bulk_restore_and_bulk_purge(
     file_keys = []
     for i in range(4):
         res = await client.post(
-            "/api/storage/documents/upload",
+            "/api/storage/upload",
             files={
                 "file": (
                     f"bulk_{i}.txt",
@@ -364,11 +364,11 @@ async def test_bulk_restore_and_bulk_purge(
         )
         doc_ids.append(uuid.UUID(res.json()["id"]))
         file_keys.append(res.json()["file_key"])
-        await client.delete(f"/api/storage/documents/{res.json()['id']}")
+        await client.delete(f"/api/storage/{res.json()['id']}")
 
     trash_repo = TrashRepository(dbsession)
     trash_items = [
-        await trash_repo.get_by_entity("document", doc_id) for doc_id in doc_ids
+        await trash_repo.get_by_entity("storage", doc_id) for doc_id in doc_ids
     ]
     trash_ids = [item.id for item in trash_items if item is not None]
     assert len(trash_ids) == 4
@@ -415,7 +415,7 @@ async def test_purge_expired_endpoint_and_authorization(
     # Create expired trash item
     expired_item = await trash_repo.create(
         {
-            "entity_type": "document",
+            "entity_type": "storage",
             "entity_id": uuid.uuid4(),
             "name": "expired_report.pdf",
             "owner_id": admin_user.id,
@@ -426,7 +426,7 @@ async def test_purge_expired_endpoint_and_authorization(
     # Create active (not expired) trash item
     future_item = await trash_repo.create(
         {
-            "entity_type": "document",
+            "entity_type": "storage",
             "entity_id": uuid.uuid4(),
             "name": "active_trash.pdf",
             "owner_id": admin_user.id,
@@ -463,15 +463,15 @@ async def test_trash_rbac_scoping(
     # 1. Create document as regular_user
     auth_state.user = regular_user
     res = await client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("user_private.txt", io.BytesIO(b"priv"), "text/plain")},
         data={"entity_type": "user_item", "entity_id": str(regular_user.id)},
     )
     doc_id = res.json()["id"]
-    await client.delete(f"/api/storage/documents/{doc_id}")
+    await client.delete(f"/api/storage/{doc_id}")
 
     trash_repo = TrashRepository(dbsession)
-    user_trash = await trash_repo.get_by_entity("document", uuid.UUID(doc_id))
+    user_trash = await trash_repo.get_by_entity("storage", uuid.UUID(doc_id))
     assert user_trash is not None
 
     # 2. Switch to a second regular user
@@ -514,7 +514,7 @@ async def test_purge_expired_trash_function(
     # Insert expired item
     expired = await trash_repo.create(
         {
-            "entity_type": "document",
+            "entity_type": "storage",
             "entity_id": uuid.uuid4(),
             "name": "old_backup.tar",
             "expires_at": datetime.now(UTC) - timedelta(days=1),
@@ -535,14 +535,14 @@ async def test_trash_deletor_info_populated(
     """Verify trash items return deletor user name, email, and deletor object."""
     entity_id = uuid.uuid4()
     upload_res = await client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("deletor_test.pdf", io.BytesIO(b"content"), "application/pdf")},
         data={"entity_type": "invoice", "entity_id": str(entity_id)},
     )
     doc_id = upload_res.json()["id"]
 
     # Soft delete the document as the current admin user
-    del_res = await client.delete(f"/api/storage/documents/{doc_id}")
+    del_res = await client.delete(f"/api/storage/{doc_id}")
     assert del_res.status_code == 200
 
     # List trash items and find the deleted document
@@ -660,11 +660,11 @@ async def test_trash_purge_emits_audit(
 
 
 @pytest.mark.anyio
-async def test_document_trash_includes_module_principal_entity(
+async def test_storage_trash_includes_module_principal_entity(
     client: AsyncClient,
     dbsession: AsyncSession,
 ) -> None:
-    """Verify document trash items populate module_principal_entity."""
+    """Verify storage trash items populate module_principal_entity."""
     from fastapi_plantilla.modules.companies.models import Company
 
     # 1. Create a company in the DB
@@ -680,7 +680,7 @@ async def test_document_trash_includes_module_principal_entity(
 
     # 2. Upload a document attached to that company
     res = await client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={
             "file": (
                 "blueprint.pdf",
@@ -694,12 +694,12 @@ async def test_document_trash_includes_module_principal_entity(
     doc_id = res.json()["id"]
 
     # 3. Soft-delete the document
-    del_res = await client.delete(f"/api/storage/documents/{doc_id}")
+    del_res = await client.delete(f"/api/storage/{doc_id}")
     assert del_res.status_code == 200
 
     # 4. Query single trash item
     trash_repo = TrashRepository(dbsession)
-    trash_item = await trash_repo.get_by_entity("document", uuid.UUID(doc_id))
+    trash_item = await trash_repo.get_by_entity("storage", uuid.UUID(doc_id))
     assert trash_item is not None
 
     get_res = await client.get(f"/api/trash/{trash_item.id}")

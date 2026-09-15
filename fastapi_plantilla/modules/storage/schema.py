@@ -2,7 +2,6 @@ import uuid
 from typing import Any, Self
 
 from pydantic import (
-    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -21,12 +20,12 @@ from fastapi_plantilla.modules.trash.service import resolve_module
 __all__ = [
     "ConfirmUploadRequest",
     "CreateExternalUrlRequest",
-    "DocumentFilterParams",
-    "DocumentResponse",
-    "DocumentUpdateSchema",
     "PresignedDownloadResponse",
     "PresignedUploadRequest",
     "PresignedUploadResponse",
+    "StorageFilterParams",
+    "StorageResponse",
+    "StorageUpdateSchema",
     "ZipDownloadRequest",
 ]
 
@@ -39,12 +38,7 @@ class CreateExternalUrlRequest(BaseModel):
     entity_type: str = Field(..., min_length=1, max_length=50)
     entity_id: uuid.UUID
     url: HttpUrl
-    name: str = Field(
-        ...,
-        min_length=1,
-        max_length=255,
-        validation_alias=AliasChoices("name", "title", "filename"),
-    )
+    name: str = Field(..., min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=1000)
 
 
@@ -55,25 +49,18 @@ class PresignedUploadRequest(BaseModel):
 
     entity_type: str = Field(..., min_length=1, max_length=50)
     entity_id: uuid.UUID
-    name: str = Field(
-        ...,
-        min_length=1,
-        max_length=255,
-        validation_alias=AliasChoices("name", "filename"),
-    )
+    name: str = Field(..., min_length=1, max_length=255)
     content_type: str | None = Field(default=None, max_length=100)
-    size_bytes: int | None = Field(
-        default=None,
-        ge=0,
-        validation_alias=AliasChoices("size_bytes", "file_size", "size"),
-    )
+    size_bytes: int | None = Field(default=None, ge=0)
     description: str | None = Field(default=None, max_length=1000)
 
 
 class PresignedUploadResponse(BaseModel):
-    """Result containing presigned upload URL and temporary document ID."""
+    """Result containing presigned upload URL and storage ID."""
 
-    document_id: uuid.UUID
+    model_config = ConfigDict(populate_by_name=True)
+
+    storage_id: uuid.UUID
     upload_url: str
     file_key: str
     expires_in: int
@@ -85,33 +72,31 @@ class ConfirmUploadRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    size_bytes: int | None = Field(
-        default=None,
-        ge=0,
-        validation_alias=AliasChoices("size_bytes", "file_size", "size"),
-    )
+    size_bytes: int | None = Field(default=None, ge=0)
     content_type: str | None = Field(default=None, max_length=100)
 
 
 class PresignedDownloadResponse(BaseModel):
-    """Result containing presigned download URL and basic document headers."""
+    """Result containing presigned download URL and basic storage headers."""
 
-    document_id: uuid.UUID
+    model_config = ConfigDict(populate_by_name=True)
+
+    storage_id: uuid.UUID
     download_url: str
     expires_in: int
     name: str
     content_type: str
 
 
-class DocumentUpdateSchema(BaseModel):
-    """Payload for updating document metadata."""
+class StorageUpdateSchema(BaseModel):
+    """Payload for updating storage metadata."""
 
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=1000)
 
 
-class DocumentResponse(AuditFieldsSchema):
-    """Complete document representation."""
+class StorageResponse(AuditFieldsSchema):
+    """Complete storage representation."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -145,8 +130,8 @@ class DocumentResponse(AuditFieldsSchema):
         return self
 
 
-class DocumentFilterParams(PaginationParams):
-    """Pagination and filter parameters for documents list."""
+class StorageFilterParams(PaginationParams):
+    """Pagination and filter parameters for storage list."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
@@ -182,20 +167,21 @@ class DocumentFilterParams(PaginationParams):
 
 
 class ZipDownloadRequest(BaseModel):
-    """Payload specifying documents to bundle in a ZIP archive."""
+    """Payload specifying storage files to bundle in a ZIP archive."""
 
-    document_ids: list[uuid.UUID] | None = Field(default=None, max_length=100)
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    storage_ids: list[uuid.UUID] | None = Field(default=None, max_length=100)
     entity_type: str | None = Field(default=None, max_length=50)
     entity_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def validate_targets(self) -> Self:
-        """Ensure either document IDs or entity association is provided."""
-        has_ids = bool(self.document_ids)
+        """Ensure either storage IDs or entity association is provided."""
+        has_ids = bool(self.storage_ids)
         has_entity = bool(self.entity_type and self.entity_id)
         if not has_ids and not has_entity:
             raise ValueError(
-                "Either document_ids or both entity_type and entity_id "
-                "must be provided."
+                "Either storage_ids or both entity_type and entity_id must be provided."
             )
         return self

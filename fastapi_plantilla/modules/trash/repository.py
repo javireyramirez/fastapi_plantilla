@@ -7,7 +7,12 @@ from sqlalchemy import delete, inspect, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.repository import BaseRepository
-from fastapi_plantilla.core.crud.schema import ScopeContext, ScopeType, SortOrder
+from fastapi_plantilla.core.crud.schema import (
+    EntityType,
+    ScopeContext,
+    ScopeType,
+    SortOrder,
+)
 from fastapi_plantilla.core.crud.service_base import adjust_end_of_day
 from fastapi_plantilla.core.database import Base
 from fastapi_plantilla.core.mixins import RecordStatus
@@ -21,7 +26,6 @@ from fastapi_plantilla.modules.trash.schema import (
 __all__ = [
     "TrashRepository",
     "register_trash_model",
-    "resolve_entity_type_candidates",
     "resolve_model",
 ]
 
@@ -34,54 +38,34 @@ def register_trash_model(entity_type: str, model: type[Base]) -> None:
     _ENTITY_REGISTRY[entity_type.strip().lower()] = model
 
 
-_TYPE_ALIASES: dict[str, list[str]] = {
-    "company": ["company", "companies"],
-    "companies": ["company", "companies"],
-    "document": ["document", "documents"],
-    "documents": ["document", "documents"],
-    "user": ["user", "users"],
-    "users": ["user", "users"],
-    "team": ["team", "teams"],
-    "teams": ["team", "teams"],
-    "role": ["role", "roles"],
-    "roles": ["role", "roles"],
-}
-
-
-def resolve_entity_type_candidates(raw_type: str) -> list[str]:
-    """Normalize entity type into known singular and plural forms."""
-    norm = raw_type.strip().lower()
-    return _TYPE_ALIASES.get(norm, [norm])
-
-
 def resolve_model(entity_type: str) -> type[Base] | None:
     """Resolve SQLAlchemy model class from registry or Base mappers."""
-    normalized = entity_type.strip().lower()
-    if normalized in _ENTITY_REGISTRY:
-        return _ENTITY_REGISTRY[normalized]
+    norm = entity_type.strip().lower()
+    if norm in _ENTITY_REGISTRY:
+        return _ENTITY_REGISTRY[norm]
 
-    candidates = set(resolve_entity_type_candidates(normalized))
     for mapper in Base.registry.mappers:
         cls = mapper.class_
         name = cls.__name__.lower()
         tbl = getattr(cls, "__tablename__", "").lower()
-        if name in candidates or tbl in candidates:
-            _ENTITY_REGISTRY[normalized] = cls
+        if norm in (name, tbl):
+            _ENTITY_REGISTRY[norm] = cls
             return cls
     return None
 
 
 def _build_category_filter(category: str | None) -> Any | None:
     """Return filter clause for category grouping if applicable."""
-    if category == "documents":
-        return TrashItem.entity_type.in_(["document", "documents"])
-    if category == "entities":
-        return ~TrashItem.entity_type.in_(["document", "documents"])
+    if category in ("storage", "files"):
+        return TrashItem.entity_type == EntityType.STORAGE.value
+    if category in ("entities", "business", "security"):
+        return TrashItem.entity_type != EntityType.STORAGE.value
     if category:
-        matching: list[str] = []
-        for mod in CORE_SYSTEM_MODULES:
-            if mod.get("category") == category:
-                matching.extend(resolve_entity_type_candidates(mod["code"]))
+        matching = [
+            mod["code"].lower()
+            for mod in CORE_SYSTEM_MODULES
+            if mod.get("category") == category
+        ]
         if matching:
             return TrashItem.entity_type.in_(matching)
     return None
@@ -122,8 +106,13 @@ def _build_trash_filters(
         where.append(cat_clause)
 
     if params.entity_type:
-        candidates = resolve_entity_type_candidates(params.entity_type)
-        where.append(TrashItem.entity_type.in_(candidates))
+        raw_types = [
+            t.strip().lower() for t in params.entity_type.split(",") if t.strip()
+        ]
+        if len(raw_types) == 1:
+            where.append(TrashItem.entity_type == raw_types[0])
+        elif raw_types:
+            where.append(TrashItem.entity_type.in_(raw_types))
 
     where.extend(_build_date_filters(params))
 
@@ -152,9 +141,8 @@ class TrashRepository(BaseRepository[TrashItem]):
         entity_id: uuid.UUID,
     ) -> TrashItem | None:
         """Fetch trash record for a specific polymorphic entity."""
-        types = resolve_entity_type_candidates(entity_type)
         return await self.find_first(
-            TrashItem.entity_type.in_(types),
+            TrashItem.entity_type == entity_type.strip().lower(),
             TrashItem.entity_id == entity_id,
         )
 
@@ -164,9 +152,8 @@ class TrashRepository(BaseRepository[TrashItem]):
         entity_id: uuid.UUID,
     ) -> int:
         """Remove trash record associated with a specific entity."""
-        types = resolve_entity_type_candidates(entity_type)
         stmt = delete(TrashItem).where(
-            TrashItem.entity_type.in_(types),
+            TrashItem.entity_type == entity_type.strip().lower(),
             TrashItem.entity_id == entity_id,
         )
         result = await self.session.execute(stmt)

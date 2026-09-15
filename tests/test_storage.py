@@ -81,7 +81,7 @@ async def test_local_storage_provider(tmp_path: Path) -> None:
         secret="test-secret-key-12345",  # noqa: S106
         base_url="http://testserver",
     )
-    key = "documents/entity/123/file.bin"
+    key = "storage/entity/123/file.bin"
     payload = b"\x00\x01\x02\x03\x04"
 
     assert not await provider.exists(key)
@@ -96,7 +96,7 @@ async def test_local_storage_provider(tmp_path: Path) -> None:
         key, expires_in=300, method=PresignedUrlMethod.PUT
     )
     expected_prefix = (
-        "http://testserver/api/storage/local-files/documents/entity/123/file.bin?"
+        "http://testserver/api/storage/local-files/storage/entity/123/file.bin?"
     )
     assert expected_prefix in url
     assert "signature=" in url
@@ -295,24 +295,24 @@ async def test_presigned_upload_and_download_flow(
         "description": "Contrato comercial firmado",
     }
     res_upload_req = await storage_client.post(
-        "/api/storage/documents/presigned-upload",
+        "/api/storage/presigned-upload",
         json=req_body,
     )
     assert res_upload_req.status_code == 201
     upload_data = res_upload_req.json()
-    doc_id = upload_data["document_id"]
+    doc_id = upload_data["storage_id"]
     upload_url = upload_data["upload_url"]
     assert upload_data["method"] == "PUT"
     assert "local-files" in upload_url
 
     # Check document in DB is initially not uploaded
-    res_doc_init = await storage_client.get(f"/api/storage/documents/{doc_id}")
+    res_doc_init = await storage_client.get(f"/api/storage/{doc_id}")
     assert res_doc_init.status_code == 200
     assert not res_doc_init.json()["is_uploaded"]
 
     # Trying to confirm before uploading to storage must fail
     res_confirm_fail = await storage_client.post(
-        f"/api/storage/documents/{doc_id}/confirm",
+        f"/api/storage/{doc_id}/confirm",
         json={},
     )
     assert res_confirm_fail.status_code == 400
@@ -334,7 +334,7 @@ async def test_presigned_upload_and_download_flow(
 
     # 3. Confirm upload
     res_confirm = await storage_client.post(
-        f"/api/storage/documents/{doc_id}/confirm",
+        f"/api/storage/{doc_id}/confirm",
         json={"size_bytes": len(file_bytes), "content_type": "application/pdf"},
     )
     assert res_confirm.status_code == 200
@@ -344,9 +344,7 @@ async def test_presigned_upload_and_download_flow(
     assert confirmed_doc["size_bytes"] == len(file_bytes)
 
     # 4. Request presigned download URL
-    res_down_url = await storage_client.get(
-        f"/api/storage/documents/{doc_id}/download-url"
-    )
+    res_down_url = await storage_client.get(f"/api/storage/{doc_id}/download-url")
     assert res_down_url.status_code == 200
     download_url_data = res_down_url.json()
     assert "local-files" in download_url_data["download_url"]
@@ -358,7 +356,7 @@ async def test_presigned_upload_and_download_flow(
     assert dl_res.content == file_bytes
 
     # 6. Download content directly from API
-    direct_res = await storage_client.get(f"/api/storage/documents/{doc_id}/download")
+    direct_res = await storage_client.get(f"/api/storage/{doc_id}/download")
     assert direct_res.status_code == 200
     assert direct_res.content == file_bytes
     assert "contrato.pdf" in direct_res.headers.get("content-disposition", "")
@@ -380,7 +378,7 @@ async def test_direct_file_upload(
     }
 
     res = await storage_client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files=files,
         data=data,
     )
@@ -393,7 +391,7 @@ async def test_direct_file_upload(
     assert doc["extension"] == "csv"
 
     # Verify download matches uploaded bytes
-    dl_res = await storage_client.get(f"/api/storage/documents/{doc['id']}/download")
+    dl_res = await storage_client.get(f"/api/storage/{doc['id']}/download")
     assert dl_res.status_code == 200
     assert dl_res.content == file_bytes
 
@@ -410,7 +408,7 @@ async def test_zip_packaging_multiple_documents(
     doc2_bytes = b"Archivo Dos de prueba"
 
     res1 = await storage_client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("doc1.txt", io.BytesIO(doc1_bytes), "text/plain")},
         data={"entity_type": "project", "entity_id": str(entity_id)},
     )
@@ -418,7 +416,7 @@ async def test_zip_packaging_multiple_documents(
     doc1_id = res1.json()["id"]
 
     res2 = await storage_client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("doc2.txt", io.BytesIO(doc2_bytes), "text/plain")},
         data={"entity_type": "project", "entity_id": str(entity_id)},
     )
@@ -427,7 +425,7 @@ async def test_zip_packaging_multiple_documents(
 
     # 1. Download zip by entity_type + entity_id
     zip_res = await storage_client.post(
-        "/api/storage/documents/zip",
+        "/api/storage/zip",
         json={"entity_type": "project", "entity_id": str(entity_id)},
     )
     assert zip_res.status_code == 200
@@ -441,10 +439,10 @@ async def test_zip_packaging_multiple_documents(
     assert zf.read("doc1.txt") == doc1_bytes
     assert zf.read("doc2.txt") == doc2_bytes
 
-    # 2. Download zip by explicit document_ids
+    # 2. Download zip by explicit storage_ids
     zip_ids_res = await storage_client.post(
-        "/api/storage/documents/zip",
-        json={"document_ids": [doc1_id, doc2_id]},
+        "/api/storage/zip",
+        json={"storage_ids": [doc1_id, doc2_id]},
     )
     assert zip_ids_res.status_code == 200
     zf2 = zipfile.ZipFile(io.BytesIO(zip_ids_res.content))
@@ -461,7 +459,7 @@ async def test_document_crud_soft_delete_restore_permanent(
     file_bytes = b"Temporal document data"
 
     res = await storage_client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("temp.log", io.BytesIO(file_bytes), "text/plain")},
         data={"entity_type": "server", "entity_id": str(entity_id)},
     )
@@ -469,7 +467,7 @@ async def test_document_crud_soft_delete_restore_permanent(
 
     # List paginated documents
     list_res = await storage_client.get(
-        f"/api/storage/documents?entity_type=server&entity_id={entity_id}"
+        f"/api/storage?entity_type=server&entity_id={entity_id}"
     )
     assert list_res.status_code == 200
     list_data = list_res.json()
@@ -478,7 +476,7 @@ async def test_document_crud_soft_delete_restore_permanent(
 
     # Update metadata
     patch_res = await storage_client.patch(
-        f"/api/storage/documents/{doc_id}",
+        f"/api/storage/{doc_id}",
         json={"name": "server_audit.log", "description": "Actualizado"},
     )
     assert patch_res.status_code == 200
@@ -486,27 +484,27 @@ async def test_document_crud_soft_delete_restore_permanent(
     assert patch_res.json()["description"] == "Actualizado"
 
     # Soft delete (move to trash)
-    del_res = await storage_client.delete(f"/api/storage/documents/{doc_id}")
+    del_res = await storage_client.delete(f"/api/storage/{doc_id}")
     assert del_res.status_code == 200
     assert del_res.json()["status"] == "TRASHED"
 
     # Active list should no longer show the trashed document
     list_after_del = await storage_client.get(
-        f"/api/storage/documents?entity_type=server&entity_id={entity_id}&is_trash=false"
+        f"/api/storage?entity_type=server&entity_id={entity_id}&is_trash=false"
     )
     assert not any(d["id"] == doc_id for d in list_after_del.json()["data"])
 
     # Restore from trash
-    restore_res = await storage_client.post(f"/api/storage/documents/{doc_id}/restore")
+    restore_res = await storage_client.post(f"/api/storage/{doc_id}/restore")
     assert restore_res.status_code == 200
     assert restore_res.json()["status"] == "ACTIVE"
 
     # Permanent delete
-    perm_res = await storage_client.delete(f"/api/storage/documents/{doc_id}/permanent")
+    perm_res = await storage_client.delete(f"/api/storage/{doc_id}/permanent")
     assert perm_res.status_code == 204
 
     # Document no longer exists
-    get_res = await storage_client.get(f"/api/storage/documents/{doc_id}")
+    get_res = await storage_client.get(f"/api/storage/{doc_id}")
     assert get_res.status_code == 404
 
 
@@ -524,7 +522,7 @@ async def test_rbac_document_ownership_isolation(
     auth_state.user = regular_user
 
     res = await storage_client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("secret_user.txt", io.BytesIO(b"user secret"), "text/plain")},
         data={"entity_type": "user_data", "entity_id": str(regular_user.id)},
     )
@@ -532,7 +530,7 @@ async def test_rbac_document_ownership_isolation(
     user_doc_id = res.json()["id"]
 
     # Regular user can access it
-    get_res = await storage_client.get(f"/api/storage/documents/{user_doc_id}")
+    get_res = await storage_client.get(f"/api/storage/{user_doc_id}")
     assert get_res.status_code == 200
 
     # 2. Switch to another regular user created in DB
@@ -549,42 +547,42 @@ async def test_rbac_document_ownership_isolation(
     auth_state.user = user_to_response(other_db_user)
 
     # Other user receives 404 (masked forbidden)
-    forbidden_res = await storage_client.get(f"/api/storage/documents/{user_doc_id}")
+    forbidden_res = await storage_client.get(f"/api/storage/{user_doc_id}")
     assert forbidden_res.status_code == 404
 
     # Other user cannot delete it
-    forbidden_del = await storage_client.delete(f"/api/storage/documents/{user_doc_id}")
+    forbidden_del = await storage_client.delete(f"/api/storage/{user_doc_id}")
     assert forbidden_del.status_code == 404
 
     # 3. SuperAdmin can access it
     auth_state.user = admin_user
-    admin_get = await storage_client.get(f"/api/storage/documents/{user_doc_id}")
+    admin_get = await storage_client.get(f"/api/storage/{user_doc_id}")
     assert admin_get.status_code == 200
     assert admin_get.json()["id"] == user_doc_id
 
 
 @pytest.mark.anyio
-async def test_presigned_upload_with_filename_aliases(
+async def test_presigned_upload_canonical_payload(
     storage_client: AsyncClient,
 ) -> None:
-    """Verify presigned upload accepts filename and file_size aliases."""
+    """Verify presigned upload accepts canonical payload with name and size_bytes."""
     entity_id = str(uuid.uuid4())
 
     req_body = {
-        "filename": "36002307_20260820-1.pdf",
+        "name": "36002307_20260820-1.pdf",
         "content_type": "application/pdf",
-        "file_size": 45937,
+        "size_bytes": 45937,
         "entity_type": "companies",
         "entity_id": entity_id,
     }
     res = await storage_client.post(
-        "/api/storage/documents/presigned-upload",
+        "/api/storage/presigned-upload",
         json=req_body,
     )
     assert res.status_code == 201
     data = res.json()
     assert "upload_url" in data
-    assert "document_id" in data
+    assert "storage_id" in data
 
 
 @pytest.mark.anyio
@@ -597,7 +595,7 @@ async def test_documents_entity_id_filtering_isolation(
 
     # Upload doc A to Company A
     res_a = await storage_client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("doc_a.pdf", io.BytesIO(b"content a"), "application/pdf")},
         data={"entity_type": "companies", "entity_id": str(comp_a_id)},
     )
@@ -606,7 +604,7 @@ async def test_documents_entity_id_filtering_isolation(
 
     # Upload doc B to Company B
     res_b = await storage_client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("doc_b.pdf", io.BytesIO(b"content b"), "application/pdf")},
         data={"entity_type": "companies", "entity_id": str(comp_b_id)},
     )
@@ -621,7 +619,7 @@ async def test_documents_entity_id_filtering_isolation(
 
     # 1. Query for Company A (snake_case)
     list_a = await storage_client.get(
-        f"/api/storage/documents?entity_type=companies&entity_id={comp_a_id}"
+        f"/api/storage?entity_type=companies&entity_id={comp_a_id}"
     )
     assert list_a.status_code == 200
     docs_a = list_a.json()["data"]
@@ -630,7 +628,7 @@ async def test_documents_entity_id_filtering_isolation(
 
     # 2. Query for Company B (snake_case)
     list_b = await storage_client.get(
-        f"/api/storage/documents?entity_type=companies&entity_id={comp_b_id}"
+        f"/api/storage?entity_type=companies&entity_id={comp_b_id}"
     )
     assert list_b.status_code == 200
     docs_b = list_b.json()["data"]
@@ -647,7 +645,7 @@ async def test_documents_content_type_filtering(
 
     # Upload PDF
     res_pdf = await storage_client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("doc.pdf", io.BytesIO(b"pdf data"), "application/pdf")},
         data={"entity_type": "companies", "entity_id": str(entity_id)},
     )
@@ -656,7 +654,7 @@ async def test_documents_content_type_filtering(
 
     # Upload PNG
     res_png = await storage_client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("img.png", io.BytesIO(b"png data"), "image/png")},
         data={"entity_type": "companies", "entity_id": str(entity_id)},
     )
@@ -665,7 +663,7 @@ async def test_documents_content_type_filtering(
 
     # Upload TXT
     res_txt = await storage_client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("note.txt", io.BytesIO(b"text data"), "text/plain")},
         data={"entity_type": "companies", "entity_id": str(entity_id)},
     )
@@ -674,7 +672,7 @@ async def test_documents_content_type_filtering(
 
     # 1. Query for PDF only (snake_case)
     res = await storage_client.get(
-        f"/api/storage/documents?entity_id={entity_id}&content_type=application/pdf"
+        f"/api/storage?entity_id={entity_id}&content_type=application/pdf"
     )
     assert res.status_code == 200
     items = res.json()["data"]
@@ -685,7 +683,7 @@ async def test_documents_content_type_filtering(
 
     # 2. Query for PDF and PNG (comma-separated content_type)
     res = await storage_client.get(
-        f"/api/storage/documents?entity_id={entity_id}&content_type=application/pdf,image/png"
+        f"/api/storage?entity_id={entity_id}&content_type=application/pdf,image/png"
     )
     assert res.status_code == 200
     items = res.json()["data"]
@@ -714,7 +712,7 @@ async def test_document_module_principal_entity_name_resolution(
     # Upload document associated with the company
     file_bytes = b"Contract terms and conditions"
     res = await storage_client.post(
-        "/api/storage/documents/upload",
+        "/api/storage/upload",
         files={"file": ("contract.pdf", io.BytesIO(file_bytes), "application/pdf")},
         data={"entity_type": "companies", "entity_id": str(company.id)},
     )
@@ -729,16 +727,14 @@ async def test_document_module_principal_entity_name_resolution(
     assert upload_data["module_principal_entity"]["entity_name"] == "Acme Logistics SL"
 
     # List documents for this company
-    list_res = await storage_client.get(
-        f"/api/storage/documents?entity_id={company.id}"
-    )
+    list_res = await storage_client.get(f"/api/storage?entity_id={company.id}")
     assert list_res.status_code == 200
     list_data = list_res.json()["data"]
     doc_in_list = next(d for d in list_data if d["id"] == doc_id)
     assert doc_in_list["module_principal_entity"]["entity_name"] == "Acme Logistics SL"
 
     # Get single document
-    get_res = await storage_client.get(f"/api/storage/documents/{doc_id}")
+    get_res = await storage_client.get(f"/api/storage/{doc_id}")
     assert get_res.status_code == 200
     single_data = get_res.json()
     assert single_data["module_principal_entity"]["entity_name"] == "Acme Logistics SL"
@@ -762,7 +758,7 @@ async def test_external_url_document_flow(
 
     external_link = "https://drive.google.com/drive/folders/1a2b3c4d5e6f7g8h"
     res = await storage_client.post(
-        "/api/storage/documents/url",
+        "/api/storage/url",
         json={
             "entity_type": "companies",
             "entity_id": str(company.id),
@@ -783,16 +779,14 @@ async def test_external_url_document_flow(
     assert doc_data["module_principal_entity"]["entity_name"] == "Cloud Integrations SL"
 
     # Presigned download URL returns direct external URL
-    download_url_res = await storage_client.get(
-        f"/api/storage/documents/{doc_id}/download-url"
-    )
+    download_url_res = await storage_client.get(f"/api/storage/{doc_id}/download-url")
     assert download_url_res.status_code == 200
     dl_data = download_url_res.json()
     assert dl_data["download_url"] == external_link
 
     # Direct download endpoint redirects (HTTP 307)
     dl_direct_res = await storage_client.get(
-        f"/api/storage/documents/{doc_id}/download",
+        f"/api/storage/{doc_id}/download",
         follow_redirects=False,
     )
     assert dl_direct_res.status_code == 307
@@ -800,8 +794,8 @@ async def test_external_url_document_flow(
 
     # ZIP download includes .url InternetShortcut
     zip_res = await storage_client.post(
-        "/api/storage/documents/zip",
-        json={"document_ids": [doc_id]},
+        "/api/storage/zip",
+        json={"storage_ids": [doc_id]},
     )
     assert zip_res.status_code == 200
     assert zip_res.headers["content-type"] == "application/zip"
@@ -814,5 +808,5 @@ async def test_external_url_document_flow(
         assert f"URL={external_link}" in shortcut_content
 
     # Permanent delete succeeds cleanly without storage provider failure
-    del_res = await storage_client.delete(f"/api/storage/documents/{doc_id}/permanent")
+    del_res = await storage_client.delete(f"/api/storage/{doc_id}/permanent")
     assert del_res.status_code == 204

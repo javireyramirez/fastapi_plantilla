@@ -43,7 +43,7 @@ DEFAULT_SYSTEM_SETTINGS: Final[list[SettingDef]] = [
             "text/plain",
             "text/csv",
         ],
-        "description": "Tipos MIME permitidos para la subida de documentos",
+        "description": "Tipos MIME permitidos para el almacenamiento de archivos",
         "category": "storage",
         "is_public": True,
     },

@@ -18,9 +18,9 @@ from fastapi_plantilla.modules.settings.repository import SystemSettingRepositor
 from fastapi_plantilla.modules.settings.schema import SettingUpdate
 from fastapi_plantilla.modules.settings.service import SystemSettingService
 from fastapi_plantilla.modules.storage.providers import LocalStorageProvider
-from fastapi_plantilla.modules.storage.repository import DocumentRepository
+from fastapi_plantilla.modules.storage.repository import StorageRepository
 from fastapi_plantilla.modules.storage.schema import PresignedUploadRequest
-from fastapi_plantilla.modules.storage.service import DocumentService
+from fastapi_plantilla.modules.storage.service import StorageService
 
 
 def _mock_user(is_super: bool = False) -> UserResponse:
@@ -191,7 +191,7 @@ async def test_settings_api_public_and_admin(
 async def test_storage_validation_against_system_settings(
     dbsession: AsyncSession,
 ) -> None:
-    """Verify DocumentService validates file limits against dynamic settings."""
+    """Verify StorageService validates file limits against dynamic settings."""
     settings_repo = SystemSettingRepository(dbsession)
     settings_service = SystemSettingService(settings_repo)
     settings_service.invalidate_cache()
@@ -214,16 +214,16 @@ async def test_storage_validation_against_system_settings(
     dbsession.add_all([limit_setting, ext_setting])
     await dbsession.flush()
 
-    doc_repo = DocumentRepository(dbsession)
-    doc_service = DocumentService(
-        repository=doc_repo,
+    storage_repo = StorageRepository(dbsession)
+    storage_service = StorageService(
+        repository=storage_repo,
         storage_provider=LocalStorageProvider(),
         settings_service=settings_service,
     )
 
     # 1. File size exceeds limit -> HTTP 400
     with pytest.raises(Exception) as exc_info:
-        await doc_service.request_presigned_upload(
+        await storage_service.request_presigned_upload(
             PresignedUploadRequest(
                 entity_type="Company",
                 entity_id=generate_uuid7(),
@@ -235,7 +235,7 @@ async def test_storage_validation_against_system_settings(
 
     # 2. File extension not allowed -> HTTP 400
     with pytest.raises(Exception) as exc_info_ext:
-        await doc_service.request_presigned_upload(
+        await storage_service.request_presigned_upload(
             PresignedUploadRequest(
                 entity_type="Company",
                 entity_id=generate_uuid7(),
@@ -246,7 +246,7 @@ async def test_storage_validation_against_system_settings(
     assert "File extension '.exe' is not permitted" in str(exc_info_ext.value)
 
     # 3. Valid file size and extension -> Success
-    res = await doc_service.request_presigned_upload(
+    res = await storage_service.request_presigned_upload(
         PresignedUploadRequest(
             entity_type="Company",
             entity_id=generate_uuid7(),
@@ -255,7 +255,7 @@ async def test_storage_validation_against_system_settings(
         )
     )
     assert res.upload_url is not None
-    assert res.document_id is not None
+    assert res.storage_id is not None
 
     await dbsession.delete(limit_setting)
     await dbsession.delete(ext_setting)

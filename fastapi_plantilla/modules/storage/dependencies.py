@@ -14,13 +14,13 @@ from fastapi_plantilla.modules.storage.providers import (
     S3StorageProvider,
     StorageProvider,
 )
-from fastapi_plantilla.modules.storage.repository import DocumentRepository
-from fastapi_plantilla.modules.storage.service import DocumentService
+from fastapi_plantilla.modules.storage.repository import StorageRepository
+from fastapi_plantilla.modules.storage.service import StorageService
 
 __all__ = [
-    "get_document_repository",
-    "get_document_service",
     "get_storage_provider",
+    "get_storage_repository",
+    "get_storage_service",
     "set_storage_provider_override",
 ]
 
@@ -55,20 +55,20 @@ def _get_cached_storage_provider() -> StorageProvider:
     raise ValueError(f"Unsupported storage backend: {backend}")
 
 
-def get_document_repository(
+def get_storage_repository(
     session: AsyncSession = Depends(get_db_session),
-) -> DocumentRepository:
-    """Provide DocumentRepository instance bound to request DB session."""
-    return DocumentRepository(session=session)
+) -> StorageRepository:
+    """Provide StorageRepository instance bound to request DB session."""
+    return StorageRepository(session=session)
 
 
-def get_document_service(
-    repository: DocumentRepository = Depends(get_document_repository),
+def get_storage_service(
+    repository: StorageRepository = Depends(get_storage_repository),
     storage_provider: StorageProvider = Depends(get_storage_provider),
-    settings_service: SystemSettingService = Depends(get_settings_service),
-) -> DocumentService:
-    """Provide DocumentService instance."""
-    return DocumentService(
+    settings_service: SystemSettingService | None = Depends(get_settings_service),
+) -> StorageService:
+    """Provide StorageService instance."""
+    return StorageService(
         repository=repository,
         storage_provider=storage_provider,
         settings_service=settings_service,

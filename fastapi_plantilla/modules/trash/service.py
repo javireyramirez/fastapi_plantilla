@@ -13,6 +13,7 @@ from fastapi_plantilla.core.crud.actors import enrich_actors
 from fastapi_plantilla.core.crud.schema import (
     AuditEntry,
     BulkResponse,
+    EntityType,
     PaginatedResponse,
     PaginationMeta,
     ScopeContext,
@@ -26,7 +27,6 @@ from fastapi_plantilla.modules.trash.models import TrashItem
 from fastapi_plantilla.modules.trash.repository import (
     TrashRepository,
     register_trash_model,
-    resolve_entity_type_candidates,
 )
 from fastapi_plantilla.modules.trash.schema import (
     DEFAULT_TRASH_PURGE_LIMIT,
@@ -69,6 +69,14 @@ def register_trash_entity(
 # In-memory Module Catalog (SSOT derived from CORE_SYSTEM_MODULES)
 # ---------------------------------------------------------------------------
 
+_CODE_TO_ENTITY: dict[str, str] = {
+    "companies": "company",
+    "users": "user",
+    "teams": "team",
+    "roles": "role",
+    "storage": "storage",
+}
+
 MODULE_CATALOG: dict[str, TrashModuleResponse] = {}
 for _mod in CORE_SYSTEM_MODULES:
     _resp = TrashModuleResponse(
@@ -79,8 +87,8 @@ for _mod in CORE_SYSTEM_MODULES:
         category=_mod.get("category"),
     )
     MODULE_CATALOG[_mod["code"].lower()] = _resp
-    for _candidate in resolve_entity_type_candidates(_mod["code"]):
-        MODULE_CATALOG.setdefault(_candidate, _resp)
+    if _mod["code"] in _CODE_TO_ENTITY:
+        MODULE_CATALOG[_CODE_TO_ENTITY[_mod["code"]]] = _resp
 
 
 def resolve_module(entity_type: str | None) -> TrashModuleResponse | None:
@@ -107,8 +115,8 @@ def _to_response(item: TrashItem) -> TrashItemResponse:
     target_name = item.target_entity_name
 
     principal: PrincipalEntityModule | None = None
-    is_doc = item.entity_type.lower() in ("document", "documents")
-    if is_doc and (target_type or target_id):
+    is_storage = item.entity_type == EntityType.STORAGE.value
+    if is_storage and (target_type or target_id):
         target_mod = resolve_module(target_type)
         code = target_mod.code if target_mod else (target_type or "unknown")
         name = (

@@ -498,7 +498,7 @@ def upgrade() -> None:
         unique=False,
     )
     op.create_table(
-        "sys_documents",
+        "sys_storage",
         sa.Column("name", sa.String(length=255), nullable=False),
         sa.Column("file_key", sa.String(length=500), nullable=False),
         sa.Column("content_type", sa.String(length=100), nullable=False),
@@ -548,34 +548,34 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
-        "ix_sys_documents_entity",
-        "sys_documents",
+        "ix_sys_storage_entity",
+        "sys_storage",
         ["entity_type", "entity_id"],
         unique=False,
     )
     op.create_index(
-        op.f("ix_sys_documents_entity_id"), "sys_documents", ["entity_id"], unique=False
+        op.f("ix_sys_storage_entity_id"), "sys_storage", ["entity_id"], unique=False
     )
     op.create_index(
-        op.f("ix_sys_documents_entity_type"),
-        "sys_documents",
+        op.f("ix_sys_storage_entity_type"),
+        "sys_storage",
         ["entity_type"],
         unique=False,
     )
     op.create_index(
-        op.f("ix_sys_documents_file_key"), "sys_documents", ["file_key"], unique=True
+        op.f("ix_sys_storage_file_key"), "sys_storage", ["file_key"], unique=True
     )
     op.create_index(
-        op.f("ix_sys_documents_is_uploaded"),
-        "sys_documents",
+        op.f("ix_sys_storage_is_uploaded"),
+        "sys_storage",
         ["is_uploaded"],
         unique=False,
     )
     op.create_index(
-        op.f("ix_sys_documents_owner_id"), "sys_documents", ["owner_id"], unique=False
+        op.f("ix_sys_storage_owner_id"), "sys_storage", ["owner_id"], unique=False
     )
     op.create_index(
-        op.f("ix_sys_documents_status"), "sys_documents", ["status"], unique=False
+        op.f("ix_sys_storage_status"), "sys_storage", ["status"], unique=False
     )
     op.create_table(
         "sys_teams",
@@ -766,14 +766,14 @@ def downgrade() -> None:
     )
     op.drop_index(op.f("ix_sys_teams_owner_id"), table_name="sys_teams")
     op.drop_table("sys_teams")
-    op.drop_index(op.f("ix_sys_documents_status"), table_name="sys_documents")
-    op.drop_index(op.f("ix_sys_documents_owner_id"), table_name="sys_documents")
-    op.drop_index(op.f("ix_sys_documents_is_uploaded"), table_name="sys_documents")
-    op.drop_index(op.f("ix_sys_documents_file_key"), table_name="sys_documents")
-    op.drop_index(op.f("ix_sys_documents_entity_type"), table_name="sys_documents")
-    op.drop_index(op.f("ix_sys_documents_entity_id"), table_name="sys_documents")
-    op.drop_index("ix_sys_documents_entity", table_name="sys_documents")
-    op.drop_table("sys_documents")
+    op.drop_index(op.f("ix_sys_storage_status"), table_name="sys_storage")
+    op.drop_index(op.f("ix_sys_storage_owner_id"), table_name="sys_storage")
+    op.drop_index(op.f("ix_sys_storage_is_uploaded"), table_name="sys_storage")
+    op.drop_index(op.f("ix_sys_storage_file_key"), table_name="sys_storage")
+    op.drop_index(op.f("ix_sys_storage_entity_type"), table_name="sys_storage")
+    op.drop_index(op.f("ix_sys_storage_entity_id"), table_name="sys_storage")
+    op.drop_index("ix_sys_storage_entity", table_name="sys_storage")
+    op.drop_table("sys_storage")
     op.drop_index(
         op.f("ix_rbac_role_permissions_role_id"), table_name="rbac_role_permissions"
     )

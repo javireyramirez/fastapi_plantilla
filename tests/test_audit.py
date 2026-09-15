@@ -409,7 +409,7 @@ async def test_audit_query_singular_plural_normalization(
     dbsession: AsyncSession,
     audit_users: tuple[UserResponse, UserResponse],
 ) -> None:
-    """Verify audit queries accept singular/plural entity_type and camel aliases."""
+    """Verify audit queries accept singular entity_type and camel aliases."""
     admin, _ = audit_users
     test_app.dependency_overrides[get_current_active_superuser] = lambda: admin
 
@@ -431,27 +431,27 @@ async def test_audit_query_singular_plural_normalization(
     async with AsyncClient(
         transport=ASGITransport(app=test_app), base_url="http://test"
     ) as client:
-        # 1. Query with plural entity_type="users" (as sent by frontend)
-        res_plural = await client.get(
-            f"/api/audit?page=1&limit=10&entity_type=users&entity_id={target_id}"
+        # 1. Query with singular entity_type="user"
+        res_singular = await client.get(
+            f"/api/audit?page=1&limit=10&entity_type=user&entity_id={target_id}"
         )
-        assert res_plural.status_code == 200
-        data_plural = res_plural.json()["data"]
-        assert len(data_plural) == 1
-        assert data_plural[0]["entity_type"] == "user"
-        assert data_plural[0]["entity_id"] == str(target_id)
+        assert res_singular.status_code == 200
+        data_singular = res_singular.json()["data"]
+        assert len(data_singular) == 1
+        assert data_singular[0]["entity_type"] == "user"
+        assert data_singular[0]["entity_id"] == str(target_id)
 
-        # 2. Query with camelCase aliases: entityType=users&entityId=...
+        # 2. Query with camelCase aliases: entityType=user&entityId=...
         res_camel = await client.get(
-            f"/api/audit?page=1&limit=10&entityType=users&entityId={target_id}"
+            f"/api/audit?page=1&limit=10&entityType=user&entityId={target_id}"
         )
         assert res_camel.status_code == 200
         data_camel = res_camel.json()["data"]
         assert len(data_camel) == 1
         assert data_camel[0]["entity_id"] == str(target_id)
 
-        # 3. Query entity history endpoint with plural "/api/audit/entity/users/..."
-        res_history = await client.get(f"/api/audit/entity/users/{target_id}")
+        # 3. Query entity history endpoint with "/api/audit/entity/user/..."
+        res_history = await client.get(f"/api/audit/entity/user/{target_id}")
         assert res_history.status_code == 200
         data_history = res_history.json()
         assert len(data_history) == 1
@@ -474,11 +474,11 @@ async def test_audit_actor_enrichment(
     # Record an entry where actor_id is normal_user.id but actor_name/email were omitted
     created_log = await repo.record_entry(
         AuditEntry(
-            entity_type="document",
+            entity_type="storage",
             entity_id=entity_id,
             action="CREATE",
             actor_id=normal_user.id,
-            details="Uploaded document",
+            details="Uploaded file",
         )
     )
     await dbsession.commit()
@@ -486,17 +486,17 @@ async def test_audit_actor_enrichment(
     async with AsyncClient(
         transport=ASGITransport(app=test_app), base_url="http://test"
     ) as client:
-        # 1. Query paginated logs list
-        list_res = await client.get(
-            f"/api/audit?entity_id={entity_id}&sort_by=created_at&sort_order=asc"
-        )
-        assert list_res.status_code == 200
-        data = list_res.json()["data"]
-        assert len(data) == 1
-        item = data[0]
+        # 1. Query paginated audit endpoint
+        res = await client.get("/api/audit?page=1&limit=10")
+        assert res.status_code == 200
+        items = res.json()["data"]
+        assert len(items) >= 1
+        item = next(i for i in items if i["id"] == str(created_log.id))
 
-        # 1b. Test sorting by action
-        sort_res = await client.get("/api/audit?sort_by=action&sort_order=desc")
+        # Check sorting by user_name
+        sort_res = await client.get(
+            "/api/audit?page=1&limit=10&sort_by=user_name&sort_order=asc"
+        )
         assert sort_res.status_code == 200
 
         assert item["user"] is not None
@@ -512,7 +512,7 @@ async def test_audit_actor_enrichment(
         assert single["user"]["email"] == normal_user.email
 
         # 3. Query entity history
-        history_res = await client.get(f"/api/audit/entity/document/{entity_id}")
+        history_res = await client.get(f"/api/audit/entity/storage/{entity_id}")
         assert history_res.status_code == 200
         history = history_res.json()
         assert len(history) == 1

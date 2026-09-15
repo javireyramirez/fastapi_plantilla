@@ -20,12 +20,8 @@ __all__ = ["setup_trash_listeners"]
 
 
 def _extract_entity_type(item: Any) -> str:
-    """Derive normalized entity type from model class or table name."""
-    cls_name = getattr(item, "__class__", type(item)).__name__.lower()
-    if cls_name not in ("object", "model", "base"):
-        return cls_name
-    tablename = getattr(type(item), "__tablename__", "").lower()
-    return tablename or cls_name
+    """Derive canonical entity type from model class name."""
+    return type(item).__name__.lower()
 
 
 def _extract_name(item: Any, entity_id: uuid.UUID) -> str:
