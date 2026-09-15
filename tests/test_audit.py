@@ -183,12 +183,13 @@ async def test_audit_sensitive_field_redaction(
     service.resource_name = "Team"
     service.audit_level = AuditLevel.FULL
 
-    diff = service._compute_create_diff(  # noqa: SLF001
+    diff = compute_create_diff(
         {
             "name": "Secure Team",
             "password": "supersecretpassword",
             "token": "abc123xyz",
-        }
+        },
+        sensitive_columns=service.SENSITIVE_COLUMNS,
     )
     assert diff["name"]["new"] == "Secure Team"
     assert diff["password"]["new"] == "[REDACTED]"

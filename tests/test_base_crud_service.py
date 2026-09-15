@@ -961,3 +961,88 @@ def test_security_scope_fail_closed_and_enum(dbsession: AsyncSession) -> None:
     filters = service.build_scope_filters(fake_scope)
     assert len(filters) == 1
     assert isinstance(filters[0], False_)
+
+
+async def test_find_list_with_extra_fields(dbsession: AsyncSession) -> None:
+    """Verify find_list populates extra dict when extra_fields is provided."""
+    repo = BaseRepository(User, dbsession)
+    service = BaseCRUDService(repo)
+    tag = uuid.uuid4().hex[:6]
+    u = await repo.create(
+        {
+            "name": f"Extra_{tag}",
+            "email": f"extra_{tag}@example.com",
+            "is_active": True,
+        }
+    )
+
+    params = ListQueryParams(search=tag)
+    # 1. Without extra_fields: extra is None
+    items_no_extra = await service.find_list(params)
+    assert len(items_no_extra) >= 1
+    target = next(it for it in items_no_extra if it.id == u.id)
+    assert target.extra is None
+
+    # 2. With extra_fields: extra is populated
+    items_with_extra = await service.find_list(
+        params, extra_fields=["email", "is_active"]
+    )
+    target_extra = next(it for it in items_with_extra if it.id == u.id)
+    assert target_extra.extra is not None
+    assert target_extra.extra["email"] == f"extra_{tag}@example.com"
+    assert target_extra.extra["is_active"] is True
+
+
+async def test_base_crud_service_export_data_directly(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify BaseCRUDService can export data without requiring BaseAuditService."""
+    from fastapi_plantilla.core.crud.schema import ExportFormat, ExportRequest
+
+    repo = BaseRepository(User, dbsession)
+    service = BaseCRUDService(repo)
+    service.resource_name = "User"
+    tag = uuid.uuid4().hex[:6]
+    await repo.create({"name": f"Export_{tag}", "email": f"exp_{tag}@example.com"})
+
+    req = ExportRequest(format=ExportFormat.JSON, filters={"search": tag})
+    content, media_type, filename = await service.export_data(req)
+    assert media_type == "application/json"
+    assert filename.startswith("user_")
+    assert tag in str(content)
+
+
+async def test_base_audit_service_bulk_create_emits_audit(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify bulk_create emits an audit event with count."""
+    from fastapi_plantilla.core.crud.schema import AuditEntry, WriteOptions
+    from fastapi_plantilla.core.crud.service_audit import register_audit_sync_hook
+
+    captured_audits: list[AuditEntry] = []
+
+    async def audit_hook(_sess: AsyncSession, entry: AuditEntry) -> None:
+        captured_audits.append(entry)
+
+    register_audit_sync_hook(audit_hook)
+
+    repo = BaseRepository(User, dbsession)
+    service = BaseAuditService(repo)
+    service.resource_name = "User"
+    tag = uuid.uuid4().hex[:6]
+    items = [
+        {"name": f"BulkAudit_{tag}_1", "email": f"b1_{tag}@example.com"},
+        {"name": f"BulkAudit_{tag}_2", "email": f"b2_{tag}@example.com"},
+    ]
+    options = WriteOptions(
+        user_id=uuid.uuid4(), actor_name="BulkTester", ip_address="10.0.0.1"
+    )
+    res = await service.bulk_create(items, options=options)
+    assert res.count == 2
+
+    bulk_events = [e for e in captured_audits if e.action == "BULK_CREATE"]
+    assert len(bulk_events) >= 1
+    latest = bulk_events[-1]
+    assert latest.ip_address == "10.0.0.1"
+    assert latest.actor_name == "BulkTester"
+    assert "Bulk created 2 User records" in (latest.details or "")

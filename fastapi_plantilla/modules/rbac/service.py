@@ -183,6 +183,7 @@ class RbacService(BaseAuditService[Role]):
         *where: Any,
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Move multiple roles to trash, preventing deletion of system roles."""
         has_system = await self.repository.exists(
@@ -193,7 +194,9 @@ class RbacService(BaseAuditService[Role]):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="System roles cannot be deleted",
             )
-        return await super().bulk_trash(req, *where, user_id=user_id, scope=scope)
+        return await super().bulk_trash(
+            req, *where, user_id=user_id, scope=scope, options=options
+        )
 
     async def restore(
         self,
@@ -225,6 +228,7 @@ class RbacService(BaseAuditService[Role]):
         *where: Any,
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Bulk restore roles ensuring no active roles conflict with their slugs."""
         roles = await self.repository.find_many(
@@ -240,7 +244,9 @@ class RbacService(BaseAuditService[Role]):
                         "is already in use by an active role."
                     ),
                 )
-        return await super().bulk_restore(req, *where, user_id=user_id, scope=scope)
+        return await super().bulk_restore(
+            req, *where, user_id=user_id, scope=scope, options=options
+        )
 
     async def bulk_permanent_delete(
         self,

@@ -13,7 +13,6 @@ from fastapi_plantilla.core.crud.actors import enrich_actors
 from fastapi_plantilla.core.crud.schema import (
     AuditEntry,
     BulkResponse,
-    EntityType,
     PaginatedResponse,
     PaginationMeta,
     ScopeContext,
@@ -22,6 +21,7 @@ from fastapi_plantilla.core.crud.schema import (
 from fastapi_plantilla.core.crud.service_audit import dispatch_audit_event
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import RecordStatus
+from fastapi_plantilla.modules.common.schema import EntityType
 from fastapi_plantilla.modules.rbac.catalog import CORE_SYSTEM_MODULES
 from fastapi_plantilla.modules.trash.models import TrashItem
 from fastapi_plantilla.modules.trash.repository import (
@@ -104,7 +104,7 @@ async def resolve_entity_name(
     entity_id: uuid.UUID,
 ) -> str | None:
     """Delegate entity name lookup to central helper."""
-    from fastapi_plantilla.core.crud.principal import (  # noqa: PLC0415
+    from fastapi_plantilla.modules.common.principal import (  # noqa: PLC0415
         resolve_principal_entity_name,
     )
 

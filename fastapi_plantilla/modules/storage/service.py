@@ -9,7 +9,6 @@ from typing import Any
 from fastapi import HTTPException, status
 from loguru import logger
 
-from fastapi_plantilla.core.crud.principal import enrich_principal_entities
 from fastapi_plantilla.core.crud.schema import (
     PaginatedResponse,
     ScopeContext,
@@ -18,6 +17,7 @@ from fastapi_plantilla.core.crud.schema import (
 )
 from fastapi_plantilla.core.crud.service_owned import BaseOwnedService
 from fastapi_plantilla.core.mixins import RecordStatus, generate_uuid7
+from fastapi_plantilla.modules.common.principal import enrich_principal_entities
 from fastapi_plantilla.modules.settings.service import SystemSettingService
 from fastapi_plantilla.modules.storage.models import Storage
 from fastapi_plantilla.modules.storage.providers import (

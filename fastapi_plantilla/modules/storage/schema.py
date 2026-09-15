@@ -13,8 +13,8 @@ from pydantic import (
 from fastapi_plantilla.core.crud.schema import (
     AuditFieldsSchema,
     PaginationParams,
-    PrincipalEntityModule,
 )
+from fastapi_plantilla.modules.common.schema import PrincipalEntityModule
 from fastapi_plantilla.modules.trash.service import resolve_module
 
 __all__ = [

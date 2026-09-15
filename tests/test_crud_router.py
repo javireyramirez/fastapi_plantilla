@@ -380,3 +380,51 @@ async def test_crud_router_custom_schema_export(
         assert len(data) >= 1
         assert list(data[0].keys()) == ["name"]
         assert data[0]["name"] == "Only Name Export"
+
+
+async def test_crud_router_write_options_captures_client_metadata(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify router passes Request to extract metadata in WriteOptions."""
+    from fastapi_plantilla.core.crud.schema import AuditEntry
+    from fastapi_plantilla.core.crud.service_audit import register_audit_sync_hook
+
+    captured_entries: list[AuditEntry] = []
+
+    async def hook(_sess: AsyncSession, entry: AuditEntry) -> None:
+        captured_entries.append(entry)
+
+    register_audit_sync_hook(hook)
+
+    repo = BaseRepository(RouterTestItem, dbsession)
+    service = BaseAuditService(repo)
+    service.resource_name = "RouterTestItem"
+
+    def _scope_getter() -> ScopeContext:
+        return ScopeContext()
+
+    router = create_crud_router(
+        service_getter=lambda: service,
+        schema_out=ItemOut,
+        schema_create=ItemCreate,
+        schema_update=ItemUpdate,
+        prefix="/test-metadata",
+        current_user_getter=lambda: None,
+        scope_getter=_scope_getter,
+    )
+    app = FastAPI()
+    app.include_router(router)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        res = await client.post(
+            "/test-metadata/",
+            json={"name": "Audited With IP"},
+            headers={"User-Agent": "CustomAuditAgent/1.0"},
+        )
+        assert res.status_code == 201
+
+    matching = [e for e in captured_entries if e.action == "CREATE"]
+    assert len(matching) >= 1
+    assert matching[-1].user_agent == "CustomAuditAgent/1.0"

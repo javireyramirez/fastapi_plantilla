@@ -8,37 +8,48 @@ from loguru import logger
 from sqlalchemy import inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi_plantilla.core.crud.schema import (
+from fastapi_plantilla.core.database import Base
+from fastapi_plantilla.modules.common.schema import (
     EntityType,
     PrincipalEntityModule,
 )
-from fastapi_plantilla.core.database import Base
-from fastapi_plantilla.modules.auth.models import User
-from fastapi_plantilla.modules.companies.models import Company
-from fastapi_plantilla.modules.rbac.models import Role
-from fastapi_plantilla.modules.storage.models import Storage
-from fastapi_plantilla.modules.teams.models import Team
-from fastapi_plantilla.modules.trash.repository import resolve_model
-from fastapi_plantilla.modules.trash.service import resolve_module
 
 __all__ = [
     "enrich_principal_entities",
     "resolve_principal_entity_name",
 ]
 
-_KNOWN_MODELS: dict[str, type[Base]] = {
-    EntityType.COMPANY.value: Company,
-    EntityType.USER.value: User,
-    EntityType.TEAM.value: Team,
-    EntityType.ROLE.value: Role,
-    EntityType.STORAGE.value: Storage,
-}
+_KNOWN_MODELS: dict[str, type[Base]] = {}
+
+
+def _get_known_models() -> dict[str, type[Base]]:
+    if not _KNOWN_MODELS:
+        from fastapi_plantilla.modules.auth.models import User  # noqa: PLC0415
+        from fastapi_plantilla.modules.companies.models import Company  # noqa: PLC0415
+        from fastapi_plantilla.modules.rbac.models import Role  # noqa: PLC0415
+        from fastapi_plantilla.modules.storage.models import Storage  # noqa: PLC0415
+        from fastapi_plantilla.modules.teams.models import Team  # noqa: PLC0415
+
+        _KNOWN_MODELS.update(
+            {
+                EntityType.COMPANY.value: Company,
+                EntityType.USER.value: User,
+                EntityType.TEAM.value: Team,
+                EntityType.ROLE.value: Role,
+                EntityType.STORAGE.value: Storage,
+            }
+        )
+    return _KNOWN_MODELS
 
 
 def _get_known_model(entity_type: str) -> type[Base] | None:
     """Resolve SQLAlchemy model class for entity type with O(1) fast paths."""
+    from fastapi_plantilla.modules.trash.repository import (  # noqa: PLC0415
+        resolve_model,
+    )
+
     norm = entity_type.strip().lower()
-    return _KNOWN_MODELS.get(norm) or resolve_model(norm)
+    return _get_known_models().get(norm) or resolve_model(norm)
 
 
 async def resolve_principal_entity_name(
@@ -137,6 +148,10 @@ async def enrich_principal_entities(
             continue
 
         norm_type = str(etype).strip().lower()
+        from fastapi_plantilla.modules.trash.service import (  # noqa: PLC0415
+            resolve_module,
+        )
+
         target_mod = resolve_module(norm_type)
         code = target_mod.code if target_mod else norm_type
         name = target_mod.name if target_mod else norm_type.capitalize()

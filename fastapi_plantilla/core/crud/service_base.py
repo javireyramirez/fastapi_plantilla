@@ -9,11 +9,13 @@ from pydantic import BaseModel
 from sqlalchemy import inspect, or_
 
 from fastapi_plantilla.core.crud.actors import enrich_actors
+from fastapi_plantilla.core.crud.exporter import format_export
 from fastapi_plantilla.core.crud.repository import BaseRepository
 from fastapi_plantilla.core.crud.schema import (
     DEFAULT_MAX_BULK_LIMIT,
     BulkIdsRequest,
     BulkResponse,
+    ExportRequest,
     ListItemResponse,
     ListQueryParams,
     PaginatedResponse,
@@ -43,6 +45,7 @@ class BaseCRUDService[ModelT: Base]:
     mask_forbidden_as_not_found: bool = False
     MAX_BULK_LIMIT: int = DEFAULT_MAX_BULK_LIMIT
     export_schema: type[BaseModel] | None = None
+    list_extra_fields: ClassVar[Sequence[str] | None] = None
 
     IMMUTABLE_FIELDS: frozenset[str] = frozenset(
         {
@@ -340,6 +343,7 @@ class BaseCRUDService[ModelT: Base]:
         *where: Any,
         scope: ScopeContext | None = None,
         display_field: str | None = None,
+        extra_fields: Sequence[str] | None = None,
     ) -> list[ListItemResponse]:
         """Fetch a lightweight list of items for select/combobox dropdowns."""
         target_field = display_field or self.display_field
@@ -362,13 +366,94 @@ class BaseCRUDService[ModelT: Base]:
             *where_clauses, limit=params.limit, order_by=order_clause
         )
         pk_name = self.repository.pk.name
+        effective_extra = (
+            extra_fields if extra_fields is not None else self.list_extra_fields
+        )
         return [
             ListItemResponse(
                 id=getattr(item, pk_name),
                 name=str(getattr(item, target_field, getattr(item, pk_name))),
+                extra=(
+                    {k: getattr(item, k) for k in effective_extra if hasattr(item, k)}
+                    if effective_extra
+                    else None
+                ),
             )
             for item in items
         ]
+
+    def get_status_filter(self, is_trash: bool) -> Any | None:
+        """Hook for status filtering. Base CRUD applies no status filter."""
+        return None
+
+    export_limit: int = 1000
+
+    async def export_data(
+        self,
+        req: ExportRequest,
+        *where: Any,
+        scope: ScopeContext | None = None,
+    ) -> tuple[bytes | str, str, str]:
+        """Export records matching filters or IDs to CSV, Excel, or JSON format."""
+        where_clauses: list[Any] = list(where) + self.build_scope_filters(scope)
+        status_filter = self.get_status_filter(req.is_trash)
+        if status_filter is not None:
+            where_clauses.append(status_filter)
+
+        if req.ids:
+            where_clauses.append(self.repository.pk.in_(req.ids))
+        elif req.filters:
+            param_cls = getattr(self, "pagination_params_class", PaginationParams)
+            valid_fields = {
+                k: v
+                for k, v in req.filters.items()
+                if (hasattr(param_cls, k) or hasattr(PaginationParams, k))
+                and v is not None
+            }
+            if valid_fields:
+                try:
+                    filter_params = param_cls(is_trash=req.is_trash, **valid_fields)
+                except Exception:
+                    fallback_fields = {
+                        k: v
+                        for k, v in valid_fields.items()
+                        if hasattr(PaginationParams, k)
+                    }
+                    filter_params = PaginationParams(
+                        is_trash=req.is_trash, **fallback_fields
+                    )
+                where_clauses.extend(self.build_where_filters(filter_params))
+
+        order_clause = self.build_order_by(req.sort_by, req.sort_order)
+        items = await self.repository.find_many(
+            *where_clauses,
+            limit=self.export_limit,
+            order_by=order_clause,
+        )
+
+        rows: list[dict[str, Any]] = []
+        if self.export_schema is not None:
+            for item in items:
+                dumped = self.export_schema.model_validate(item).model_dump(mode="json")
+                rows.append(dumped)
+        else:
+            excluded = {"version", "password", "password_hash", "token"}
+            for item in items:
+                mapper = inspect(item.__class__)
+                row = {
+                    col.key: getattr(item, col.key)
+                    for col in mapper.columns
+                    if col.key not in excluded and not col.key.startswith("_")
+                }
+                rows.append(row)
+
+        slug = getattr(self, "resource_name", "export").lower()
+        return format_export(
+            format=req.format,
+            data=rows,
+            slug=slug,
+            columns=req.columns,
+        )
 
     # ==========================================
     # 4. ESCRITURAS

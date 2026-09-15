@@ -6,23 +6,18 @@ from typing import Any
 from fastapi import HTTPException, status
 from loguru import logger
 from pydantic import BaseModel
-from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.audit_diff import (
     compute_create_diff,
     compute_update_diff,
-    is_sensitive_audit_field,
-    serialize_audit_val,
 )
-from fastapi_plantilla.core.crud.exporter import format_export
 from fastapi_plantilla.core.crud.schema import (
     AuditEntry,
     AuditLevel,
     BulkIdsRequest,
     BulkResponse,
-    ExportRequest,
     ListItemResponse,
     ListQueryParams,
     PaginationParams,
@@ -143,81 +138,18 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         *where: Any,
         scope: ScopeContext | None = None,
         display_field: str | None = None,
+        extra_fields: Sequence[str] | None = None,
     ) -> list[ListItemResponse]:
         """Fetch a lightweight list of items for select/combobox dropdowns."""
         status_clause = self.get_status_filter(params.is_trash)
         extra = (status_clause,) if status_clause is not None else ()
         return await super().find_list(
-            params, *where, *extra, scope=scope, display_field=display_field
-        )
-
-    export_limit: int = 1000
-
-    async def export_data(
-        self,
-        req: ExportRequest,
-        *where: Any,
-        scope: ScopeContext | None = None,
-    ) -> tuple[bytes | str, str, str]:
-        """Export records matching filters or IDs to CSV, Excel, or JSON format."""
-        where_clauses: list[Any] = list(where) + self.build_scope_filters(scope)
-        status_filter = self.get_status_filter(req.is_trash)
-        if status_filter is not None:
-            where_clauses.append(status_filter)
-
-        if req.ids:
-            where_clauses.append(self.repository.pk.in_(req.ids))
-        elif req.filters:
-            param_cls = getattr(self, "pagination_params_class", PaginationParams)
-            valid_fields = {
-                k: v
-                for k, v in req.filters.items()
-                if (hasattr(param_cls, k) or hasattr(PaginationParams, k))
-                and v is not None
-            }
-            if valid_fields:
-                try:
-                    filter_params = param_cls(is_trash=req.is_trash, **valid_fields)
-                except Exception:
-                    fallback_fields = {
-                        k: v
-                        for k, v in valid_fields.items()
-                        if hasattr(PaginationParams, k)
-                    }
-                    filter_params = PaginationParams(
-                        is_trash=req.is_trash, **fallback_fields
-                    )
-                where_clauses.extend(self.build_where_filters(filter_params))
-
-        order_clause = self.build_order_by(req.sort_by, req.sort_order)
-        items = await self.repository.find_many(
-            *where_clauses,
-            limit=self.export_limit,
-            order_by=order_clause,
-        )
-
-        rows: list[dict[str, Any]] = []
-        if self.export_schema is not None:
-            for item in items:
-                dumped = self.export_schema.model_validate(item).model_dump(mode="json")
-                rows.append(dumped)
-        else:
-            excluded = {"version", "password", "password_hash", "token"}
-            for item in items:
-                mapper = inspect(item.__class__)
-                row = {
-                    col.key: getattr(item, col.key)
-                    for col in mapper.columns
-                    if col.key not in excluded and not col.key.startswith("_")
-                }
-                rows.append(row)
-
-        slug = getattr(self, "resource_name", "export").lower()
-        return format_export(
-            format=req.format,
-            data=rows,
-            slug=slug,
-            columns=req.columns,
+            params,
+            *where,
+            *extra,
+            scope=scope,
+            display_field=display_field,
+            extra_fields=extra_fields,
         )
 
     # ==========================================
@@ -372,7 +304,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
                 d["status"] = RecordStatus.ACTIVE
             self._stamp_actors(d, effective_user_id, is_create=True)
             payload.append(d)
-        return await super().bulk_create(
+        res = await super().bulk_create(
             payload,
             user_id=effective_user_id,
             owner_id=owner_id,
@@ -380,6 +312,15 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             allow_immutable=allow_immutable,
             options=options,
         )
+        if res.count > 0:
+            await self._emit_audit(
+                item=None,
+                action="BULK_CREATE",
+                options=options,
+                user_id=effective_user_id,
+                details=f"Bulk created {res.count} {self.resource_name} records",
+            )
+        return res
 
     async def bulk_delete(
         self,
@@ -558,8 +499,10 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         *where: Any,
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Bulk transition status between ACTIVE and TRASHED."""
+        effective_user_id = (options.user_id if options else None) or user_id
         where_clauses = list(where) + self.build_scope_filters(scope)
         status_filter = self.get_status_filter(is_trash=is_trash_filter)
         if status_filter is not None:
@@ -570,7 +513,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
                 *where_clauses,
                 data={
                     "status": target_status,
-                    actor_field: str(user_id) if user_id else None,
+                    actor_field: str(effective_user_id) if effective_user_id else None,
                     timestamp_field: datetime.now(UTC),
                 },
             )
@@ -586,9 +529,23 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             raise
         if count > 0:
             if target_status == RecordStatus.TRASHED:
-                await self.on_after_bulk_trash(req.ids, user_id=user_id)
+                await self.on_after_bulk_trash(req.ids, user_id=effective_user_id)
             elif target_status == RecordStatus.ACTIVE:
-                await self.on_after_bulk_restore(req.ids, user_id=user_id)
+                await self.on_after_bulk_restore(req.ids, user_id=effective_user_id)
+            action_name = (
+                "BULK_TRASH"
+                if target_status == RecordStatus.TRASHED
+                else "BULK_RESTORE"
+            )
+            await self._emit_audit(
+                item=None,
+                action=action_name,
+                options=options,
+                user_id=effective_user_id,
+                details=(
+                    f"Successfully {action_verb} {count} {self.resource_name} records"
+                ),
+            )
 
         return BulkResponse(
             count=count, message=f"Successfully {action_verb} {count} records"
@@ -647,6 +604,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         *where: Any,
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Move multiple records to the trash bin."""
         return await self._bulk_transition_status(
@@ -659,6 +617,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             *where,
             user_id=user_id,
             scope=scope,
+            options=options,
         )
 
     async def bulk_restore(
@@ -667,6 +626,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         *where: Any,
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Restore multiple records from the trash bin."""
         return await self._bulk_transition_status(
@@ -679,6 +639,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             *where,
             user_id=user_id,
             scope=scope,
+            options=options,
         )
 
     async def bulk_permanent_delete(
@@ -718,36 +679,6 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
     # ==========================================
     # 5. EMISIÓN DE AUDITORÍA DESACOPLADA
     # ==========================================
-
-    @staticmethod
-    def _serialize_audit_val(val: Any) -> Any:
-        """Serialize field value safely for JSON audit storage."""
-        return serialize_audit_val(val)
-
-    def _is_sensitive_audit_field(self, field_name: str) -> bool:
-        """Check if field contains sensitive security credentials."""
-        return is_sensitive_audit_field(field_name, self.SENSITIVE_COLUMNS)
-
-    def _compute_create_diff(self, new_data: dict[str, Any]) -> dict[str, Any]:
-        """Compute field changes dictionary for creation action."""
-        return compute_create_diff(
-            new_data,
-            self.IMMUTABLE_CREATE_FIELDS,
-            self.SENSITIVE_COLUMNS,
-        )
-
-    def _compute_update_diff(
-        self,
-        snapshot_before: dict[str, Any],
-        updated_payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Compute field changes dictionary for update action."""
-        return compute_update_diff(
-            snapshot_before,
-            updated_payload,
-            self.IMMUTABLE_FIELDS,
-            self.SENSITIVE_COLUMNS,
-        )
 
     def _extract_entity_name(
         self,
@@ -808,10 +739,17 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         computed_changes: dict[str, Any] | None = changes
         if computed_changes is None and self.audit_level == AuditLevel.FULL:
             if action == "CREATE" and new_data:
-                computed_changes = self._compute_create_diff(new_data)
+                computed_changes = compute_create_diff(
+                    new_data,
+                    self.IMMUTABLE_CREATE_FIELDS,
+                    self.SENSITIVE_COLUMNS,
+                )
             elif action == "UPDATE" and updated_payload and snapshot_before:
-                computed_changes = self._compute_update_diff(
-                    snapshot_before, updated_payload
+                computed_changes = compute_update_diff(
+                    snapshot_before,
+                    updated_payload,
+                    self.IMMUTABLE_FIELDS,
+                    self.SENSITIVE_COLUMNS,
                 )
             elif status_transition:
                 old_s, new_s = status_transition

@@ -191,6 +191,7 @@ class TeamService(BaseAuditService[Team]):
         *where: Any,
         user_id: str | uuid.UUID | None = None,
         scope: ScopeContext | None = None,
+        options: WriteOptions | None = None,
     ) -> BulkResponse:
         """Bulk restore teams ensuring no active teams conflict with their slugs."""
         teams = await self.repository.find_many(
@@ -206,7 +207,9 @@ class TeamService(BaseAuditService[Team]):
                         "is already in use by an active team."
                     ),
                 )
-        return await super().bulk_restore(req, *where, user_id=user_id, scope=scope)
+        return await super().bulk_restore(
+            req, *where, user_id=user_id, scope=scope, options=options
+        )
 
     # ==========================================
     # Member Operations

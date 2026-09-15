@@ -8,9 +8,27 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.schema import UserReference
-from fastapi_plantilla.modules.auth.models import User
 
-__all__ = ["enrich_actors"]
+__all__ = ["enrich_actors", "register_actor_model"]
+
+_ACTOR_HOLDER: dict[str, type[Any]] = {}
+
+
+def register_actor_model(model: type[Any]) -> None:
+    """Register the user model class used for resolving actor references."""
+    _ACTOR_HOLDER["model"] = model
+
+
+def _get_actor_model() -> type[Any] | None:
+    if "model" not in _ACTOR_HOLDER:
+        try:
+            from fastapi_plantilla.modules.auth.models import User  # noqa: PLC0415
+
+            _ACTOR_HOLDER["model"] = User
+        except ImportError:
+            return None
+    return _ACTOR_HOLDER.get("model")
+
 
 ACTOR_ATTRS = (
     "created_by",
@@ -52,8 +70,13 @@ async def _fetch_users_map(
     """Fetch user references by UUIDs in a single batch query."""
     if not raw_to_uuid:
         return {}
+    user_model = _get_actor_model()
+    if user_model is None:
+        return {}
     unique_uuids = list(set(raw_to_uuid.values()))
-    stmt = select(User.id, User.name, User.email).where(User.id.in_(unique_uuids))
+    stmt = select(user_model.id, user_model.name, user_model.email).where(
+        user_model.id.in_(unique_uuids)
+    )
     result = await session.execute(stmt)
     uuid_to_ref = {
         row.id: UserReference(

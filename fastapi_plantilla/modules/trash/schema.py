@@ -8,9 +8,9 @@ from fastapi_plantilla.core.crud.schema import (
     BulkIdsRequest,
     BulkResponse,
     PaginationParams,
-    PrincipalEntityModule,
     UserReference,
 )
+from fastapi_plantilla.modules.common.schema import PrincipalEntityModule
 
 DEFAULT_TRASH_PURGE_LIMIT: int = 500
 

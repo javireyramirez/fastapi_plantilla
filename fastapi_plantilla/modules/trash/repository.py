@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.repository import BaseRepository
 from fastapi_plantilla.core.crud.schema import (
-    EntityType,
     ScopeContext,
     ScopeType,
     SortOrder,
@@ -15,6 +14,7 @@ from fastapi_plantilla.core.crud.schema import (
 from fastapi_plantilla.core.crud.service_base import adjust_end_of_day
 from fastapi_plantilla.core.database import Base
 from fastapi_plantilla.core.mixins import RecordStatus
+from fastapi_plantilla.modules.common.schema import EntityType
 from fastapi_plantilla.modules.rbac.catalog import CORE_SYSTEM_MODULES
 from fastapi_plantilla.modules.trash.models import TrashItem
 from fastapi_plantilla.modules.trash.schema import (
@@ -183,7 +183,7 @@ class TrashRepository(BaseRepository[TrashItem]):
         entity_id: uuid.UUID,
     ) -> str | None:
         """Query database to get human-readable name for any entity generically."""
-        from fastapi_plantilla.core.crud.principal import (  # noqa: PLC0415
+        from fastapi_plantilla.modules.common.principal import (  # noqa: PLC0415
             resolve_principal_entity_name,
         )
 

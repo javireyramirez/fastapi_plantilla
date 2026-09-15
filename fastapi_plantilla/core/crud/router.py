@@ -3,7 +3,16 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, Header, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    Header,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from pydantic import BaseModel
 
 from fastapi_plantilla.core.crud.dependencies import get_scope_context
@@ -27,14 +36,20 @@ __all__ = ["create_crud_router"]
 
 
 def _build_write_options(
-    current_user: Any, scope: ScopeContext | None = None
+    current_user: Any,
+    scope: ScopeContext | None = None,
+    request: Request | None = None,
 ) -> WriteOptions:
     user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
+    ip_address = request.client.host if request and request.client else None
+    user_agent = request.headers.get("user-agent") if request else None
     return WriteOptions(
         user_id=user_id,
         actor_name=getattr(current_user, "name", None),
         actor_email=getattr(current_user, "email", None),
         scope=scope,
+        ip_address=ip_address,
+        user_agent=user_agent,
     )
 
 
@@ -139,11 +154,12 @@ def create_crud_router[  # noqa: C901
     )
     async def create(
         data: schema_create,  # type: ignore[valid-type]
+        request: Request,
         service: BaseCRUDService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.CREATE)),
     ) -> Any:
-        options = _build_write_options(current_user, scope)
+        options = _build_write_options(current_user, scope, request)
         return await service.create(
             data=data, user_id=options.user_id, scope=scope, options=options
         )
@@ -159,6 +175,7 @@ def create_crud_router[  # noqa: C901
         summary=f"Bulk create {schema_out.__name__} records",
     )
     async def bulk_create(
+        request: Request,
         items: list[schema_create] = Body(  # type: ignore[valid-type]
             ..., max_length=max_bulk_limit
         ),
@@ -166,7 +183,7 @@ def create_crud_router[  # noqa: C901
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.CREATE)),
     ) -> BulkResponse:
-        options = _build_write_options(current_user, scope)
+        options = _build_write_options(current_user, scope, request)
         return await service.bulk_create(
             items=items, user_id=options.user_id, scope=scope, options=options
         )
@@ -178,12 +195,15 @@ def create_crud_router[  # noqa: C901
     )
     async def bulk_trash(
         req: BulkIdsRequest,
+        request: Request,
         service: BaseAuditService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> BulkResponse:
-        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
-        return await service.bulk_trash(req=req, user_id=user_id, scope=scope)
+        options = _build_write_options(current_user, scope, request)
+        return await service.bulk_trash(
+            req=req, user_id=options.user_id, scope=scope, options=options
+        )
 
     @router.post(
         "/bulk/restore",
@@ -192,12 +212,15 @@ def create_crud_router[  # noqa: C901
     )
     async def bulk_restore(
         req: BulkIdsRequest,
+        request: Request,
         service: BaseAuditService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.RESTORE)),
     ) -> BulkResponse:
-        user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
-        return await service.bulk_restore(req=req, user_id=user_id, scope=scope)
+        options = _build_write_options(current_user, scope, request)
+        return await service.bulk_restore(
+            req=req, user_id=options.user_id, scope=scope, options=options
+        )
 
     @router.delete(
         "/bulk/permanent",
@@ -211,11 +234,12 @@ def create_crud_router[  # noqa: C901
     )
     async def bulk_permanent_delete(
         req: BulkIdsRequest,
+        request: Request,
         service: BaseAuditService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> BulkResponse:
-        options = _build_write_options(current_user, scope)
+        options = _build_write_options(current_user, scope, request)
         return await service.bulk_permanent_delete(
             req=req, scope=scope, options=options
         )
@@ -244,6 +268,7 @@ def create_crud_router[  # noqa: C901
     async def update(
         id: uuid.UUID,
         data: schema_update,  # type: ignore[valid-type]
+        request: Request,
         if_match: str | None = Header(default=None, alias="If-Match"),
         expected_version: int | None = None,
         service: BaseCRUDService[ModelT] = Depends(service_getter),
@@ -260,7 +285,7 @@ def create_crud_router[  # noqa: C901
             if isinstance(data_version, int):
                 resolved_version = data_version
 
-        options = _build_write_options(current_user, scope)
+        options = _build_write_options(current_user, scope, request)
         return await service.update(
             id=id,
             data=data,
@@ -277,11 +302,12 @@ def create_crud_router[  # noqa: C901
     )
     async def delete(
         id: uuid.UUID,
+        request: Request,
         service: BaseAuditService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> Any:
-        options = _build_write_options(current_user, scope)
+        options = _build_write_options(current_user, scope, request)
         return await service.delete(
             id=id, user_id=options.user_id, scope=scope, options=options
         )
@@ -293,11 +319,12 @@ def create_crud_router[  # noqa: C901
     )
     async def restore(
         id: uuid.UUID,
+        request: Request,
         service: BaseAuditService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.RESTORE)),
     ) -> Any:
-        options = _build_write_options(current_user, scope)
+        options = _build_write_options(current_user, scope, request)
         return await service.restore(
             id=id, user_id=options.user_id, scope=scope, options=options
         )
@@ -309,11 +336,12 @@ def create_crud_router[  # noqa: C901
     )
     async def permanent_delete(
         id: uuid.UUID,
+        request: Request,
         service: BaseAuditService[ModelT] = Depends(service_getter),
         current_user: Any = Depends(current_user_getter),
         scope: ScopeContext = Depends(_scope_dep(RbacActions.DELETE)),
     ) -> Any:
-        options = _build_write_options(current_user, scope)
+        options = _build_write_options(current_user, scope, request)
         return await service.permanent_delete(id=id, scope=scope, options=options)
 
     return router
