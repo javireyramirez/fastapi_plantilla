@@ -1,10 +1,13 @@
 import uuid
+from collections.abc import Sequence
 from typing import Any, ClassVar
 
 from fastapi import Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 
 from fastapi_plantilla.core.crud.schema import (
+    BulkResponse,
     PaginationParams,
     ScopeContext,
     WriteOptions,
@@ -32,22 +35,38 @@ class CompanyService(BaseOwnedService[Company]):
     def build_where_filters(self, params: PaginationParams) -> list[Any]:
         """Build query clauses including name, nif, and sector."""
         clauses = super().build_where_filters(params)
-        name_val = getattr(params, "name", None)
-        if name_val:
+        if name_val := getattr(params, "name", None):
             clauses.append(self.build_string_filter("name", name_val))
-        nif_val = getattr(params, "nif", None)
-        if nif_val:
+        if nif_val := getattr(params, "nif", None):
             clauses.append(self.build_string_filter("nif", nif_val))
-        sector_val = getattr(params, "sector", None)
-        if sector_val:
-            if isinstance(sector_val, list):
-                if len(sector_val) == 1:
-                    clauses.append(Company.sector == sector_val[0])
-                elif len(sector_val) > 1:
-                    clauses.append(Company.sector.in_(sector_val))
-            else:
-                clauses.append(Company.sector == sector_val)
+        if sector_val := getattr(params, "sector", None):
+            limited = sector_val[:1000] if isinstance(sector_val, list) else sector_val
+            clause = (
+                Company.sector.in_(limited)
+                if isinstance(limited, list)
+                else Company.sector == limited
+            )
+            clauses.append(clause)
         return clauses
+
+    async def _validate_nif_uniqueness(
+        self,
+        nif: str | None,
+        exclude_id: uuid.UUID | None = None,
+        company_name: str | None = None,
+    ) -> None:
+        """Raise 409 Conflict if an active company already uses the given NIF."""
+        if not nif:
+            return
+        existing = await self.repository.get_by_nif(nif)
+        if existing and (exclude_id is None or existing.id != exclude_id):
+            detail = (
+                f"Cannot restore company '{company_name}': NIF '{nif}' "
+                "is already in use by an active company."
+                if company_name
+                else f"Company with NIF '{nif}' already exists"
+            )
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
     async def create(
         self,
@@ -59,32 +78,26 @@ class CompanyService(BaseOwnedService[Company]):
         options: WriteOptions | None = None,
     ) -> Company:
         """Create company enforcing NIF uniqueness and default ownership."""
-        payload = (
-            data.model_dump(exclude_unset=True)
-            if isinstance(data, BaseModel)
-            else dict(data)
+        nif = (
+            data.nif
+            if isinstance(data, BaseModel) and hasattr(data, "nif")
+            else (data.get("nif") if isinstance(data, dict) else None)
         )
-        nif = payload.get("nif")
-        if nif and await self.repository.get_by_nif(nif):
+        await self._validate_nif_uniqueness(nif)
+        try:
+            return await super().create(
+                data,
+                user_id=user_id,
+                owner_id=owner_id,
+                scope=scope,
+                allow_immutable=allow_immutable,
+                options=options,
+            )
+        except IntegrityError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Company with NIF '{nif}' already exists",
-            )
-
-        effective_owner = payload.get("owner_id") or owner_id
-        if effective_owner is None and user_id:
-            effective_owner = (
-                uuid.UUID(str(user_id)) if isinstance(user_id, str) else user_id
-            )
-
-        return await super().create(
-            payload,
-            user_id=user_id,
-            owner_id=effective_owner,
-            scope=scope,
-            allow_immutable=allow_immutable,
-            options=options,
-        )
+            ) from exc
 
     async def update(
         self,
@@ -98,29 +111,35 @@ class CompanyService(BaseOwnedService[Company]):
         allow_immutable: bool = False,
     ) -> Company:
         """Update company verifying NIF conflict and optimistic locking."""
-        payload = (
-            data.model_dump(exclude_unset=True)
+        nif = (
+            getattr(data, "nif", None)
             if isinstance(data, BaseModel)
-            else dict(data)
+            and "nif" in getattr(data, "model_fields_set", set())
+            else (data.get("nif") if isinstance(data, dict) else None)
         )
-        if "nif" in payload:
-            existing = await self.repository.get_by_nif(payload["nif"])
-            if existing and existing.id != id:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Company with NIF '{payload['nif']}' already exists",
-                )
+        if nif:
+            await self._validate_nif_uniqueness(nif, exclude_id=id)
 
-        return await super().update(
-            id,
-            data,
-            *where,
-            expected_version=expected_version,
-            user_id=user_id,
-            scope=scope,
-            options=options,
-            allow_immutable=allow_immutable,
-        )
+        try:
+            return await super().update(
+                id,
+                data,
+                *where,
+                expected_version=expected_version,
+                user_id=user_id,
+                scope=scope,
+                options=options,
+                allow_immutable=allow_immutable,
+            )
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Company with NIF '{nif}' already exists"
+                    if nif
+                    else "Company with this NIF already exists"
+                ),
+            ) from exc
 
     async def restore(
         self,
@@ -131,17 +150,63 @@ class CompanyService(BaseOwnedService[Company]):
         options: WriteOptions | None = None,
     ) -> Company:
         """Restore company verifying NIF does not collide with an active company."""
-        company = await self.repository.find_first(Company.id == id)
-        if company and company.status == RecordStatus.TRASHED:
-            existing = await self.repository.get_by_nif(company.nif)
-            if existing and existing.id != company.id:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=(
-                        f"Cannot restore company '{company.name}': NIF '{company.nif}' "
-                        "is already in use by an active company."
-                    ),
-                )
-        return await super().restore(
-            id, *where, user_id=user_id, scope=scope, options=options
+        opts = self._resolve_write_options(options, user_id, scope)
+        scope_filters = self.build_scope_filters(opts.scope)
+        company = await self.repository.find_first(
+            Company.id == id, *scope_filters, *where
         )
+        if company and company.status == RecordStatus.TRASHED:
+            await self._validate_nif_uniqueness(
+                company.nif, exclude_id=company.id, company_name=company.name
+            )
+        try:
+            return await super().restore(
+                id, *where, user_id=user_id, scope=scope, options=options
+            )
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Cannot restore company: NIF is already in use "
+                    "by an active company."
+                ),
+            ) from exc
+
+    async def bulk_create(
+        self,
+        items: Sequence[BaseModel | dict[str, Any]],
+        user_id: str | uuid.UUID | None = None,
+        owner_id: uuid.UUID | None = None,
+        scope: ScopeContext | None = None,
+        allow_immutable: bool = False,
+        options: WriteOptions | None = None,
+    ) -> BulkResponse:
+        """Bulk create companies validating unique NIFs in batch and database."""
+        nifs: list[str] = []
+        for it in items:
+            raw_nif = (
+                getattr(it, "nif", None) if isinstance(it, BaseModel) else it.get("nif")
+            )
+            if raw_nif:
+                nifs.append(str(raw_nif).strip())
+
+        if len(nifs) != len(set(nifs)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Duplicate NIF found within bulk create payload",
+            )
+
+        try:
+            return await super().bulk_create(
+                items,
+                user_id=user_id,
+                owner_id=owner_id,
+                scope=scope,
+                allow_immutable=allow_immutable,
+                options=options,
+            )
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="One or more companies violate unique NIF constraint",
+            ) from exc

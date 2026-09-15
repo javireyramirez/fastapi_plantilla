@@ -110,6 +110,7 @@ async def setup_companies_context(
         RbacActions.CREATE,
         RbacActions.UPDATE,
         RbacActions.DELETE,
+        RbacActions.RESTORE,
     ):
         await perm_repo.create(
             {
@@ -562,3 +563,57 @@ async def test_companies_filter_by_multiple_sectors(
     assert tech_id in comma_ids
     assert fin_id in comma_ids
     assert health_id not in comma_ids
+
+
+@pytest.mark.anyio
+async def test_companies_bulk_create_duplicate_nif(
+    companies_client: tuple[AsyncClient, CompaniesAuthContext],
+) -> None:
+    """Verify bulk create rejects duplicate NIFs in payload with 400."""
+    client, _ = companies_client
+    suffix = uuid.uuid4().hex[:6]
+    dup_nif = f"DUP_{suffix}"
+    payload = [
+        {"name": "Comp A", "nif": dup_nif},
+        {"name": "Comp B", "nif": dup_nif},
+    ]
+    res = await client.post("/api/companies/bulk", json=payload)
+    assert res.status_code == status.HTTP_400_BAD_REQUEST
+    assert "Duplicate NIF" in res.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_companies_restore_out_of_scope_does_not_leak_nif_conflict(
+    companies_client: tuple[AsyncClient, CompaniesAuthContext],
+    setup_companies_context: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify restoring a trashed company out of scope returns 404, not 409."""
+    client, context = companies_client
+    admin_user, regular_user = setup_companies_context
+
+    # 1. Admin creates and trashes Company 1
+    context.user = admin_user
+    suffix = uuid.uuid4().hex[:6]
+    conflict_nif = f"ORACLE_{suffix}"
+
+    c1 = await client.post(
+        "/api/companies",
+        json={"name": "Foreign Trashed", "nif": conflict_nif},
+    )
+    assert c1.status_code == status.HTTP_201_CREATED
+    c1_id = c1.json()["id"]
+    del_res = await client.delete(f"/api/companies/{c1_id}")
+    assert del_res.status_code == status.HTTP_200_OK
+
+    # 2. Admin creates active Company 2 with same NIF
+    c2 = await client.post(
+        "/api/companies",
+        json={"name": "Active Conflicting", "nif": conflict_nif},
+    )
+    assert c2.status_code == status.HTTP_201_CREATED
+
+    # 3. Regular user (scoped to OWN) attempts to restore Company 1
+    # Must return 404 Not Found (not 409 Conflict leaking existence)
+    context.user = regular_user
+    res_restore = await client.post(f"/api/companies/{c1_id}/restore")
+    assert res_restore.status_code == status.HTTP_404_NOT_FOUND

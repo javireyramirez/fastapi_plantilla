@@ -63,17 +63,10 @@ class CompaniesPaginationParams(PaginationParams):
     @classmethod
     def parse_sector(cls, v: Any) -> list[str] | None:
         """Normalize comma-separated strings or sequences into a list of sectors."""
-        if v is None:
+        if not v:
             return None
-        if isinstance(v, str):
-            items = [s.strip() for s in v.split(",") if s.strip()]
-            return items if items else None
-        if isinstance(v, (list, tuple, set)):
-            result: list[str] = []
-            for item in v:
-                if isinstance(item, str):
-                    result.extend([s.strip() for s in item.split(",") if s.strip()])
-                elif item is not None:
-                    result.append(str(item).strip())
-            return result if result else None
-        return v
+        items = [v] if isinstance(v, str) else list(v)
+        tokens = [
+            part.strip() for it in items for part in str(it).split(",") if part.strip()
+        ]
+        return tokens or None
