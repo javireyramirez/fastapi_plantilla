@@ -29,6 +29,7 @@ class TeamUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=100)
     description: str | None = Field(default=None, max_length=255)
     owner_id: uuid.UUID | None = None
+    version: int | None = None
 
 
 class TeamMemberAdd(BaseModel):

@@ -405,3 +405,228 @@ async def test_team_reuse_slug_when_in_trash_and_restore_conflict(
     )
     assert restore_ok.status_code == status.HTTP_200_OK
     assert restore_ok.json()["count"] == 1
+
+
+@pytest.mark.anyio
+async def test_team_restore_out_of_scope_does_not_leak_slug_conflict(
+    teams_client: AsyncClient,
+    teams_auth: TeamsAuthContext,
+    team_users: tuple[UserResponse, UserResponse, UserResponse],
+    dbsession: AsyncSession,
+) -> None:
+    """Verify restoring a trashed team out of scope returns 404, not 409."""
+    admin, _, member = team_users
+    teams_auth.user = admin
+
+    # Ensure teams module exists
+    mod_repo = BaseRepository(SystemModule, dbsession)
+    if not await mod_repo.find_first(SystemModule.code == "teams"):
+        await mod_repo.create(
+            {
+                "id": generate_uuid7(),
+                "code": "teams",
+                "name": "Teams Module",
+                "is_active": True,
+            }
+        )
+
+    suffix = uuid.uuid4().hex[:6]
+    conflict_slug = f"oracle_{suffix}"
+
+    # 1. Admin creates and deletes Team 1
+    r1 = await teams_client.post(
+        "/api/teams",
+        json={"name": "Foreign Trashed Team", "slug": conflict_slug},
+    )
+    assert r1.status_code == status.HTTP_201_CREATED
+    id1 = r1.json()["id"]
+
+    del_res = await teams_client.delete(f"/api/teams/{id1}")
+    assert del_res.status_code == status.HTTP_200_OK
+
+    # 2. Admin creates active Team 2 with same slug
+    r2 = await teams_client.post(
+        "/api/teams",
+        json={"name": "Active Conflicting Team", "slug": conflict_slug},
+    )
+    assert r2.status_code == status.HTTP_201_CREATED
+
+    # 3. Grant regular member OWN scope on teams:RESTORE and teams:READ
+    role_res = await teams_client.post(
+        "/api/rbac/roles",
+        json={
+            "name": f"Team Member Role {suffix}",
+            "slug": f"team_member_role_{suffix}",
+            "permissions": [
+                {"module_code": "teams", "action": "RESTORE", "scope": "OWN"},
+                {"module_code": "teams", "action": "READ", "scope": "OWN"},
+            ],
+        },
+    )
+    assert role_res.status_code == status.HTTP_201_CREATED
+    role_id = role_res.json()["id"]
+
+    assign_res = await teams_client.post(
+        "/api/rbac/assignments",
+        json={"role_id": role_id, "entity_type": "USER", "entity_id": str(member.id)},
+    )
+    assert assign_res.status_code == status.HTTP_200_OK
+
+    # 4. Member attempts to restore Admin's trashed team
+    teams_auth.user = member
+    res_restore = await teams_client.post(f"/api/teams/{id1}/restore")
+    assert res_restore.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.anyio
+async def test_team_list_with_own_scope_sees_created_team(
+    teams_client: AsyncClient,
+    teams_auth: TeamsAuthContext,
+    team_users: tuple[UserResponse, UserResponse, UserResponse],
+    dbsession: AsyncSession,
+) -> None:
+    """Verify user with OWN scope can see their own created team in list."""
+    admin, _, member = team_users
+    teams_auth.user = admin
+
+    mod_repo = BaseRepository(SystemModule, dbsession)
+    if not await mod_repo.find_first(SystemModule.code == "teams"):
+        await mod_repo.create(
+            {
+                "id": generate_uuid7(),
+                "code": "teams",
+                "name": "Teams Module",
+                "is_active": True,
+            }
+        )
+
+    suffix = uuid.uuid4().hex[:6]
+    role_res = await teams_client.post(
+        "/api/rbac/roles",
+        json={
+            "name": f"Team Creator Role {suffix}",
+            "slug": f"team_creator_role_{suffix}",
+            "permissions": [
+                {"module_code": "teams", "action": "CREATE", "scope": "OWN"},
+                {"module_code": "teams", "action": "READ", "scope": "OWN"},
+            ],
+        },
+    )
+    role_id = role_res.json()["id"]
+
+    await teams_client.post(
+        "/api/rbac/assignments",
+        json={"role_id": role_id, "entity_type": "USER", "entity_id": str(member.id)},
+    )
+
+    # Member creates their team
+    teams_auth.user = member
+    created = await teams_client.post(
+        "/api/teams",
+        json={"name": f"Member Team {suffix}", "slug": f"mem_team_{suffix}"},
+    )
+    assert created.status_code == status.HTTP_201_CREATED
+    member_team_id = created.json()["id"]
+
+    # Member lists teams -> must see their own team
+    list_res = await teams_client.get("/api/teams")
+    assert list_res.status_code == status.HTTP_200_OK
+    listed_ids = [t["id"] for t in list_res.json()["data"]]
+    assert member_team_id in listed_ids
+
+    # Admin creates another team
+    teams_auth.user = admin
+    admin_team = await teams_client.post(
+        "/api/teams",
+        json={"name": f"Admin Team {suffix}", "slug": f"admin_team_{suffix}"},
+    )
+    assert admin_team.status_code == status.HTTP_201_CREATED
+    admin_team_id = admin_team.json()["id"]
+
+    # Member lists teams -> must NOT see Admin's team
+    teams_auth.user = member
+    list_res2 = await teams_client.get("/api/teams")
+    assert list_res2.status_code == status.HTTP_200_OK
+    listed_ids2 = [t["id"] for t in list_res2.json()["data"]]
+    assert member_team_id in listed_ids2
+    assert admin_team_id not in listed_ids2
+
+
+@pytest.mark.anyio
+async def test_team_cannot_remove_owner_from_members(
+    teams_client: AsyncClient,
+    teams_auth: TeamsAuthContext,
+    team_users: tuple[UserResponse, UserResponse, UserResponse],
+) -> None:
+    """Verify attempting to delete the team owner returns 400 Bad Request."""
+    admin, _, _ = team_users
+    teams_auth.user = admin
+
+    suffix = uuid.uuid4().hex[:6]
+    res = await teams_client.post(
+        "/api/teams",
+        json={"name": f"Owner Guard {suffix}", "slug": f"guard_{suffix}"},
+    )
+    team_id = res.json()["id"]
+
+    del_res = await teams_client.delete(f"/api/teams/{team_id}/members/{admin.id}")
+    assert del_res.status_code == status.HTTP_400_BAD_REQUEST
+    assert "Cannot remove team owner" in del_res.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_team_add_member_nonexistent_role_returns_404(
+    teams_client: AsyncClient,
+    teams_auth: TeamsAuthContext,
+    team_users: tuple[UserResponse, UserResponse, UserResponse],
+) -> None:
+    """Verify adding a member with non-existent role_id returns 404, not 409 or 500."""
+    admin, _, member = team_users
+    teams_auth.user = admin
+
+    suffix = uuid.uuid4().hex[:6]
+    res = await teams_client.post(
+        "/api/teams",
+        json={"name": f"Role Guard {suffix}", "slug": f"role_guard_{suffix}"},
+    )
+    team_id = res.json()["id"]
+
+    add_res = await teams_client.post(
+        f"/api/teams/{team_id}/members",
+        json={"user_id": str(member.id), "role_id": str(uuid.uuid4())},
+    )
+    assert add_res.status_code == status.HTTP_404_NOT_FOUND
+    assert "Role not found" in add_res.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_team_update_owner_auto_enrolls_new_owner(
+    teams_client: AsyncClient,
+    teams_auth: TeamsAuthContext,
+    team_users: tuple[UserResponse, UserResponse, UserResponse],
+) -> None:
+    """Verify updating team owner auto-enrolls new owner into members."""
+    admin, leader, _ = team_users
+    teams_auth.user = admin
+
+    suffix = uuid.uuid4().hex[:6]
+    res = await teams_client.post(
+        "/api/teams",
+        json={"name": f"Transfer Team {suffix}", "slug": f"transfer_{suffix}"},
+    )
+    team_id = res.json()["id"]
+
+    # Transfer ownership to leader (who was not previously a member)
+    update_res = await teams_client.patch(
+        f"/api/teams/{team_id}",
+        json={"owner_id": str(leader.id)},
+    )
+    assert update_res.status_code == status.HTTP_200_OK
+    assert update_res.json()["owner_id"] == str(leader.id)
+    assert update_res.json()["members_count"] == 2
+
+    # Check member list
+    mem_res = await teams_client.get(f"/api/teams/{team_id}/members")
+    assert mem_res.status_code == status.HTTP_200_OK
+    member_user_ids = [m["user_id"] for m in mem_res.json()]
+    assert str(leader.id) in member_user_ids

@@ -1,38 +1,18 @@
 import uuid
-from datetime import datetime
-from typing import Any
 
 from fastapi import Depends
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from fastapi_plantilla.core.crud.repository import BaseRepository
-from fastapi_plantilla.core.crud.service_base import adjust_end_of_day
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.auth.models import User
+from fastapi_plantilla.modules.rbac.models import Role
 from fastapi_plantilla.modules.teams.models import Team, TeamUser
 
 __all__ = ["TeamRepository"]
-
-
-def _build_team_clauses(
-    team_ids: list[uuid.UUID] | None = None,
-    created_at_from: datetime | None = None,
-    created_at_to: datetime | None = None,
-    search: str | None = None,
-) -> list[Any]:
-    clauses: list[Any] = []
-    if team_ids is not None:
-        clauses.append(Team.id.in_(team_ids))
-    if created_at_from is not None:
-        clauses.append(Team.created_at >= created_at_from)
-    if created_at_to is not None:
-        clauses.append(Team.created_at <= adjust_end_of_day(created_at_to))
-    if search:
-        clauses.append(Team.name.icontains(search.strip(), autoescape=True))
-    return clauses
 
 
 class TeamRepository(BaseRepository[Team]):
@@ -41,10 +21,13 @@ class TeamRepository(BaseRepository[Team]):
     def __init__(self, session: AsyncSession = Depends(get_db_session)) -> None:
         super().__init__(Team, session)
 
-    async def get_by_id(self, team_id: uuid.UUID) -> Team | None:
+    async def get_by_id(self, id: uuid.UUID) -> Team | None:
         """Fetch team by primary key ID."""
         stmt = (
-            select(Team).options(selectinload(Team.members)).where(Team.id == team_id)
+            select(Team)
+            .options(selectinload(Team.members))
+            .execution_options(populate_existing=True)
+            .where(Team.id == id)
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
@@ -59,51 +42,6 @@ class TeamRepository(BaseRepository[Team]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def list_teams(
-        self,
-        team_ids: list[uuid.UUID] | None = None,
-        created_at_from: datetime | None = None,
-        created_at_to: datetime | None = None,
-        search: str | None = None,
-        skip: int = 0,
-        limit: int = 20,
-    ) -> list[Team]:
-        """Fetch paginated list of teams filtering by IDs, dates, and name."""
-        team_clauses = _build_team_clauses(
-            team_ids, created_at_from, created_at_to, search
-        )
-        stmt = (
-            select(Team)
-            .options(selectinload(Team.members))
-            .where(Team.status != RecordStatus.TRASHED)
-            .where(*team_clauses)
-            .order_by(Team.created_at.desc())
-            .offset(skip)
-            .limit(limit)
-        )
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
-
-    async def count_teams(
-        self,
-        team_ids: list[uuid.UUID] | None = None,
-        created_at_from: datetime | None = None,
-        created_at_to: datetime | None = None,
-        search: str | None = None,
-    ) -> int:
-        """Count teams matching filter."""
-        team_clauses = _build_team_clauses(
-            team_ids, created_at_from, created_at_to, search
-        )
-        stmt = (
-            select(func.count())
-            .select_from(Team)
-            .where(Team.status != RecordStatus.TRASHED)
-            .where(*team_clauses)
-        )
-        result = await self.session.execute(stmt)
-        return result.scalar() or 0
-
     # ==========================================
     # Team Memberships
     # ==========================================
@@ -111,6 +49,11 @@ class TeamRepository(BaseRepository[Team]):
     async def user_exists(self, user_id: uuid.UUID) -> bool:
         """Check whether a user exists in the database."""
         stmt = select(select(User.id).where(User.id == user_id).exists())
+        return bool(await self.session.scalar(stmt))
+
+    async def role_exists(self, role_id: uuid.UUID) -> bool:
+        """Check whether a role exists in the database."""
+        stmt = select(select(Role.id).where(Role.id == role_id).exists())
         return bool(await self.session.scalar(stmt))
 
     async def get_member(

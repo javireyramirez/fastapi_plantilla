@@ -54,7 +54,7 @@ class Team(UUID7PrimaryKeyMixin, AuditFieldsMixin, OptimisticLockMixin, Base):
     )
 
     members: Mapped[list["TeamUser"]] = relationship(
-        back_populates="team", cascade="all, delete-orphan"
+        back_populates="team", cascade="all, delete-orphan", lazy="selectin"
     )
     owner: Mapped["User"] = relationship(
         "User", foreign_keys=[owner_id], lazy="selectin"
@@ -62,7 +62,12 @@ class Team(UUID7PrimaryKeyMixin, AuditFieldsMixin, OptimisticLockMixin, Base):
 
     @property
     def members_count(self) -> int:
-        """Count of active team members."""
+        """Count of active team members.
+
+        NOTE (Future optimization): For large teams, consider replacing
+        selectinload(Team.members) with a correlated column_property or
+        dedicated count subquery to avoid loading all instances in memory.
+        """
         return len(self.members) if self.members else 0
 
 
