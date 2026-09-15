@@ -505,33 +505,17 @@ class BaseCRUDService[ModelT: Base]:
             total_count = len(items)
 
         excluded = self.SENSITIVE_COLUMNS | {"version"}
-        rows: list[dict[str, Any]] = []
-        allowed_columns: set[str] | frozenset[str]
-        if effective_schema is not None:
-            for item in items:
-                dumped = effective_schema.model_validate(item).model_dump(mode="json")
-                rows.append({k: v for k, v in dumped.items() if k not in excluded})
-            allowed_columns = (
-                set(effective_schema.model_fields.keys())
-                if hasattr(effective_schema, "model_fields")
-                else (set(rows[0].keys()) if rows else set())
-            )
-        else:
-            for item in items:
-                mapper = inspect(item.__class__)
-                row = {
-                    col.key: getattr(item, col.key)
-                    for col in mapper.columns
-                    if col.key not in excluded and not col.key.startswith("_")
-                }
-                rows.append(row)
-            allowed_columns = self._column_names
+        rows, allowed_columns = self._serialize_export_rows(
+            items, effective_schema, excluded
+        )
 
         export_columns = (
             [c for c in req.columns if c in allowed_columns and c not in excluded]
-            if req.columns
+            if req.columns is not None
             else None
         )
+        if export_columns is None and not rows:
+            export_columns = [c for c in allowed_columns if c not in excluded]
 
         slug = getattr(self, "resource_name", "export").lower()
         content, media_type, filename = format_export(
@@ -547,6 +531,35 @@ class BaseCRUDService[ModelT: Base]:
             total_count=total_count,
             is_truncated=is_truncated,
         )
+
+    def _serialize_export_rows(
+        self,
+        items: Sequence[Any],
+        effective_schema: type[BaseModel] | None,
+        excluded: frozenset[str] | set[str],
+    ) -> tuple[list[dict[str, Any]], set[str] | frozenset[str]]:
+        """Serialize model items into dictionaries and determine allowed columns."""
+        rows: list[dict[str, Any]] = []
+        if effective_schema is not None:
+            for item in items:
+                dumped = effective_schema.model_validate(item).model_dump(mode="json")
+                rows.append({k: v for k, v in dumped.items() if k not in excluded})
+            allowed_columns: set[str] | frozenset[str] = (
+                set(effective_schema.model_fields.keys())
+                if hasattr(effective_schema, "model_fields")
+                else (set(rows[0].keys()) if rows else set())
+            )
+        else:
+            for item in items:
+                mapper = inspect(item.__class__)
+                row = {
+                    col.key: getattr(item, col.key)
+                    for col in mapper.columns
+                    if col.key not in excluded and not col.key.startswith("_")
+                }
+                rows.append(row)
+            allowed_columns = self._column_names
+        return rows, allowed_columns
 
     # ==========================================
     # 4. ESCRITURAS

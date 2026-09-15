@@ -52,14 +52,19 @@ def to_uuid(val: Any) -> uuid.UUID | None:
         return None
 
 
+def _is_active(item: Any) -> bool:
+    """Check if an item has an explicit ACTIVE lifecycle status."""
+    status = getattr(item, "status", None)
+    if status is not None:
+        return getattr(status, "value", status) == "ACTIVE"
+    return not hasattr(item, "expires_at")
+
+
 def _collect_actor_uuids(items: Sequence[Any]) -> dict[str, uuid.UUID]:
     """Collect unique UUIDs for actor attributes present on items."""
     raw_to_uuid: dict[str, uuid.UUID] = {}
     for item in items:
-        item_status = getattr(item, "status", None)
-        status_val = getattr(item_status, "value", item_status)
-        is_active = status_val == "ACTIVE"
-
+        is_active = _is_active(item)
         for attr in ACTOR_ATTRS:
             if attr == "deleted_by" and is_active:
                 continue
@@ -131,9 +136,7 @@ def _attach_item_actors(item: Any, users_map: dict[str, UserReference]) -> None:
                 _resolve_actor(getattr(item, raw_attr, None), users_map),
             )
 
-    item_status = getattr(item, "status", None)
-    status_val = getattr(item_status, "value", item_status)
-    if status_val != "ACTIVE" and hasattr(item, "deleted_by"):
+    if not _is_active(item) and hasattr(item, "deleted_by"):
         item.deletor = _resolve_actor(getattr(item, "deleted_by", None), users_map)
 
     if hasattr(item, "actor_id"):

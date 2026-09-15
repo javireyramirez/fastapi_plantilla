@@ -45,7 +45,7 @@ def export_delimited(
     prefix_bom: bool = False,
 ) -> str:
     """Serialize list of dictionaries to delimited text (CSV/TSV) string."""
-    if not data:
+    if not data and not columns:
         return ""
     fieldnames = columns if columns is not None else list(data[0].keys())
     output = io.StringIO()

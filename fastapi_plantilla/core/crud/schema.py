@@ -151,7 +151,7 @@ class ExportRequest(BaseModel):
 
     ids: list[uuid.UUID] | None = None
     filters: dict[str, Any] = Field(default_factory=dict)
-    columns: list[str] | None = None
+    columns: list[str] | None = Field(default=None, min_length=1)
     format: ExportFormat = ExportFormat.CSV
     sort_by: str = "created_at"
     sort_order: SortOrder = SortOrder.DESC

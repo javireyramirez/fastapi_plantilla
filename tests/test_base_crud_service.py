@@ -1334,3 +1334,51 @@ def test_parse_if_match_version() -> None:
     assert parse_if_match_version("") is None
     assert parse_if_match_version("invalid") is None
     assert parse_if_match_version('W/"not_a_number"') is None
+
+
+def test_is_active_helper() -> None:
+    """Verify _is_active correctly determines active status across models and enums."""
+    from types import SimpleNamespace
+
+    from fastapi_plantilla.core.crud.actors import _is_active
+    from fastapi_plantilla.core.crud.schema import RecordStatus
+
+    assert _is_active(SimpleNamespace(status=RecordStatus.ACTIVE)) is True
+    assert _is_active(SimpleNamespace(status="ACTIVE")) is True
+    assert _is_active(SimpleNamespace(status=RecordStatus.TRASHED)) is False
+    assert _is_active(SimpleNamespace(status="TRASHED")) is False
+    # Models without status or with None are active by default
+    assert _is_active(SimpleNamespace(status=None)) is True
+    assert _is_active(SimpleNamespace()) is True
+    assert _is_active(object()) is True
+    # TrashItem models without status but with expires_at are in trash
+    assert _is_active(SimpleNamespace(expires_at="2026-09-15")) is False
+
+
+def test_export_request_rejects_empty_columns() -> None:
+    """Verify ExportRequest rejects columns=[] with a ValidationError."""
+    import pytest
+    from pydantic import ValidationError
+
+    from fastapi_plantilla.core.crud.schema import ExportRequest
+
+    with pytest.raises(ValidationError):
+        ExportRequest(columns=[])
+
+
+async def test_export_data_zero_rows_emits_headers(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify export_data with zero rows emits column headers instead of 0 bytes."""
+    from fastapi_plantilla.core.crud.schema import ExportFormat, ExportRequest
+
+    repo = BaseRepository(User, dbsession)
+    service = BaseCRUDService(repo)
+    non_existent_id = uuid.uuid4()
+
+    req = ExportRequest(format=ExportFormat.CSV, ids=[non_existent_id])
+    content, _, _ = await service.export_data(req)
+    content_str = str(content)
+    # Even with 0 rows, CSV must contain the header row
+    assert "name" in content_str
+    assert "email" in content_str
