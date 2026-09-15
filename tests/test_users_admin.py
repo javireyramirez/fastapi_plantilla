@@ -17,9 +17,21 @@ from fastapi_plantilla.modules.auth.dependencies import (
     get_current_active_superuser,
     get_current_user,
 )
-from fastapi_plantilla.modules.auth.models import Session as AuthSession
-from fastapi_plantilla.modules.auth.models import User
-from fastapi_plantilla.modules.auth.schema import UserResponse
+from fastapi_plantilla.modules.auth.models import (
+    Account,
+    User,
+    Verification,
+)
+from fastapi_plantilla.modules.auth.models import (
+    Session as AuthSession,
+)
+from fastapi_plantilla.modules.auth.repository import AuthRepository
+from fastapi_plantilla.modules.auth.schema import (
+    ResetPasswordInput,
+    UserLogin,
+    UserResponse,
+)
+from fastapi_plantilla.modules.auth.service import AuthService
 from fastapi_plantilla.modules.email.dependencies import get_email_service
 from fastapi_plantilla.modules.rbac.models import Role, SystemModule
 from fastapi_plantilla.modules.rbac.routes import router as rbac_router
@@ -341,7 +353,7 @@ async def test_seed_initial_superadmin(dbsession: AsyncSession) -> None:
     from argon2 import PasswordHasher
 
     from fastapi_plantilla.core.config import settings
-    from fastapi_plantilla.modules.auth.models import Account, User
+    from fastapi_plantilla.modules.auth.models import User
     from scripts.seeds.superadmin import seed_superadmin
 
     test_email = f"bootstrap_{uuid.uuid4().hex[:6]}@example.com"
@@ -579,3 +591,159 @@ async def test_users_hardening_and_precedence(
         .all()
     )
     assert len(tokens) == 1
+
+
+@pytest.mark.anyio
+async def test_create_user_with_manual_password_vs_invitation_email(
+    users_client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify admin user creation with password vs invitation and conflict."""
+    auth_repo = AuthRepository(dbsession)
+    mock_email = MagicMock()
+    mock_email.send = AsyncMock()
+    mock_builder = MagicMock()
+    mock_builder.to.return_value = mock_builder
+    mock_builder.subject.return_value = mock_builder
+    mock_builder.template.return_value = "msg_payload"
+    mock_email.create_builder.return_value = mock_builder
+    auth_service = AuthService(auth_repo, mock_email)
+
+    # 1. Dev / Fake email flow: create user with manual password
+    email_with_pass = f"manual_{uuid.uuid4().hex[:6]}@example.com"
+    res1 = await users_client.post(
+        "/api/users",
+        json={
+            "name": "Manual Pass User",
+            "email": email_with_pass,
+            "password": "SuperSecretPass123!",
+            "send_invitation_email": False,
+        },
+    )
+    assert res1.status_code == status.HTTP_201_CREATED
+    user1_id = uuid.UUID(res1.json()["id"])
+
+    # Verify Account exists with credential provider and login works
+    account1 = await auth_repo.get_account_by_provider(
+        user1_id, provider_id="credential"
+    )
+    assert account1 is not None
+    assert account1.account_id == email_with_pass
+
+    login_res1 = await auth_service.login(
+        UserLogin(
+            email=email_with_pass,
+            password="SuperSecretPass123!",  # noqa: S106
+        )
+    )
+    assert login_res1.user.id == user1_id
+
+    # Verify no verification token was created
+    tokens1 = (
+        (
+            await dbsession.execute(
+                select(Verification).where(Verification.identifier == email_with_pass)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(tokens1) == 0
+
+    # 2. Invitation flow: create user without password, send_invitation_email=True
+    email_with_invite = f"invited_{uuid.uuid4().hex[:6]}@example.com"
+    res2 = await users_client.post(
+        "/api/users",
+        json={
+            "name": "Invited User",
+            "email": email_with_invite,
+            "send_invitation_email": True,
+        },
+    )
+    assert res2.status_code == status.HTTP_201_CREATED
+    user2_id = uuid.UUID(res2.json()["id"])
+
+    # Verify no account exists yet
+    account2 = await auth_repo.get_account_by_provider(
+        user2_id, provider_id="credential"
+    )
+    assert account2 is None
+
+    # Verify verification token exists
+    tokens2 = (
+        (
+            await dbsession.execute(
+                select(Verification).where(Verification.identifier == email_with_invite)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(tokens2) == 1
+    token_value = tokens2[0].value
+
+    # Simulate user setting password via reset-password flow
+    reset_ok = await auth_service.reset_password(
+        ResetPasswordInput(
+            token=token_value,
+            new_password="UserDefinedPass456!",  # noqa: S106
+        )
+    )
+    assert reset_ok is True
+
+    # Verify account was created, email verified, and login works
+    account2_after = await auth_repo.get_account_by_provider(
+        user2_id, provider_id="credential"
+    )
+    assert account2_after is not None
+
+    user2_db = await auth_repo.get_user_by_id(user2_id)
+    assert user2_db is not None
+    assert user2_db.email_verified is True
+
+    login_res2 = await auth_service.login(
+        UserLogin(
+            email=email_with_invite,
+            password="UserDefinedPass456!",  # noqa: S106
+        )
+    )
+    assert login_res2.user.id == user2_id
+
+    # 3. Test backward-compatible alias send_welcome_email
+    email_alias = f"alias_{uuid.uuid4().hex[:6]}@example.com"
+    res_alias = await users_client.post(
+        "/api/users",
+        json={
+            "name": "Alias User",
+            "email": email_alias,
+            "send_welcome_email": True,
+        },
+    )
+    assert res_alias.status_code == status.HTTP_201_CREATED
+
+    tokens_alias = (
+        (
+            await dbsession.execute(
+                select(Verification).where(Verification.identifier == email_alias)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(tokens_alias) == 1
+
+    # 4. Conflict: both password and send_invitation_email=True -> 422
+    conflict_res = await users_client.post(
+        "/api/users",
+        json={
+            "name": "Conflict User",
+            "email": f"conflict_{uuid.uuid4().hex[:6]}@example.com",
+            "password": "Password12345!",
+            "send_invitation_email": True,
+        },
+    )
+    assert conflict_res.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert (
+        "Cannot provide a password and request an invitation email"
+        in conflict_res.json()["detail"][0]["msg"]
+    )

@@ -1,7 +1,15 @@
 import uuid
 from datetime import datetime
+from typing import Self
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    model_validator,
+)
 
 from fastapi_plantilla.core.crud.schema import PaginationParams
 
@@ -59,9 +67,24 @@ class UserAdminCreate(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
     email: EmailStr
     password: str | None = Field(default=None, min_length=8)
+    send_invitation_email: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("send_invitation_email", "send_welcome_email"),
+        description="Whether to send an invitation/welcome email to set password.",
+    )
     is_active: bool = True
     is_super_admin: bool = False
     role_ids: list[uuid.UUID] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_password_and_invitation(self) -> Self:
+        """Ensure password assignment and invitation email are mutually exclusive."""
+        if self.password is not None and self.send_invitation_email:
+            raise ValueError(
+                "Cannot provide a password and request an invitation email "
+                "simultaneously"
+            )
+        return self
 
 
 class UserAdminUpdate(BaseModel):

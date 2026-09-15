@@ -395,9 +395,21 @@ class AuthService:
                 detail="Usuario no encontrado o inactivo",
             )
 
-        await self.repository.update_password_hash(
+        updated = await self.repository.update_password_hash(
             user_id=user.id,
             new_password_hash=ph.hash(schema.new_password),
+        )
+        if not updated:
+            await self.repository.create_account(
+                user_id=user.id,
+                provider_id="credential",
+                account_id=user.email,
+                password_hash=ph.hash(schema.new_password),
+            )
+
+        await self.repository.update_user_by_id(
+            user_id=user.id,
+            update_data={"email_verified": True},
         )
 
         await self.repository.delete_verification(

@@ -87,6 +87,23 @@ class UserAdminService(BaseAuditService[User]):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
         return user
 
+    async def _validate_role_ids(self, role_ids: list[Any]) -> list[uuid.UUID]:
+        """Validate all role IDs exist and are not trashed."""
+        if not role_ids:
+            return []
+        role_uuids = [uuid.UUID(str(r)) for r in role_ids]
+        stmt = select(Role.id).where(
+            Role.id.in_(role_uuids), Role.status != RecordStatus.TRASHED
+        )
+        valid_ids = set((await self.repository.session.execute(stmt)).scalars().all())
+        missing = set(role_uuids) - valid_ids
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Roles not found: {[str(m) for m in missing]}",
+            )
+        return role_uuids
+
     async def serialize_user(
         self, user: User, roles: list[str] | None = None
     ) -> UserAdminResponse:
@@ -224,21 +241,11 @@ class UserAdminService(BaseAuditService[User]):
         }
 
         password = create_data.get("password")
-        role_ids = create_data.get("role_ids", [])
-        if role_ids:
-            role_uuids = [uuid.UUID(str(r)) for r in role_ids]
-            stmt = select(Role.id).where(
-                Role.id.in_(role_uuids), Role.status != RecordStatus.TRASHED
-            )
-            valid_ids = set(
-                (await self.repository.session.execute(stmt)).scalars().all()
-            )
-            missing = set(role_uuids) - valid_ids
-            if missing:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Roles not found: {[str(m) for m in missing]}",
-                )
+        send_invitation = bool(
+            create_data.get("send_invitation_email")
+            or create_data.get("send_welcome_email")
+        )
+        role_uuids = await self._validate_role_ids(create_data.get("role_ids", []))
 
         try:
             async with self.repository.session.begin_nested():
@@ -254,17 +261,18 @@ class UserAdminService(BaseAuditService[User]):
                     self.repository.session.add(
                         Account(
                             user_id=user.id,
-                            provider_id="credentials",
+                            provider_id="credential",
                             account_id=user.email,
                             password=ph.hash(password),
                         )
                     )
                     await self.repository.session.flush()
 
-                for r_id in role_ids:
-                    await self.rbac_repo.assign_role(
-                        uuid.UUID(str(r_id)), "USER", user.id
-                    )
+                for r_id in role_uuids:
+                    await self.rbac_repo.assign_role(r_id, "USER", user.id)
+
+                if send_invitation:
+                    await self._send_invitation_email(user)
         except IntegrityError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -568,9 +576,8 @@ class UserAdminService(BaseAuditService[User]):
         )
         return await self.serialize_user(user)
 
-    async def resend_invitation(self, user_id: uuid.UUID) -> None:
-        """Generate verification token and send invitation / email confirmation."""
-        user = await self._get_user_or_404(user_id)
+    async def _send_invitation_email(self, user: User) -> None:
+        """Generate verification token and send invitation / welcome email."""
         await self.repository.session.execute(
             delete(Verification).where(Verification.identifier == user.email)
         )
@@ -581,16 +588,23 @@ class UserAdminService(BaseAuditService[User]):
         )
         await self.repository.session.flush()
         if settings.frontend_url:
-            link = str(
-                (URL(settings.frontend_url) / "verify-email").with_query(token=token)
+            invite_link = str(
+                (URL(settings.frontend_url) / "reset-password").with_query(token=token)
             )
             msg = (
                 self.email_service.create_builder()
                 .to(user.email)
-                .subject("Invitación a la plataforma")
-                .template("auth/verify_email.html", name=user.name, verify_link=link)
+                .subject("Te damos la bienvenida a la plataforma")
+                .template(
+                    "auth/invitation.html", name=user.name, invite_link=invite_link
+                )
             )
             await self.email_service.send(msg)
+
+    async def resend_invitation(self, user_id: uuid.UUID) -> None:
+        """Generate verification token and send invitation / email confirmation."""
+        user = await self._get_user_or_404(user_id)
+        await self._send_invitation_email(user)
         await self._emit_audit(
             item=user,
             action="RESEND_INVITATION",
