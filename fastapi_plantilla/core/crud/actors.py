@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.schema import UserReference
 
-__all__ = ["enrich_actors", "register_actor_model"]
+__all__ = ["enrich_actors", "register_actor_model", "to_uuid"]
 
 _user_model_cache: type[Any] | None = None
 
@@ -41,16 +41,16 @@ ACTOR_ATTRS = (
 )
 
 
-def _extract_uuid(val: Any) -> uuid.UUID | None:
-    """Safely convert a string or UUID value to a UUID instance."""
-    if isinstance(val, uuid.UUID):
+def to_uuid(val: Any) -> uuid.UUID | None:
+    """Safely convert a string, int, or UUID value to a UUID instance."""
+    if val is None or isinstance(val, uuid.UUID):
         return val
-    if isinstance(val, str) and val.strip():
-        try:
-            return uuid.UUID(val.strip())
-        except (ValueError, TypeError, AttributeError):
-            return None
-    return None
+    if isinstance(val, str) and not val.strip():
+        return None
+    try:
+        return uuid.UUID(str(val).strip())
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 
 def _collect_actor_uuids(items: Sequence[Any]) -> dict[str, uuid.UUID]:
@@ -60,7 +60,7 @@ def _collect_actor_uuids(items: Sequence[Any]) -> dict[str, uuid.UUID]:
         for attr in ACTOR_ATTRS:
             raw_val = getattr(item, attr, None)
             if raw_val is not None:
-                parsed = _extract_uuid(raw_val)
+                parsed = to_uuid(raw_val)
                 if parsed is not None:
                     raw_to_uuid[str(raw_val).strip()] = parsed
     return raw_to_uuid
@@ -107,7 +107,7 @@ def _attach_item_actors(item: Any, users_map: dict[str, UserReference]) -> None:
             user_ref = users_map.get(key)
             name = user_ref.name if user_ref else (str(raw) if raw else None)
             ref = user_ref or (
-                UserReference(id=_extract_uuid(raw), name=name) if name or raw else None
+                UserReference(id=to_uuid(raw), name=name) if name or raw else None
             )
             setattr(item, ref_attr, ref)
 
@@ -118,7 +118,7 @@ def _attach_item_actors(item: Any, users_map: dict[str, UserReference]) -> None:
         name = user_ref.name if user_ref else (str(raw) if raw else None)
         email = user_ref.email if user_ref else None
         ref = user_ref or (
-            UserReference(id=_extract_uuid(raw), name=name, email=email)
+            UserReference(id=to_uuid(raw), name=name, email=email)
             if name or email or raw
             else None
         )
@@ -134,7 +134,7 @@ def _attach_item_actors(item: Any, users_map: dict[str, UserReference]) -> None:
             item.user = user_ref  # type: ignore[attr-defined]
         elif name or email or raw:
             item.user = UserReference(  # type: ignore[attr-defined]
-                id=_extract_uuid(raw), name=name, email=email
+                id=to_uuid(raw), name=name, email=email
             )
         else:
             item.user = None  # type: ignore[attr-defined]
@@ -143,12 +143,31 @@ def _attach_item_actors(item: Any, users_map: dict[str, UserReference]) -> None:
 async def enrich_actors(
     session: AsyncSession,
     items: Sequence[Any],
+    known_users: Sequence[UserReference] | dict[str, UserReference] | None = None,
 ) -> None:
     """Enrich models or schemas in-place with user details."""
     if not items:
         return
 
+    users_map: dict[str, UserReference] = {}
+    if known_users:
+        if isinstance(known_users, dict):
+            users_map.update(known_users)
+        else:
+            for u in known_users:
+                if u and u.id is not None:
+                    users_map[str(u.id).strip()] = u
+
     raw_to_uuid = _collect_actor_uuids(items)
-    users_map = await _fetch_users_map(session, raw_to_uuid)
+    needed_uuids = {
+        raw_str: uid
+        for raw_str, uid in raw_to_uuid.items()
+        if raw_str not in users_map and str(uid) not in users_map
+    }
+
+    if needed_uuids:
+        fetched_map = await _fetch_users_map(session, needed_uuids)
+        users_map.update(fetched_map)
+
     for item in items:
         _attach_item_actors(item, users_map)

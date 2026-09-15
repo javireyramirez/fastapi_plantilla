@@ -1134,3 +1134,75 @@ async def test_find_list_avoids_literal_none_string(dbsession: AsyncSession) -> 
     assert len(items) == 1
     assert items[0].name != "None"
     assert items[0].name == str(user.id)
+
+
+async def test_model_pk_and_column_cache(dbsession: AsyncSession) -> None:
+    """Verify that model primary key and column names are cached."""
+    from fastapi_plantilla.core.crud.repository import _MODEL_PK_CACHE, BaseRepository
+    from fastapi_plantilla.core.crud.service_base import (
+        _MODEL_COLUMN_CACHE,
+        BaseCRUDService,
+    )
+
+    repo1 = BaseRepository(User, dbsession)
+    assert User in _MODEL_PK_CACHE
+    assert repo1.pk is _MODEL_PK_CACHE[User]
+
+    # Re-instantiating repo must reuse the exact cached PK object
+    repo2 = BaseRepository(User, dbsession)
+    assert repo2.pk is repo1.pk
+
+    service1 = BaseCRUDService(repo1)
+    assert User in _MODEL_COLUMN_CACHE
+    assert service1._column_names is _MODEL_COLUMN_CACHE[User]  # noqa: SLF001
+
+    # Re-instantiating service must reuse the exact cached frozenset
+    service2 = BaseCRUDService(repo2)
+    assert service2._column_names is service1._column_names  # noqa: SLF001
+
+
+async def test_enrich_actors_with_known_users(dbsession: AsyncSession) -> None:
+    """Verify enrich_actors short-circuits DB queries when actor is already known."""
+    from fastapi_plantilla.core.crud.actors import enrich_actors
+    from fastapi_plantilla.core.crud.schema import UserReference
+
+    test_uid = uuid.uuid4()
+    known_ref = UserReference(
+        id=test_uid, name="Known Actor", email="known@example.com"
+    )
+
+    class DummyRecord:
+        created_by = str(test_uid)
+        updated_by = str(test_uid)
+        creator = None
+        updater = None
+
+    item = DummyRecord()
+    # Call enrich_actors with known_users providing the matching UserReference
+    await enrich_actors(dbsession, [item], known_users=[known_ref])
+
+    assert item.creator is not None
+    assert item.creator.id == test_uid
+    assert item.creator.name == "Known Actor"
+    assert item.creator.email == "known@example.com"
+    assert item.updater is not None
+    assert item.updater.name == "Known Actor"
+
+
+def test_canonical_to_uuid() -> None:
+    """Verify canonical to_uuid converts valid inputs and handles invalid ones."""
+    from fastapi_plantilla.core.crud import to_uuid
+    from fastapi_plantilla.core.crud.service_base import BaseCRUDService
+
+    # Identity check with BaseCRUDService._to_uuid
+    assert BaseCRUDService._to_uuid is to_uuid  # noqa: SLF001
+
+    sample_uuid = uuid.uuid4()
+    assert to_uuid(sample_uuid) is sample_uuid
+    assert to_uuid(str(sample_uuid)) == sample_uuid
+    assert to_uuid(f"  {sample_uuid}  ") == sample_uuid
+    assert to_uuid(None) is None
+    assert to_uuid("") is None
+    assert to_uuid("   ") is None
+    assert to_uuid("invalid-uuid-string") is None
+    assert to_uuid(12345) is None

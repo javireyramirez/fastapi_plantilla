@@ -1,4 +1,4 @@
-from fastapi_plantilla.core.crud.actors import enrich_actors
+from fastapi_plantilla.core.crud.actors import enrich_actors, to_uuid
 from fastapi_plantilla.core.crud.dependencies import (
     get_scope_context,
     get_write_options,
@@ -60,4 +60,5 @@ __all__ = [
     "enrich_actors",
     "get_scope_context",
     "get_write_options",
+    "to_uuid",
 ]

@@ -10,7 +10,7 @@ from fastapi import HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import inspect, or_
 
-from fastapi_plantilla.core.crud.actors import enrich_actors
+from fastapi_plantilla.core.crud.actors import enrich_actors, to_uuid
 from fastapi_plantilla.core.crud.exporter import format_export
 from fastapi_plantilla.core.crud.repository import BaseRepository
 from fastapi_plantilla.core.crud.schema import (
@@ -25,11 +25,14 @@ from fastapi_plantilla.core.crud.schema import (
     PaginationParams,
     ScopeContext,
     SortOrder,
+    UserReference,
     WriteOptions,
 )
 from fastapi_plantilla.core.database import Base
 
-__all__ = ["BaseCRUDService", "ExportResult", "adjust_end_of_day"]
+__all__ = ["BaseCRUDService", "ExportResult", "adjust_end_of_day", "to_uuid"]
+
+_MODEL_COLUMN_CACHE: dict[type[Any], frozenset[str]] = {}
 
 
 class ExportResult(tuple[Any, ...]):
@@ -118,26 +121,20 @@ class BaseCRUDService[ModelT: Base]:
     def __init__(self, repository: BaseRepository[ModelT]) -> None:
         self.repository = repository
         self.model = repository.model
-        mapper = inspect(self.model)
-        self._column_names: frozenset[str] = (
-            frozenset(mapper.columns.keys())
-            if mapper is not None and hasattr(mapper, "columns")
-            else frozenset()
-        )
+        if self.model not in _MODEL_COLUMN_CACHE:
+            mapper = inspect(self.model)
+            _MODEL_COLUMN_CACHE[self.model] = (
+                frozenset(mapper.columns.keys())
+                if mapper is not None and hasattr(mapper, "columns")
+                else frozenset()
+            )
+        self._column_names: frozenset[str] = _MODEL_COLUMN_CACHE[self.model]
 
     # ==========================================
     # 1. HELPERS DE SEGURIDAD Y CONVERSIÓN
     # ==========================================
 
-    @staticmethod
-    def _to_uuid(val: Any) -> uuid.UUID | None:
-        """Safely coerce value to UUID, returning None on failure."""
-        if val is None or isinstance(val, uuid.UUID):
-            return val
-        try:
-            return uuid.UUID(str(val))
-        except (ValueError, AttributeError):
-            return None
+    _to_uuid = staticmethod(to_uuid)
 
     @staticmethod
     def _resolve_write_options(
@@ -153,6 +150,14 @@ class BaseCRUDService[ModelT: Base]:
                 options = options.model_copy(update={"scope": scope})
             return options
         return WriteOptions(user_id=user_id, scope=scope)
+
+    @staticmethod
+    def _extract_known_actor(opts: WriteOptions | None) -> UserReference | None:
+        """Extract a UserReference from WriteOptions if actor details are present."""
+        if opts and opts.user_id is not None and (opts.actor_name or opts.actor_email):
+            uid = BaseCRUDService._to_uuid(opts.user_id)
+            return UserReference(id=uid, name=opts.actor_name, email=opts.actor_email)
+        return None
 
     def _get_column(self, field_name: str) -> Any | None:
         """Safely resolve an attribute to a mapped database column."""
@@ -551,8 +556,12 @@ class BaseCRUDService[ModelT: Base]:
                 for k, v in payload.items()
                 if k not in self.IMMUTABLE_CREATE_FIELDS
             }
+        opts = self._resolve_write_options(options, user_id, scope)
         item = await self.repository.create(payload)
-        await enrich_actors(self.repository.session, [item])
+        known = self._extract_known_actor(opts)
+        await enrich_actors(
+            self.repository.session, [item], known_users=[known] if known else None
+        )
         return item
 
     async def update(
@@ -578,6 +587,7 @@ class BaseCRUDService[ModelT: Base]:
             }
         opts = self._resolve_write_options(options, user_id, scope)
         where_clauses = list(where) + self.build_scope_filters(opts.scope)
+        known = self._extract_known_actor(opts)
 
         if not payload:
             item = await self.repository.find_first(
@@ -602,7 +612,9 @@ class BaseCRUDService[ModelT: Base]:
                         "record was modified by another transaction"
                     ),
                 )
-            await enrich_actors(self.repository.session, [item])
+            await enrich_actors(
+                self.repository.session, [item], known_users=[known] if known else None
+            )
             return item
 
         updated = await self.repository.update(
@@ -625,7 +637,9 @@ class BaseCRUDService[ModelT: Base]:
                     "record was modified by another transaction"
                 ),
             )
-        await enrich_actors(self.repository.session, [updated])
+        await enrich_actors(
+            self.repository.session, [updated], known_users=[known] if known else None
+        )
         return updated
 
     async def delete(
@@ -642,7 +656,10 @@ class BaseCRUDService[ModelT: Base]:
         deleted = await self.repository.delete(id, *where_clauses)
         if deleted is None:
             await self._raise_not_found_or_forbidden(id)
-        await enrich_actors(self.repository.session, [deleted])
+        known = self._extract_known_actor(opts)
+        await enrich_actors(
+            self.repository.session, [deleted], known_users=[known] if known else None
+        )
         return deleted
 
     async def bulk_create(

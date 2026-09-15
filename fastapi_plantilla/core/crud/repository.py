@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.database import Base
 
+_MODEL_PK_CACHE: dict[type[Any], Any] = {}
+
 
 class BaseRepository[ModelT: Base]:
     """Generic repository providing asynchronous CRUD database operations."""
@@ -13,7 +15,9 @@ class BaseRepository[ModelT: Base]:
     def __init__(self, model: type[ModelT], session: AsyncSession) -> None:
         self.model = model
         self.session = session
-        self.pk = inspect(model).primary_key[0]
+        if model not in _MODEL_PK_CACHE:
+            _MODEL_PK_CACHE[model] = inspect(model).primary_key[0]
+        self.pk = _MODEL_PK_CACHE[model]
 
     async def get_by_id(self, id: uuid.UUID) -> ModelT | None:
         """Retrieve a single record by its primary key ID."""
@@ -60,12 +64,15 @@ class BaseRepository[ModelT: Base]:
         stmt = select(select(self.model).where(*where).exists())
         return bool(await self.session.scalar(stmt))
 
-    async def create(self, data: dict[str, Any] | ModelT) -> ModelT:
+    async def create(
+        self, data: dict[str, Any] | ModelT, refresh: bool = True
+    ) -> ModelT:
         """Insert a new record into the database."""
         instance = self.model(**data) if isinstance(data, dict) else data
         self.session.add(instance)
         await self.session.flush()
-        await self.session.refresh(instance)
+        if refresh:
+            await self.session.refresh(instance)
         return instance
 
     async def create_many(self, data_list: list[dict[str, Any]]) -> int:

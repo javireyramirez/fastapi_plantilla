@@ -470,3 +470,67 @@ async def test_crud_router_export_truncation_headers(
         assert "x-total-count" in res.headers
         assert int(res.headers["x-total-count"]) >= 3
         assert res.headers.get("x-export-truncated") == "true"
+
+
+def test_crud_router_supported_actions_filtering() -> None:
+    """Verify create_crud_router only mounts routes for supported_actions."""
+    from fastapi_plantilla.modules.rbac.schema import RbacActions
+
+    router = create_crud_router(
+        service_getter=lambda: None,
+        schema_out=ItemOut,
+        schema_create=ItemCreate,
+        schema_update=ItemUpdate,
+        prefix="/read-export-only",
+        supported_actions=[RbacActions.READ, RbacActions.EXPORT],
+    )
+
+    route_methods_and_paths = [
+        (method, getattr(route, "path", ""))
+        for route in router.routes
+        for method in getattr(route, "methods", set())
+    ]
+
+    # READ & EXPORT endpoints must be present
+    assert ("GET", "/read-export-only") in route_methods_and_paths
+    assert ("GET", "/read-export-only/list") in route_methods_and_paths
+    assert ("GET", "/read-export-only/{id}") in route_methods_and_paths
+    assert ("POST", "/read-export-only/export") in route_methods_and_paths
+
+    # CREATE, UPDATE, DELETE, RESTORE must NOT be present
+    assert ("POST", "/read-export-only") not in route_methods_and_paths
+    assert ("POST", "/read-export-only/bulk") not in route_methods_and_paths
+    assert ("PATCH", "/read-export-only/{id}") not in route_methods_and_paths
+    assert ("DELETE", "/read-export-only/{id}") not in route_methods_and_paths
+    assert ("POST", "/read-export-only/{id}/restore") not in route_methods_and_paths
+    assert ("DELETE", "/read-export-only/{id}/permanent") not in route_methods_and_paths
+    assert ("POST", "/read-export-only/bulk/trash") not in route_methods_and_paths
+
+
+def test_crud_router_include_flags() -> None:
+    """Verify include_bulk=False and include_trash=False exclude specific routes."""
+    router = create_crud_router(
+        service_getter=lambda: None,
+        schema_out=ItemOut,
+        schema_create=ItemCreate,
+        schema_update=ItemUpdate,
+        prefix="/no-bulk-no-trash",
+        include_bulk=False,
+        include_trash=False,
+    )
+
+    paths = [getattr(route, "path", "") for route in router.routes]
+
+    # Standard single operations must exist
+    assert "/no-bulk-no-trash" in paths
+    assert "/no-bulk-no-trash/{id}" in paths
+
+    # Bulk routes must NOT exist
+    assert "/no-bulk-no-trash/bulk" not in paths
+    assert "/no-bulk-no-trash/bulk/trash" not in paths
+    assert "/no-bulk-no-trash/bulk/restore" not in paths
+    assert "/no-bulk-no-trash/bulk/permanent" not in paths
+
+    # Trash routes must NOT exist
+    assert "/no-bulk-no-trash/{id}/restore" not in paths
+    assert "/no-bulk-no-trash/{id}/permanent" not in paths
