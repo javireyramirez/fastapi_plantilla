@@ -158,7 +158,9 @@ class BaseCRUDService[ModelT: Base]:
             for f in fields
             if (col := self._get_column(f)) is not None
         ]
-        return or_(*clauses) if clauses else None
+        if not clauses:
+            return None
+        return clauses[0] if len(clauses) == 1 else or_(*clauses)
 
     def build_date_range_filter(
         self,
@@ -265,16 +267,12 @@ class BaseCRUDService[ModelT: Base]:
     def build_where_filters(self, params: PaginationParams) -> list[Any]:
         """Build query filter clauses from pagination parameters."""
         clauses: list[Any] = []
-        if params.search:
-            search_clauses = [
-                self.build_string_filter(field, params.search)
-                for field in self.search_fields
-            ]
-            valid_search = [c for c in search_clauses if c is not None]
-            if len(valid_search) == 1:
-                clauses.append(valid_search[0])
-            elif len(valid_search) > 1:
-                clauses.append(or_(*valid_search))
+        if (
+            search_clause := self.build_multi_search_filter(
+                self.search_fields, params.search
+            )
+        ) is not None:
+            clauses.append(search_clause)
 
         for col_name, f_from, f_to in (
             ("created_at", params.created_at_from, params.created_at_to),

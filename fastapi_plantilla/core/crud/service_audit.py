@@ -59,11 +59,50 @@ def register_audit_sync_hook(hook: AuditSyncHook) -> None:
     _AUDIT_SYNC_HOOKS.append(hook)
 
 
+async def dispatch_audit_event(session: AsyncSession, entry: AuditEntry) -> None:
+    """Dispatch an audit entry to all registered audit sync hooks."""
+    for hook in _AUDIT_SYNC_HOOKS:
+        try:
+            await hook(session, entry)
+        except Exception as err:
+            logger.warning(f"Audit hook execution failed: {err}")
+
+
+async def dispatch_trash_hook(
+    session: AsyncSession,
+    item: Any,
+    is_trash: bool,
+    user_id: str | uuid.UUID | None = None,
+) -> None:
+    """Dispatch a trash sync event to all registered trash sync hooks."""
+    for hook in _TRASH_SYNC_HOOKS:
+        try:
+            await hook(session, item, is_trash, user_id)
+        except Exception as err:
+            logger.warning(f"Trash sync hook failed: {err}")
+
+
+async def dispatch_purge_hook(
+    session: AsyncSession,
+    entity_type: str,
+    id: uuid.UUID,
+) -> None:
+    """Dispatch a purge sync event to all registered purge sync hooks."""
+    for hook in _PURGE_SYNC_HOOKS:
+        try:
+            await hook(session, entity_type, id)
+        except Exception as err:
+            logger.warning(f"Purge sync hook failed: {err}")
+
+
 __all__ = [
     "AuditSyncHook",
     "BaseAuditService",
     "PurgeSyncHook",
     "TrashSyncHook",
+    "dispatch_audit_event",
+    "dispatch_purge_hook",
+    "dispatch_trash_hook",
     "register_audit_sync_hook",
     "register_purge_sync_hook",
     "register_trash_sync_hook",
@@ -565,11 +604,7 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         user_id: str | uuid.UUID | None = None,
     ) -> None:
         """Hook executed after soft-deleting an item."""
-        for hook in _TRASH_SYNC_HOOKS:
-            try:
-                await hook(self.repository.session, item, True, user_id)
-            except Exception as err:
-                logger.warning(f"Trash sync hook failed on trash: {err}")
+        await dispatch_trash_hook(self.repository.session, item, True, user_id)
 
     async def on_after_restore(
         self,
@@ -577,22 +612,14 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
         user_id: str | uuid.UUID | None = None,
     ) -> None:
         """Hook executed after restoring an item."""
-        for hook in _TRASH_SYNC_HOOKS:
-            try:
-                await hook(self.repository.session, item, False, user_id)
-            except Exception as err:
-                logger.warning(f"Trash sync hook failed on restore: {err}")
+        await dispatch_trash_hook(self.repository.session, item, False, user_id)
 
     async def on_after_permanent_delete(self, id: uuid.UUID) -> None:
         """Hook executed after permanently deleting an item."""
         entity_type = getattr(self.model, "__name__", self.resource_name).lower()
         if entity_type.startswith("sys_"):
             entity_type = entity_type.removeprefix("sys_").rstrip("s")
-        for hook in _PURGE_SYNC_HOOKS:
-            try:
-                await hook(self.repository.session, entity_type, id)
-            except Exception as err:
-                logger.warning(f"Purge sync hook failed on delete: {err}")
+        await dispatch_purge_hook(self.repository.session, entity_type, id)
 
     async def on_after_bulk_trash(
         self,
@@ -807,8 +834,4 @@ class BaseAuditService[ModelT: Base](BaseCRUDService[ModelT]):
             details=details,
         )
 
-        for hook in _AUDIT_SYNC_HOOKS:
-            try:
-                await hook(self.repository.session, entry)
-            except Exception as err:
-                logger.warning(f"Audit hook execution failed: {err}")
+        await dispatch_audit_event(self.repository.session, entry)

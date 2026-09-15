@@ -2,8 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from loguru import logger
-from sqlalchemy import delete, inspect, or_, select, update
+from sqlalchemy import delete, inspect, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.repository import BaseRepository
@@ -184,26 +183,11 @@ class TrashRepository(BaseRepository[TrashItem]):
         entity_id: uuid.UUID,
     ) -> str | None:
         """Query database to get human-readable name for any entity generically."""
-        model = resolve_model(entity_type)
-        if model is None:
-            return None
+        from fastapi_plantilla.core.crud.principal import (  # noqa: PLC0415
+            resolve_principal_entity_name,
+        )
 
-        for attr in ("name", "title", "username", "code", "email"):
-            col = getattr(model, attr, None)
-            if col is not None:
-                try:
-                    pk_col = inspect(model).primary_key[0]
-                    stmt = select(col).where(pk_col == entity_id)
-                    res = await self.session.execute(stmt)
-                    val = res.scalar_one_or_none()
-                    if val:
-                        return str(val)
-                except Exception as err:
-                    logger.debug(
-                        f"Could not resolve name for {entity_type}:{entity_id}: {err}"
-                    )
-                    return None
-        return None
+        return await resolve_principal_entity_name(self.session, entity_type, entity_id)
 
     async def restore_target_model(
         self,

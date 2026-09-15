@@ -19,7 +19,7 @@ from fastapi_plantilla.core.crud.schema import (
     ScopeContext,
     ScopeType,
 )
-from fastapi_plantilla.core.crud.service_audit import _AUDIT_SYNC_HOOKS
+from fastapi_plantilla.core.crud.service_audit import dispatch_audit_event
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.rbac.catalog import CORE_SYSTEM_MODULES
@@ -103,9 +103,12 @@ async def resolve_entity_name(
     entity_type: str,
     entity_id: uuid.UUID,
 ) -> str | None:
-    """Delegate entity name lookup to repository for backward compatibility."""
-    repo = TrashRepository(session)
-    return await repo.resolve_entity_name(entity_type, entity_id)
+    """Delegate entity name lookup to central helper."""
+    from fastapi_plantilla.core.crud.principal import (  # noqa: PLC0415
+        resolve_principal_entity_name,
+    )
+
+    return await resolve_principal_entity_name(session, entity_type, entity_id)
 
 
 def _to_response(item: TrashItem) -> TrashItemResponse:
@@ -242,8 +245,6 @@ class TrashService:
         details: str | None = None,
     ) -> None:
         """Dispatch audit event to registered audit sync listeners."""
-        if not _AUDIT_SYNC_HOOKS:
-            return
         entry = AuditEntry(
             entity_type=entity_type,
             entity_id=entity_id,
@@ -253,11 +254,7 @@ class TrashService:
             changes=changes,
             details=details,
         )
-        for hook in _AUDIT_SYNC_HOOKS:
-            try:
-                await hook(self.repository.session, entry)
-            except Exception as err:
-                logger.warning(f"Trash audit hook execution failed: {err}")
+        await dispatch_audit_event(self.repository.session, entry)
 
     async def restore_item(
         self,
