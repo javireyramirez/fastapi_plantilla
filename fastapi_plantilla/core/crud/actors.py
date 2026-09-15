@@ -53,11 +53,19 @@ def to_uuid(val: Any) -> uuid.UUID | None:
 
 
 def _is_active(item: Any) -> bool:
-    """Check if an item has an explicit ACTIVE lifecycle status."""
+    """Check if an item is active in the current business context.
+
+    Models without status are considered active by default, except the global
+    trash bin entity (TrashItem) which tracks deleted items to enrich deletor.
+    """
     status = getattr(item, "status", None)
     if status is not None:
         return getattr(status, "value", status) == "ACTIVE"
-    return not hasattr(item, "expires_at")
+    # TrashItem lacks a status column but represents deleted items in sys_trash_bin
+    is_trash_item = getattr(item, "__tablename__", None) == "sys_trash_bin" or (
+        hasattr(item, "expires_at") and hasattr(item, "target_entity_type")
+    )
+    return not is_trash_item
 
 
 def _collect_actor_uuids(items: Sequence[Any]) -> dict[str, uuid.UUID]:

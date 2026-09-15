@@ -1351,8 +1351,16 @@ def test_is_active_helper() -> None:
     assert _is_active(SimpleNamespace(status=None)) is True
     assert _is_active(SimpleNamespace()) is True
     assert _is_active(object()) is True
-    # TrashItem models without status but with expires_at are in trash
-    assert _is_active(SimpleNamespace(expires_at="2026-09-15")) is False
+    # Business models with expires_at (subscriptions, sessions) stay active
+    assert _is_active(SimpleNamespace(expires_at="2026-09-15")) is True
+    # TrashItem models (with target_entity_type or sys_trash_bin) are in trash
+    assert (
+        _is_active(
+            SimpleNamespace(expires_at="2026-09-15", target_entity_type="invoice")
+        )
+        is False
+    )
+    assert _is_active(SimpleNamespace(__tablename__="sys_trash_bin")) is False
 
 
 def test_export_request_rejects_empty_columns() -> None:
