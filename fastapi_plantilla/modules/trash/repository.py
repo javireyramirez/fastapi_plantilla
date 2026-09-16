@@ -29,6 +29,9 @@ __all__ = [
 ]
 
 from fastapi_plantilla.modules.common.resolvers import (
+    normalize_entity_types,
+)
+from fastapi_plantilla.modules.common.resolvers import (
     register_entity_model as register_trash_model,
 )
 from fastapi_plantilla.modules.common.resolvers import (
@@ -107,13 +110,11 @@ def _build_trash_filters(
         where.append(cat_clause)
 
     if params.entity_type:
-        raw_types = [
-            t.strip().lower() for t in params.entity_type.split(",") if t.strip()
-        ]
-        if len(raw_types) == 1:
-            where.append(TrashItem.entity_type == raw_types[0])
-        elif raw_types:
-            where.append(TrashItem.entity_type.in_(raw_types))
+        entity_types = normalize_entity_types(params.entity_type)
+        if len(entity_types) == 1:
+            where.append(TrashItem.entity_type == entity_types[0])
+        elif entity_types:
+            where.append(TrashItem.entity_type.in_(entity_types))
 
     where.extend(_build_date_filters(params))
 

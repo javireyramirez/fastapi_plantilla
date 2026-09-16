@@ -6,6 +6,7 @@ __all__ = [
     "CODE_TO_ENTITY",
     "ENTITY_TO_CODE",
     "MODULE_NAMES",
+    "normalize_entity_types",
     "register_entity_model",
     "resolve_entity_model",
     "resolve_module_metadata",
@@ -68,6 +69,14 @@ def resolve_module_metadata(entity_type: str | None) -> tuple[str, str]:
         return (code, name)
     clean = raw.removesuffix("s") if raw.endswith("s") and len(raw) > 3 else raw
     return (raw, clean.replace("_", " ").title())
+
+
+def normalize_entity_types(value: str | None) -> list[str]:
+    """Split comma-separated filter into singular canonical entity types."""
+    if not value:
+        return []
+    raw_types = [t.strip().lower() for t in value.split(",") if t.strip()]
+    return [CODE_TO_ENTITY.get(t, t) for t in raw_types]
 
 
 def resolve_entity_model(entity_type: str) -> type[Base] | None:

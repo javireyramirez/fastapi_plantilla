@@ -997,3 +997,46 @@ async def test_purge_expired_audit_helper(
     assert count >= 1
 
     assert await repo.get_by_id(old_log.id) is None
+
+
+@pytest.mark.anyio
+async def test_audit_query_plural_module_codes(
+    test_app: FastAPI,
+    dbsession: AsyncSession,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Regression: plural codes (companies,storage) must match singular stored types."""
+    admin, _ = audit_users
+    test_app.dependency_overrides[get_current_active_superuser] = lambda: admin
+
+    repo = AuditRepository(dbsession)
+    company_id = generate_uuid7()
+    storage_id = generate_uuid7()
+    await repo.record_entry(
+        AuditEntry(
+            entity_type="company",
+            entity_id=company_id,
+            action="CREATE",
+            actor_id=admin.id,
+        )
+    )
+    await repo.record_entry(
+        AuditEntry(
+            entity_type="storage",
+            entity_id=storage_id,
+            action="CREATE",
+            actor_id=admin.id,
+        )
+    )
+    await dbsession.commit()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://test"
+    ) as client:
+        res = await client.get(
+            "/api/audit?page=1&limit=20&entity_type=companies,storage"
+        )
+        assert res.status_code == 200
+        found_ids = {d["entity_id"] for d in res.json()["data"]}
+        assert str(company_id) in found_ids
+        assert str(storage_id) in found_ids

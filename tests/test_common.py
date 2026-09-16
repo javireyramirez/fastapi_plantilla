@@ -30,6 +30,7 @@ def test_common_module_exports() -> None:
         "MODULE_NAMES",
         "PrincipalEntityModule",
         "enrich_principal_entities",
+        "normalize_entity_types",
         "register_entity_model",
         "resolve_entity_model",
         "resolve_module_metadata",

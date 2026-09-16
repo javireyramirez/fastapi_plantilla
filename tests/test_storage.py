@@ -1150,3 +1150,43 @@ async def test_purge_pending_orphans_endpoint(
 
     # Verify orphan is deleted
     assert await repo.get_by_id(orphan_id) is None
+
+
+@pytest.mark.anyio
+async def test_documents_content_types_repeated_query_params(
+    storage_client: AsyncClient,
+) -> None:
+    """Regression: repeated content_types params must filter instead of ignored."""
+    entity_id = uuid.uuid4()
+
+    async def _upload(filename: str, mime: str) -> str:
+        res = await storage_client.post(
+            "/api/storage/upload",
+            files={"file": (filename, io.BytesIO(b"data"), mime)},
+            data={"entity_type": "companies", "entity_id": str(entity_id)},
+        )
+        assert res.status_code == 201
+        return res.json()["id"]
+
+    pdf_id = await _upload("doc.pdf", "application/pdf")
+    png_id = await _upload("img.png", "image/png")
+    txt_id = await _upload("note.txt", "text/plain")
+
+    res = await storage_client.get(
+        "/api/storage",
+        params=[
+            ("page", "1"),
+            ("limit", "20"),
+            ("entity_id", str(entity_id)),
+            ("sort_by", "created_at"),
+            ("sort_order", "desc"),
+            ("content_types", "application/pdf"),
+            ("content_types", "image/png"),
+            ("is_trash", "false"),
+        ],
+    )
+    assert res.status_code == 200
+    ids = [d["id"] for d in res.json()["data"]]
+    assert pdf_id in ids
+    assert png_id in ids
+    assert txt_id not in ids

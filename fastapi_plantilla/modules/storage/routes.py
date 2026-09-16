@@ -238,7 +238,7 @@ async def download_zip(
     summary="List paginated storage records with filtering and RBAC scope",
 )
 async def list_storage(
-    params: Annotated[StorageFilterParams, Depends()],
+    params: Annotated[StorageFilterParams, Query()],
     service: StorageService = Depends(get_storage_service),
     scope: ScopeContext = Depends(get_scope_context),
 ) -> PaginatedResponse[Storage]:

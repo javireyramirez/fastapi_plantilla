@@ -14,6 +14,7 @@ from fastapi_plantilla.modules.audit.schema import (
     DEFAULT_AUDIT_PURGE_LIMIT,
     AuditFilterParams,
 )
+from fastapi_plantilla.modules.common.resolvers import normalize_entity_types
 
 __all__ = ["AuditRepository"]
 
@@ -69,14 +70,11 @@ def _resolve_date_conditions(params: AuditFilterParams) -> list[Any]:
 def _build_audit_conditions(params: AuditFilterParams) -> list[Any]:
     """Construct SQLAlchemy query filters from AuditFilterParams."""
     conditions: list[Any] = []
-    if params.entity_type:
-        raw_types = [
-            t.strip().lower() for t in params.entity_type.split(",") if t.strip()
-        ]
-        if len(raw_types) == 1:
-            conditions.append(AuditLog.entity_type == raw_types[0])
-        elif raw_types:
-            conditions.append(AuditLog.entity_type.in_(raw_types))
+    entity_types = normalize_entity_types(params.entity_type)
+    if len(entity_types) == 1:
+        conditions.append(AuditLog.entity_type == entity_types[0])
+    elif entity_types:
+        conditions.append(AuditLog.entity_type.in_(entity_types))
     if params.entity_id:
         conditions.append(AuditLog.entity_id == params.entity_id)
     if params.entity_name:
@@ -172,8 +170,10 @@ class AuditRepository(BaseRepository[AuditLog]):
         self, entity_type: str, entity_id: uuid.UUID
     ) -> list[AuditLog]:
         """Fetch all chronological audit logs for a specific entity."""
+        normalized = normalize_entity_types(entity_type)
+        entity_filter = normalized[0] if normalized else entity_type.strip().lower()
         return await self.find_many(
-            AuditLog.entity_type == entity_type.strip().lower(),
+            AuditLog.entity_type == entity_filter,
             AuditLog.entity_id == entity_id,
             limit=500,
             order_by=desc(AuditLog.created_at),
