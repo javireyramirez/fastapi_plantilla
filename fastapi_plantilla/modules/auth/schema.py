@@ -5,13 +5,17 @@ from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr
 
+MIN_PASSWORD_LENGTH: int = 8
+
 
 def validate_password_rules(v: str) -> str:
     """Password validation function."""
 
     v = v.strip()
-    if len(v) < 8:
-        raise ValueError("La contraseña debe tener al menos 8 caracteres")
+    if len(v) < MIN_PASSWORD_LENGTH:
+        raise ValueError(
+            f"La contraseña debe tener al menos {MIN_PASSWORD_LENGTH} caracteres"
+        )
     if not re.search(r"[a-z]", v):
         raise ValueError("Debe incluir al menos una letra minúscula")
     if not re.search(r"[A-Z]", v):
@@ -53,7 +57,7 @@ class PasswordChange(BaseModel):
 
     current_password: str
     new_password: PasswordStr
-    revoke_other_sessions: bool = False
+    revoke_other_sessions: bool = True
 
 
 class ForgotPasswordRequest(BaseModel):

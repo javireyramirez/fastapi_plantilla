@@ -1,8 +1,9 @@
 import uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import Depends, HTTPException, status
+from fastapi import HTTPException, status
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,17 +16,30 @@ from fastapi_plantilla.core.crud.schema import (
     PaginatedResponse,
     PaginationMeta,
 )
+from fastapi_plantilla.core.crud.service_base import ExportResult
 from fastapi_plantilla.modules.audit.models import AuditLog
 from fastapi_plantilla.modules.audit.repository import AuditRepository
 from fastapi_plantilla.modules.audit.schema import (
+    DEFAULT_AUDIT_EXPORT_LIMIT,
+    DEFAULT_AUDIT_PURGE_LIMIT,
+    DEFAULT_AUDIT_RETENTION_DAYS,
+    MAX_AUDIT_EXPORT_LIMIT,
     AuditFilterParams,
     AuditLogExportResponse,
     AuditLogResponse,
 )
 from fastapi_plantilla.modules.auth.models import User
+from fastapi_plantilla.modules.common.resolvers import (
+    CODE_TO_ENTITY as _CODE_TO_ENTITY,
+)
+from fastapi_plantilla.modules.common.resolvers import (
+    resolve_entity_model,
+)
 from fastapi_plantilla.modules.companies.models import Company
 from fastapi_plantilla.modules.rbac.catalog import CORE_SYSTEM_MODULES
 from fastapi_plantilla.modules.rbac.models import Role, SystemModule
+from fastapi_plantilla.modules.settings.models import SystemSetting
+from fastapi_plantilla.modules.settings.service import SystemSettingService
 from fastapi_plantilla.modules.storage.models import Storage
 from fastapi_plantilla.modules.teams.models import Team
 from fastapi_plantilla.modules.trash.models import TrashItem
@@ -34,6 +48,7 @@ __all__ = [
     "AuditService",
     "enrich_audit_modules",
     "enrich_entity_names",
+    "purge_expired_audit",
     "resolve_audit_module",
 ]
 
@@ -46,6 +61,8 @@ MODEL_TYPE_MAP: dict[str, tuple[Any, bool]] = {
     "module": (SystemModule, False),
     "storage": (Storage, False),
     "trash": (TrashItem, False),
+    "setting": (SystemSetting, False),
+    "systemsetting": (SystemSetting, False),
 }
 
 
@@ -53,7 +70,7 @@ def _extract_name_from_changes(changes: Any) -> str | None:
     """Extract candidate entity name from audit diff changes."""
     if not isinstance(changes, dict):
         return None
-    for key in ("name", "title", "filename", "username", "code", "email"):
+    for key in ("name", "title", "filename", "username", "code", "email", "key"):
         val = changes.get(key)
         if isinstance(val, dict) and ("new" in val or "old" in val):
             val = val.get("new") or val.get("old")
@@ -72,11 +89,15 @@ async def _query_names_for_model(
     """Fetch entity names for a specific model class in batch."""
     if not ids:
         return {}
-    cols = [model.id, model.name, model.email] if is_user else [model.id, model.name]
+    name_col = getattr(model, "name", None) or getattr(model, "key", None)
+    if name_col is None:
+        return {}
+    cols = [model.id, name_col, model.email] if is_user else [model.id, name_col]
     stmt = select(*cols).where(model.id.in_(list(ids)))
     res = await session.execute(stmt)
+    name_attr = "name" if hasattr(model, "name") else "key"
     return {
-        r.id: (r.name or r.email) if is_user else r.name
+        r.id: (r.name or r.email) if is_user else getattr(r, name_attr)
         for r in res.all()
         if getattr(r, "id", None)
     }
@@ -86,13 +107,15 @@ async def _resolve_entities_from_db(
     session: AsyncSession,
     type_to_ids: dict[str, set[uuid.UUID]],
 ) -> dict[uuid.UUID, str]:
-    """Query domain models in batch to resolve entity names."""
+    """Query domain models in batch to resolve entity names using centralized SSOT."""
     id_to_name: dict[uuid.UUID, str] = {}
     for etype, ids in type_to_ids.items():
-        mapping = MODEL_TYPE_MAP.get(etype)
-        if not mapping or not ids:
+        if not ids:
             continue
-        model, is_user = mapping
+        model = resolve_entity_model(etype)
+        if not model:
+            continue
+        is_user = etype in ("user", "users")
         try:
             resolved = await _query_names_for_model(
                 session, model, list(ids), is_user=is_user
@@ -174,14 +197,6 @@ async def enrich_entity_names(
             item.entity_name = id_to_name[item.entity_id]
 
 
-_CODE_TO_ENTITY: dict[str, str] = {
-    "companies": "company",
-    "users": "user",
-    "teams": "team",
-    "roles": "role",
-    "storage": "storage",
-}
-
 AUDIT_MODULE_CATALOG: dict[str, tuple[str, str]] = {}
 for _m in CORE_SYSTEM_MODULES:
     _code = _m["code"]
@@ -216,8 +231,13 @@ def enrich_audit_modules(items: Sequence[AuditLog]) -> None:
 class AuditService:
     """Business service governing audit trail querying and emission."""
 
-    def __init__(self, repository: AuditRepository = Depends()) -> None:
+    def __init__(
+        self,
+        repository: AuditRepository,
+        settings_service: SystemSettingService | None = None,
+    ) -> None:
         self.repository = repository
+        self.settings_service = settings_service
 
     async def record_entry(self, entry: AuditEntry) -> AuditLogResponse:
         """Persist an audit entry and return the validated response."""
@@ -297,19 +317,52 @@ class AuditService:
         enrich_audit_modules(items)
         return [AuditLogResponse.model_validate(item) for item in items]
 
+    async def purge_expired(self, limit: int | None = None) -> int:
+        """Purge all audit logs whose retention period has expired."""
+        days = DEFAULT_AUDIT_RETENTION_DAYS
+        effective_limit = limit or DEFAULT_AUDIT_PURGE_LIMIT
+        if self.settings_service is not None:
+            try:
+                raw_days = await self.settings_service.get_value(
+                    "audit.retention_days", default=DEFAULT_AUDIT_RETENTION_DAYS
+                )
+                days = int(raw_days)
+            except (ValueError, TypeError):
+                days = DEFAULT_AUDIT_RETENTION_DAYS
+            if limit is None:
+                try:
+                    raw_limit = await self.settings_service.get_value(
+                        "audit.purge_limit", default=DEFAULT_AUDIT_PURGE_LIMIT
+                    )
+                    effective_limit = int(raw_limit)
+                except (ValueError, TypeError):
+                    effective_limit = DEFAULT_AUDIT_PURGE_LIMIT
+
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        return await self.repository.purge_before(cutoff=cutoff, limit=effective_limit)
+
     async def export_data(
         self,
         req: ExportRequest,
-        limit: int = 1000,
-    ) -> tuple[bytes | str, str, str]:
-        """Export audit logs to CSV, Excel, or JSON format."""
+        limit: int = DEFAULT_AUDIT_EXPORT_LIMIT,
+    ) -> ExportResult:
+        """Export audit logs to CSV, Excel, or JSON format with standard headers."""
+        effective_limit = (
+            min(limit, MAX_AUDIT_EXPORT_LIMIT) if limit else DEFAULT_AUDIT_EXPORT_LIMIT
+        )
         items = await self.repository.get_logs_for_export(
             ids=req.ids,
             filters=req.filters,
             sort_by=req.sort_by,
             sort_order=req.sort_order,
-            limit=limit,
+            limit=effective_limit + 1,
         )
+
+        is_truncated = len(items) > effective_limit
+        if is_truncated:
+            items = items[:effective_limit]
+
+        total_count = len(items)
         await enrich_actors(self.repository.session, items)
         await enrich_entity_names(self.repository.session, items)
         enrich_audit_modules(items)
@@ -326,9 +379,27 @@ class AuditService:
             AuditLogExportResponse.model_validate(item).model_dump(mode="json")
             for item in items
         ]
-        return format_export(
+        content, media_type, filename = format_export(
             format=req.format,
             data=rows,
             slug="audit_logs",
             columns=req.columns,
         )
+        return ExportResult(
+            content=content,
+            media_type=media_type,
+            filename=filename,
+            total_count=total_count,
+            is_truncated=is_truncated,
+        )
+
+
+async def purge_expired_audit(
+    session: AsyncSession,
+    limit: int = DEFAULT_AUDIT_PURGE_LIMIT,
+    settings_service: SystemSettingService | None = None,
+) -> int:
+    """Purge expired audit records in a database session."""
+    repo = AuditRepository(session)
+    service = AuditService(repo, settings_service=settings_service)
+    return await service.purge_expired(limit=limit)

@@ -20,6 +20,8 @@ from fastapi_plantilla.core.database import (
     load_all_models,
     meta,
 )
+from fastapi_plantilla.modules.audit.listener import setup_audit_listeners
+from fastapi_plantilla.modules.trash.listener import setup_trash_listeners
 
 
 @pytest.fixture(scope="session")
@@ -40,6 +42,8 @@ async def _engine(anyio_backend: Any) -> AsyncGenerator[AsyncEngine, None]:
     :yield: new engine.
     """
     load_all_models()
+    setup_audit_listeners()
+    setup_trash_listeners()
 
     await create_database()
 

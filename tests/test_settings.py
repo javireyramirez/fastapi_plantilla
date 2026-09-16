@@ -272,3 +272,106 @@ async def test_get_export_formats(client: AsyncClient) -> None:
     assert isinstance(data, list)
     assert "csv" in data
     assert "json" in data
+
+
+@pytest.mark.anyio
+async def test_settings_cache_defensive_copy(dbsession: AsyncSession) -> None:
+    """Verify that mutable values retrieved from cache are defensively copied."""
+    repo = SystemSettingRepository(dbsession)
+    service = SystemSettingService(repo)
+    service.invalidate_cache()
+
+    s = SystemSetting(
+        id=generate_uuid7(),
+        key="test.mutable_list",
+        value=["alpha", "beta"],
+        category="general",
+        is_public=True,
+    )
+    dbsession.add(s)
+    await dbsession.flush()
+
+    # 1. First get_value returns copy
+    val1 = await service.get_value("test.mutable_list")
+    assert val1 == ["alpha", "beta"]
+
+    # 2. Mutate returned list in-place
+    val1.append("gamma")
+    assert val1 == ["alpha", "beta", "gamma"]
+
+    # 3. Subsequent get_value is NOT contaminated
+    val2 = await service.get_value("test.mutable_list")
+    assert val2 == ["alpha", "beta"]
+
+    # 4. Same defensive behavior on public_settings
+    pub_map1 = await service.get_public_settings()
+    pub_map1["test.mutable_list"].append("corrupted")
+
+    pub_map2 = await service.get_public_settings()
+    assert pub_map2["test.mutable_list"] == ["alpha", "beta"]
+
+    await dbsession.delete(s)
+    await dbsession.flush()
+    service.invalidate_cache()
+
+
+@pytest.mark.anyio
+async def test_get_settings_categories_endpoint(
+    fastapi_app: FastAPI,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify GET /api/settings/categories returns distinct sorted categories."""
+    superuser = _mock_user(is_super=True)
+    fastapi_app.dependency_overrides[get_current_active_superuser] = lambda: superuser
+
+    transport = ASGITransport(app=fastapi_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get("/api/settings/categories")
+        assert res.status_code == status.HTTP_200_OK
+        cats = res.json()
+        assert isinstance(cats, list)
+        assert cats == sorted(cats)
+
+    fastapi_app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_settings_validation_null_and_empty(
+    fastapi_app: FastAPI,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify validation rules reject null or empty strings when inappropriate."""
+    s = SystemSetting(
+        id=generate_uuid7(),
+        key="test.non_null_str",
+        value="valid_string",
+        category="general",
+        is_public=False,
+    )
+    dbsession.add(s)
+    await dbsession.flush()
+
+    superuser = _mock_user(is_super=True)
+    fastapi_app.dependency_overrides[get_current_active_superuser] = lambda: superuser
+
+    transport = ASGITransport(app=fastapi_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Null value rejection
+        res_null = await client.patch(
+            "/api/settings/test.non_null_str",
+            json={"value": None},
+        )
+        assert res_null.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Setting value cannot be null" in res_null.json()["detail"]
+
+        # Empty string rejection
+        res_empty = await client.patch(
+            "/api/settings/test.non_null_str",
+            json={"value": "   "},
+        )
+        assert res_empty.status_code == status.HTTP_400_BAD_REQUEST
+        assert "cannot be an empty string" in res_empty.json()["detail"]
+
+    fastapi_app.dependency_overrides.clear()
+    await dbsession.delete(s)
+    await dbsession.flush()

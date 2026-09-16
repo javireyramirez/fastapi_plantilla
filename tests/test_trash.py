@@ -24,6 +24,8 @@ from fastapi_plantilla.core.mixins import RecordStatus, generate_uuid7
 from fastapi_plantilla.modules.auth.dependencies import get_current_user
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.auth.schema import UserResponse
+from fastapi_plantilla.modules.companies.models import Company
+from fastapi_plantilla.modules.rbac.models import Role
 from fastapi_plantilla.modules.storage.dependencies import (
     get_storage_provider,
     set_storage_provider_override,
@@ -31,6 +33,7 @@ from fastapi_plantilla.modules.storage.dependencies import (
 from fastapi_plantilla.modules.storage.models import Storage
 from fastapi_plantilla.modules.storage.providers import LocalStorageProvider
 from fastapi_plantilla.modules.storage.routes import router as storage_router
+from fastapi_plantilla.modules.teams.models import Team
 from fastapi_plantilla.modules.trash.repository import TrashRepository
 from fastapi_plantilla.modules.trash.routes import router as trash_router
 from fastapi_plantilla.modules.trash.service import purge_expired_trash
@@ -760,10 +763,292 @@ async def test_restore_conflict_returns_409(
     assert res_single.status_code == 409
     assert "conflicting active record already exists" in res_single.json()["detail"]
 
-    # 5. Attempt bulk restore -> must also fail with 409 Conflict
+    # 5. Attempt bulk restore -> resilient partial handling with unprocessed_ids
     res_bulk = await client.post(
         "/api/trash/bulk/restore",
         json={"ids": [str(trash_item.id)]},
     )
-    assert res_bulk.status_code == 409
-    assert "conflicting active record already exists" in res_bulk.json()["detail"]
+    assert res_bulk.status_code == 200
+    bulk_data = res_bulk.json()
+    assert bulk_data["count"] == 0
+    assert str(trash_item.id) in bulk_data["unprocessed_ids"]
+
+
+@pytest.mark.anyio
+async def test_trash_team_rbac_scoping(
+    client: AsyncClient,
+    dbsession: AsyncSession,
+    auth_state: AuthContextState,
+) -> None:
+    """Verify ScopeType.TEAM isolates trash items to teammates only."""
+    from fastapi import HTTPException
+
+    from fastapi_plantilla.modules.trash.schema import TrashFilterParams
+    from fastapi_plantilla.modules.trash.service import TrashService
+
+    user_repo = BaseRepository(User, dbsession)
+
+    # 1. Create 3 users: Team 1 (User A & User B), Team 2 (User C)
+    user_a = await user_repo.create(
+        {
+            "id": generate_uuid7(),
+            "name": "Team1 Member A",
+            "email": f"team1_a_{uuid.uuid4().hex[:6]}@example.com",
+            "is_super_admin": False,
+            "is_active": True,
+        }
+    )
+    user_b = await user_repo.create(
+        {
+            "id": generate_uuid7(),
+            "name": "Team1 Member B",
+            "email": f"team1_b_{uuid.uuid4().hex[:6]}@example.com",
+            "is_super_admin": False,
+            "is_active": True,
+        }
+    )
+    user_c = await user_repo.create(
+        {
+            "id": generate_uuid7(),
+            "name": "Team2 Member C",
+            "email": f"team2_c_{uuid.uuid4().hex[:6]}@example.com",
+            "is_super_admin": False,
+            "is_active": True,
+        }
+    )
+
+    # User A uploads a document and deletes it
+    auth_state.user = user_to_response(user_a)
+    upload_res = await client.post(
+        "/api/storage/upload",
+        files={
+            "file": ("team1_secret.pdf", io.BytesIO(b"classified"), "application/pdf")
+        },
+        data={"entity_type": "project_doc", "entity_id": str(user_a.id)},
+    )
+    doc_id = upload_res.json()["id"]
+    await client.delete(f"/api/storage/{doc_id}")
+
+    trash_repo = TrashRepository(dbsession)
+    trash_item = await trash_repo.get_by_entity("storage", uuid.UUID(doc_id))
+    assert trash_item is not None
+
+    trash_service = TrashService(trash_repo)
+
+    # Scope for User B: Team 1 (teammate_ids = [user_a.id, user_b.id])
+    scope_team1_b = ScopeContext(
+        scope=ScopeType.TEAM,
+        user_id=user_b.id,
+        is_super_admin=False,
+        teammate_ids=[user_a.id, user_b.id],
+    )
+    # Scope for User C: Team 2 (teammate_ids = [user_c.id])
+    scope_team2_c = ScopeContext(
+        scope=ScopeType.TEAM,
+        user_id=user_c.id,
+        is_super_admin=False,
+        teammate_ids=[user_c.id],
+    )
+
+    # User B can list Team 1 trash items
+    team1_list = await trash_service.list_trash(
+        TrashFilterParams(), scope=scope_team1_b
+    )
+    assert any(i.id == trash_item.id for i in team1_list.data)
+
+    # User B can retrieve single item
+    item_b = await trash_service.get_by_id(trash_item.id, scope=scope_team1_b)
+    assert item_b.id == trash_item.id
+
+    # User C from Team 2 cannot see Team 1 trash items
+    team2_list = await trash_service.list_trash(
+        TrashFilterParams(), scope=scope_team2_c
+    )
+    assert not any(i.id == trash_item.id for i in team2_list.data)
+
+    # User C cannot access single item (404 masked)
+    with pytest.raises(HTTPException) as exc_info:
+        await trash_service.get_by_id(trash_item.id, scope=scope_team2_c)
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_purge_expired_attributes_superadmin_in_audit(
+    client: AsyncClient,
+    dbsession: AsyncSession,
+    auth_state: AuthContextState,
+    test_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify manual purge-expired endpoint records superadmin actor in audit logs."""
+    from fastapi_plantilla.modules.audit.repository import AuditRepository
+
+    admin_user, _ = test_users
+    auth_state.user = admin_user
+    trash_repo = TrashRepository(dbsession)
+
+    expired_entity_id = uuid.uuid4()
+    await trash_repo.create(
+        {
+            "entity_type": "storage",
+            "entity_id": expired_entity_id,
+            "name": "superadmin_audit_test.pdf",
+            "expires_at": datetime.now(UTC) - timedelta(days=5),
+        }
+    )
+
+    purge_res = await client.post("/api/trash/purge-expired")
+    assert purge_res.status_code == 200
+    assert purge_res.json()["purged_count"] >= 1
+
+    audit_repo = AuditRepository(dbsession)
+    logs = await audit_repo.get_entity_history("storage", expired_entity_id)
+    purge_log = next(
+        (entry for entry in logs if entry.action == "PERMANENT_DELETE"), None
+    )
+    assert purge_log is not None
+    assert purge_log.actor_id == admin_user.id
+
+
+@pytest.mark.anyio
+async def test_restore_missing_target_entity_returns_404(
+    client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify restoring a missing target entity returns 404."""
+    trash_repo = TrashRepository(dbsession)
+    ghost_id = uuid.uuid4()
+    ghost_trash = await trash_repo.create(
+        {
+            "entity_type": "company",
+            "entity_id": ghost_id,
+            "name": "Ghost Company Inc",
+            "expires_at": datetime.now(UTC) + timedelta(days=30),
+        }
+    )
+
+    res = await client.post(f"/api/trash/{ghost_trash.id}/restore")
+    assert res.status_code == 404
+    assert "not found in database" in res.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_trash_string_truncation_safety(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify names longer than 255 characters are truncated without DB DataError."""
+    trash_repo = TrashRepository(dbsession)
+    huge_name = "A" * 300
+    huge_target_name = "B" * 350
+    entity_id = uuid.uuid4()
+
+    item = await trash_repo.save_trash_item(
+        entity_type="invoice",
+        entity_id=entity_id,
+        name=huge_name,
+        owner_id=None,
+        deleted_by=None,
+        details="Truncation test",
+        expires_at=datetime.now(UTC) + timedelta(days=10),
+        target_entity_type="client",
+        target_entity_id=uuid.uuid4(),
+        target_entity_name=huge_target_name,
+    )
+
+    assert len(item.name) == 255
+    assert item.name == "A" * 255
+    assert item.target_entity_name is not None
+    assert len(item.target_entity_name) == 255
+    assert item.target_entity_name == "B" * 255
+
+
+@pytest.mark.anyio
+async def test_trash_dynamic_settings_retention_and_limit(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify dynamic retention days and purge limits from SystemSettingService."""
+    from fastapi_plantilla.modules.settings.repository import SystemSettingRepository
+    from fastapi_plantilla.modules.settings.service import SystemSettingService
+    from fastapi_plantilla.modules.trash.service import TrashService
+
+    settings_repo = SystemSettingRepository(dbsession)
+    SystemSettingService.invalidate_cache()
+
+    retention_setting = await settings_repo.get_by_key("trash.retention_days")
+    if retention_setting:
+        await settings_repo.update(retention_setting.id, {"value": 45})
+    else:
+        await settings_repo.create(
+            {"key": "trash.retention_days", "value": 45, "category": "trash"}
+        )
+
+    limit_setting = await settings_repo.get_by_key("trash.purge_limit")
+    if limit_setting:
+        await settings_repo.update(limit_setting.id, {"value": 10})
+    else:
+        await settings_repo.create(
+            {"key": "trash.purge_limit", "value": 10, "category": "trash"}
+        )
+
+    SystemSettingService.invalidate_cache()
+    settings_service = SystemSettingService(settings_repo)
+
+    trash_repo = TrashRepository(dbsession)
+    trash_service = TrashService(trash_repo, settings_service=settings_service)
+
+    test_entity_id = uuid.uuid4()
+    item = await trash_service.record_trash(
+        entity_type="note",
+        entity_id=test_entity_id,
+        name="Retention dynamic test",
+    )
+
+    expected_expiry_min = datetime.now(UTC) + timedelta(days=44)
+    expected_expiry_max = datetime.now(UTC) + timedelta(days=46)
+    assert expected_expiry_min <= item.expires_at <= expected_expiry_max
+
+
+@pytest.mark.parametrize("model_cls", [User, Company, Role, Team, Storage])
+def test_trash_entity_type_resolution_contract(model_cls: type) -> None:
+    """Verify entity_type derived from model class name resolves back to model."""
+    from fastapi_plantilla.modules.trash.repository import resolve_model
+
+    derived_type = model_cls.__name__.lower()
+    assert resolve_model(derived_type) is model_cls
+
+
+@pytest.mark.anyio
+async def test_non_storage_trash_includes_module_principal_entity(
+    client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify non-storage trash items (e.g. company) resolve module_principal_entity."""
+    comp_repo = BaseRepository(Company, dbsession)
+    company = await comp_repo.create(
+        {
+            "id": generate_uuid7(),
+            "name": "Global Logistics Corp",
+            "nif": f"B{uuid.uuid4().hex[:8].upper()}",
+            "sector": "Logistics",
+        }
+    )
+
+    trash_repo = TrashRepository(dbsession)
+    trash_item = await trash_repo.create(
+        {
+            "entity_type": "company",
+            "entity_id": company.id,
+            "name": company.name,
+            "expires_at": datetime.now(UTC) + timedelta(days=30),
+        }
+    )
+
+    get_res = await client.get(f"/api/trash/{trash_item.id}")
+    assert get_res.status_code == 200
+    data = get_res.json()
+
+    principal = data.get("module_principal_entity")
+    assert principal is not None
+    assert principal["code"] == "companies"
+    assert principal["name"] == "Compañías"
+    assert principal["entity_name"] == "Global Logistics Corp"
+    assert principal["entity_id"] == str(company.id)

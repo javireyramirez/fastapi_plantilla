@@ -3,7 +3,7 @@ from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import Depends, HTTPException, status
+from fastapi import HTTPException, status
 from loguru import logger
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,10 +19,11 @@ from fastapi_plantilla.core.crud.schema import (
     ScopeType,
 )
 from fastapi_plantilla.core.crud.service_audit import dispatch_audit_event
-from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import RecordStatus
+from fastapi_plantilla.modules.common.resolvers import CODE_TO_ENTITY as _CODE_TO_ENTITY
 from fastapi_plantilla.modules.common.schema import EntityType
 from fastapi_plantilla.modules.rbac.catalog import CORE_SYSTEM_MODULES
+from fastapi_plantilla.modules.settings.service import SystemSettingService
 from fastapi_plantilla.modules.trash.models import TrashItem
 from fastapi_plantilla.modules.trash.repository import (
     TrashRepository,
@@ -68,14 +69,6 @@ def register_trash_entity(
 # ---------------------------------------------------------------------------
 # In-memory Module Catalog (SSOT derived from CORE_SYSTEM_MODULES)
 # ---------------------------------------------------------------------------
-
-_CODE_TO_ENTITY: dict[str, str] = {
-    "companies": "company",
-    "users": "user",
-    "teams": "team",
-    "roles": "role",
-    "storage": "storage",
-}
 
 MODULE_CATALOG: dict[str, TrashModuleResponse] = {}
 for _mod in CORE_SYSTEM_MODULES:
@@ -133,6 +126,15 @@ def _to_response(item: TrashItem) -> TrashItemResponse:
             entity_name=target_name,
             entity_id=target_id,
         )
+    else:
+        mod = resolve_module(item.entity_type)
+        if mod is not None:
+            principal = PrincipalEntityModule(
+                code=mod.code,
+                name=mod.name,
+                entity_name=item.name,
+                entity_id=item.entity_id,
+            )
 
     return TrashItemResponse(
         id=item.id,
@@ -150,24 +152,60 @@ def _to_response(item: TrashItem) -> TrashItemResponse:
     )
 
 
+def _parse_actor_uuid(user_id: str | uuid.UUID | None) -> uuid.UUID | None:
+    """Safely parse user identifier into UUID or None."""
+    if not user_id:
+        return None
+    try:
+        return uuid.UUID(str(user_id))
+    except (ValueError, TypeError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Trash Service
 # ---------------------------------------------------------------------------
 
 
 class TrashService:
-    """Application service orchestrating trash bin business logic without DB queries."""
+    """Application service orchestrating trash bin operations and lifecycle."""
 
-    def __init__(self, repository: TrashRepository) -> None:
+    def __init__(
+        self,
+        repository: TrashRepository,
+        settings_service: SystemSettingService | None = None,
+    ) -> None:
         self.repository = repository
+        self.settings_service = settings_service
 
     def _apply_scope(self, scope: ScopeContext | None, item: TrashItem) -> None:
-        """Enforce owner-level RBAC access permissions on single item."""
+        """Enforce owner and team level RBAC access permissions on single item."""
         if not scope or scope.is_super_admin:
             return
-        if str(scope.scope).upper() != ScopeType.OWN:
+        scope_str = str(scope.scope).upper()
+        if scope_str == ScopeType.GLOBAL:
             return
-        if item.owner_id is not None and item.owner_id != scope.user_id:
+        if scope_str == ScopeType.OWN:
+            if item.owner_id is not None and item.owner_id != scope.user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Trash item not found",
+                )
+            if item.owner_id is None and not scope.is_super_admin:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Trash item not found",
+                )
+        elif scope_str == ScopeType.TEAM:
+            allowed_ids = set(scope.teammate_ids or [])
+            if scope.user_id:
+                allowed_ids.add(scope.user_id)
+            if item.owner_id is None or item.owner_id not in allowed_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Trash item not found",
+                )
+        else:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Trash item not found",
@@ -217,7 +255,18 @@ class TrashService:
         target_entity_name: str | None = None,
     ) -> TrashItem:
         """Record an entity in the centralized trash bin."""
-        days = retention_days or settings.trash_retention_days
+        if retention_days is not None:
+            days = retention_days
+        elif self.settings_service is not None:
+            raw_days = await self.settings_service.get_value(
+                "trash.retention_days", default=settings.trash_retention_days
+            )
+            try:
+                days = int(raw_days)
+            except (ValueError, TypeError):
+                days = settings.trash_retention_days
+        else:
+            days = settings.trash_retention_days
         expires_at = datetime.now(UTC) + timedelta(days=days)
         normalized_type = entity_type.strip().lower()
 
@@ -287,13 +336,7 @@ class TrashService:
                 ),
             ) from exc
 
-        actor_uuid = None
-        if user_id:
-            try:
-                actor_uuid = uuid.UUID(str(user_id))
-            except (ValueError, TypeError):
-                actor_uuid = None
-
+        actor_uuid = _parse_actor_uuid(user_id)
         await self._emit_audit(
             entity_type=item.entity_type,
             entity_id=item.entity_id,
@@ -336,16 +379,12 @@ class TrashService:
                     f"Purge hook failed for {item.entity_type}:{item.entity_id}: {err}"
                 )
 
-        await self.repository.purge_target_model(item.entity_type, item.entity_id)
-        await self.repository.delete(item.id)
+        async with self.repository.session.begin_nested():
+            await self.repository.purge_target_model(item.entity_type, item.entity_id)
+            await self.repository.delete(item.id)
+            await self.repository.session.flush()
 
-        actor_uuid = None
-        if user_id:
-            try:
-                actor_uuid = uuid.UUID(str(user_id))
-            except (ValueError, TypeError):
-                actor_uuid = None
-
+        actor_uuid = _parse_actor_uuid(user_id)
         await self._emit_audit(
             entity_type=item.entity_type,
             entity_id=item.entity_id,
@@ -363,15 +402,28 @@ class TrashService:
         action: Callable[[uuid.UUID], Coroutine[Any, Any, Any]],
         action_verb: str,
     ) -> BulkResponse:
-        """Execute a batch operation over trash IDs."""
-        count = 0
+        """Execute a batch operation over trash IDs with partial error resilience."""
+        processed_count = 0
+        unprocessed_ids: list[uuid.UUID] = []
+
         for item_id in ids:
-            await action(item_id)
-            count += 1
+            try:
+                await action(item_id)
+                processed_count += 1
+            except Exception as exc:
+                logger.warning(
+                    f"Bulk {action_verb} failed for trash item {item_id}: {exc}"
+                )
+                unprocessed_ids.append(item_id)
+
+        msg = f"Successfully {action_verb}d {processed_count} items from trash."
+        if unprocessed_ids:
+            msg += f" {len(unprocessed_ids)} items could not be {action_verb}d."
 
         return BulkResponse(
-            count=count,
-            message=f"Successfully {action_verb}d {count} items from trash.",
+            count=processed_count,
+            unprocessed_ids=unprocessed_ids,
+            message=msg,
         )
 
     async def bulk_restore(
@@ -400,15 +452,31 @@ class TrashService:
             "purge",
         )
 
-    async def purge_expired(self, limit: int = DEFAULT_TRASH_PURGE_LIMIT) -> int:
+    async def purge_expired(
+        self,
+        limit: int | None = None,
+        user_id: str | uuid.UUID | None = None,
+    ) -> int:
         """Purge all trash items whose retention period has expired."""
+        if limit is None:
+            if self.settings_service is not None:
+                raw_limit = await self.settings_service.get_value(
+                    "trash.purge_limit", default=DEFAULT_TRASH_PURGE_LIMIT
+                )
+                try:
+                    limit = int(raw_limit)
+                except (ValueError, TypeError):
+                    limit = DEFAULT_TRASH_PURGE_LIMIT
+            else:
+                limit = DEFAULT_TRASH_PURGE_LIMIT
+
         now = datetime.now(UTC)
         expired_items = await self.repository.find_expired(cutoff=now, limit=limit)
         purged_count = 0
 
         for item in expired_items:
             try:
-                await self.purge_item(item.id, scope=None)
+                await self.purge_item(item.id, scope=None, user_id=user_id)
                 purged_count += 1
             except Exception as err:
                 logger.error(f"Error purging expired trash item {item.id}: {err}")
@@ -419,22 +487,17 @@ class TrashService:
 async def purge_expired_trash(
     session: AsyncSession,
     limit: int = DEFAULT_TRASH_PURGE_LIMIT,
+    user_id: str | uuid.UUID | None = None,
+    settings_service: SystemSettingService | None = None,
 ) -> int:
     """Purge expired trash records in a database session."""
     repo = TrashRepository(session)
-    service = TrashService(repo)
-    return await service.purge_expired(limit=limit)
+    service = TrashService(repo, settings_service=settings_service)
+    return await service.purge_expired(limit=limit, user_id=user_id)
 
 
-def get_trash_repository(
-    session: AsyncSession = Depends(get_db_session),
-) -> TrashRepository:
-    """Provide TrashRepository bound to request DB session."""
-    return TrashRepository(session=session)
-
-
-def get_trash_service(
-    repository: TrashRepository = Depends(get_trash_repository),
-) -> TrashService:
-    """Provide TrashService instance."""
-    return TrashService(repository=repository)
+# Re-exports for backward compatibility
+from fastapi_plantilla.modules.trash.dependencies import (  # noqa: E402
+    get_trash_repository,
+    get_trash_service,
+)

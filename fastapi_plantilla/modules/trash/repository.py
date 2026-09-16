@@ -2,7 +2,8 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, inspect, or_, update
+from fastapi import HTTPException, status
+from sqlalchemy import delete, false, inspect, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.repository import BaseRepository
@@ -12,7 +13,6 @@ from fastapi_plantilla.core.crud.schema import (
     SortOrder,
 )
 from fastapi_plantilla.core.crud.service_base import adjust_end_of_day
-from fastapi_plantilla.core.database import Base
 from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.common.schema import EntityType
 from fastapi_plantilla.modules.rbac.catalog import CORE_SYSTEM_MODULES
@@ -28,29 +28,12 @@ __all__ = [
     "resolve_model",
 ]
 
-
-_ENTITY_REGISTRY: dict[str, type[Base]] = {}
-
-
-def register_trash_model(entity_type: str, model: type[Base]) -> None:
-    """Register custom entity model for trash persistence operations."""
-    _ENTITY_REGISTRY[entity_type.strip().lower()] = model
-
-
-def resolve_model(entity_type: str) -> type[Base] | None:
-    """Resolve SQLAlchemy model class from registry or Base mappers."""
-    norm = entity_type.strip().lower()
-    if norm in _ENTITY_REGISTRY:
-        return _ENTITY_REGISTRY[norm]
-
-    for mapper in Base.registry.mappers:
-        cls = mapper.class_
-        name = cls.__name__.lower()
-        tbl = getattr(cls, "__tablename__", "").lower()
-        if norm in (name, tbl):
-            _ENTITY_REGISTRY[norm] = cls
-            return cls
-    return None
+from fastapi_plantilla.modules.common.resolvers import (
+    register_entity_model as register_trash_model,
+)
+from fastapi_plantilla.modules.common.resolvers import (
+    resolve_entity_model as resolve_model,
+)
 
 
 def _build_category_filter(category: str | None) -> Any | None:
@@ -90,6 +73,24 @@ def _build_date_filters(params: TrashFilterParams) -> list[Any]:
     return clauses
 
 
+def _build_scope_filter(scope: ScopeContext | None) -> Any | None:
+    """Build ownership filter clause based on RBAC scope context."""
+    if not scope or scope.is_super_admin:
+        return None
+
+    scope_str = str(scope.scope).upper()
+    if scope_str == ScopeType.OWN:
+        return TrashItem.owner_id == scope.user_id if scope.user_id else false()
+    if scope_str == ScopeType.TEAM:
+        allowed_ids = list(scope.teammate_ids or [])
+        if scope.user_id and scope.user_id not in allowed_ids:
+            allowed_ids.append(scope.user_id)
+        return TrashItem.owner_id.in_(allowed_ids) if allowed_ids else false()
+    if scope_str != ScopeType.GLOBAL:
+        return false()
+    return None
+
+
 def _build_trash_filters(
     params: TrashFilterParams,
     scope: ScopeContext | None = None,
@@ -97,8 +98,9 @@ def _build_trash_filters(
     """Build SQLAlchemy query filter clauses for trash bin listings."""
     where: list[Any] = []
 
-    if scope and not scope.is_super_admin and str(scope.scope).upper() == ScopeType.OWN:
-        where.append(TrashItem.owner_id == scope.user_id)
+    scope_clause = _build_scope_filter(scope)
+    if scope_clause is not None:
+        where.append(scope_clause)
 
     cat_clause = _build_category_filter(params.category)
     if cat_clause is not None:
@@ -115,17 +117,29 @@ def _build_trash_filters(
 
     where.extend(_build_date_filters(params))
 
-    search_query = params.q or params.search
+    search_query = (params.q or params.search or "").strip()
     if search_query:
-        pat = f"%{search_query}%"
         where.append(
             or_(
-                TrashItem.name.ilike(pat),
-                TrashItem.target_entity_name.ilike(pat),
+                TrashItem.name.icontains(search_query, autoescape=True),
+                TrashItem.target_entity_name.icontains(search_query, autoescape=True),
             )
         )
 
     return where
+
+
+_ALLOWED_SORT_COLUMNS: frozenset[str] = frozenset(
+    {
+        "deleted_at",
+        "created_at",
+        "updated_at",
+        "name",
+        "expires_at",
+        "entity_type",
+        "owner_id",
+    }
+)
 
 
 class TrashRepository(BaseRepository[TrashItem]):
@@ -165,7 +179,10 @@ class TrashRepository(BaseRepository[TrashItem]):
     ) -> tuple[list[TrashItem], int]:
         """Fetch filtered and paginated trash items with count."""
         where = _build_trash_filters(params, scope)
-        sort_col = getattr(TrashItem, params.sort_by, TrashItem.deleted_at)
+        sort_field = (
+            params.sort_by if params.sort_by in _ALLOWED_SORT_COLUMNS else "deleted_at"
+        )
+        sort_col = getattr(TrashItem, sort_field, TrashItem.deleted_at)
         order_expr = (
             sort_col.asc() if params.sort_order == SortOrder.ASC else sort_col.desc()
         )
@@ -197,20 +214,30 @@ class TrashRepository(BaseRepository[TrashItem]):
     ) -> None:
         """Update source domain entity status back to ACTIVE."""
         model = resolve_model(entity_type)
-        if model is not None and hasattr(model, "status"):
+        if model is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unknown or unsupported entity type '{entity_type}'",
+            )
+        if hasattr(model, "status"):
             now = datetime.now(UTC)
             actor = str(user_id) if user_id else None
             pk_col = inspect(model).primary_key[0]
-            stmt = (
-                update(model)
-                .where(pk_col == entity_id)
-                .values(
-                    status=RecordStatus.ACTIVE,
-                    restored_at=now,
-                    restored_by=actor,
+            values: dict[str, Any] = {"status": RecordStatus.ACTIVE}
+            if hasattr(model, "restored_at"):
+                values["restored_at"] = now
+            if hasattr(model, "restored_by"):
+                values["restored_by"] = actor
+            stmt = update(model).where(pk_col == entity_id).values(**values)
+            result = await self.session.execute(stmt)
+            if getattr(result, "rowcount", 0) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=(
+                        f"Target entity '{entity_type}' ({entity_id}) "
+                        "not found in database"
+                    ),
                 )
-            )
-            await self.session.execute(stmt)
 
     async def purge_target_model(
         self,
@@ -219,10 +246,14 @@ class TrashRepository(BaseRepository[TrashItem]):
     ) -> None:
         """Permanently delete source domain entity row from database."""
         model = resolve_model(entity_type)
-        if model is not None:
-            pk_col = inspect(model).primary_key[0]
-            stmt = delete(model).where(pk_col == entity_id)
-            await self.session.execute(stmt)
+        if model is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unknown or unsupported entity type '{entity_type}'",
+            )
+        pk_col = inspect(model).primary_key[0]
+        stmt = delete(model).where(pk_col == entity_id)
+        await self.session.execute(stmt)
 
     async def save_trash_item(
         self,
@@ -239,10 +270,14 @@ class TrashRepository(BaseRepository[TrashItem]):
     ) -> TrashItem:
         """Create or update a record in sys_trash_bin."""
         normalized = entity_type.strip().lower()
+        safe_name = name[:255]
+        safe_target_name = (
+            target_entity_name[:255] if target_entity_name is not None else None
+        )
         existing = await self.get_by_entity(normalized, entity_id)
         now = datetime.now(UTC)
         if existing is not None:
-            existing.name = name
+            existing.name = safe_name
             existing.deleted_by = deleted_by
             existing.deleted_at = now
             existing.expires_at = expires_at
@@ -251,8 +286,8 @@ class TrashRepository(BaseRepository[TrashItem]):
                 existing.target_entity_type = target_entity_type
             if target_entity_id is not None:
                 existing.target_entity_id = target_entity_id
-            if target_entity_name is not None:
-                existing.target_entity_name = target_entity_name
+            if safe_target_name is not None:
+                existing.target_entity_name = safe_target_name
             await self.session.flush()
             return existing
 
@@ -260,7 +295,7 @@ class TrashRepository(BaseRepository[TrashItem]):
             {
                 "entity_type": normalized,
                 "entity_id": entity_id,
-                "name": name,
+                "name": safe_name,
                 "owner_id": owner_id,
                 "deleted_by": deleted_by,
                 "deleted_at": now,
@@ -268,7 +303,7 @@ class TrashRepository(BaseRepository[TrashItem]):
                 "details": details,
                 "target_entity_type": target_entity_type,
                 "target_entity_id": target_entity_id,
-                "target_entity_name": target_entity_name,
+                "target_entity_name": safe_target_name,
             }
         )
 
@@ -283,7 +318,3 @@ class TrashRepository(BaseRepository[TrashItem]):
             limit=limit,
             order_by=TrashItem.expires_at.asc(),
         )
-
-    async def count_expired(self, cutoff: datetime) -> int:
-        """Count the number of expired trash items."""
-        return await self.count(TrashItem.expires_at <= cutoff)

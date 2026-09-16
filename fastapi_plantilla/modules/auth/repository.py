@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from fastapi_plantilla.core.database import get_db_session
+from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.auth.models import (
     Account,
     Session,
@@ -93,6 +94,16 @@ class AuthRepository:
         if isinstance(result, CursorResult):
             return int(result.rowcount) > 0
         return False
+
+    async def count_active_superadmins(self) -> int:
+        """Count active, non-trashed super admin users."""
+        stmt = select(func.count(User.id)).where(
+            User.is_super_admin.is_(True),
+            User.is_active.is_(True),
+            User.status != RecordStatus.TRASHED,
+        )
+        result = await self.session.execute(stmt)
+        return int(result.scalar() or 0)
 
     # ==========================================
     # 2. Account Operations
@@ -378,6 +389,15 @@ class AuthRepository:
         if isinstance(result, CursorResult):
             return int(result.rowcount) > 0
         return False
+
+    async def delete_verifications_by_identifier(self, identifier: str) -> int:
+        """Delete all existing verification records for an identifier."""
+        query = delete(Verification).where(Verification.identifier == identifier)
+        result = await self.session.execute(query)
+        await self.session.flush()
+        if isinstance(result, CursorResult):
+            return int(result.rowcount)
+        return 0
 
     # ==========================================
     # 5. Maintenance & Pruning

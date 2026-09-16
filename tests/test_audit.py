@@ -741,6 +741,8 @@ async def test_audit_export(
         assert csv_res.status_code == 200
         assert "text/csv" in csv_res.headers["content-type"]
         assert "attachment; filename=" in csv_res.headers["content-disposition"]
+        assert "x-total-count" in csv_res.headers
+        assert int(csv_res.headers["x-total-count"]) >= 2
         csv_text = csv_res.text
         assert "LOGIN" in csv_text
         assert "CREATE" in csv_text
@@ -779,3 +781,219 @@ async def test_audit_export(
         id_data = id_res.json()
         assert len(id_data) == 1
         assert id_data[0]["id"] == str(log1.id)
+
+
+@pytest.mark.anyio
+async def test_audit_repository_immutability(dbsession: AsyncSession) -> None:
+    """Verify AuditRepository strictly enforces append-only immutability."""
+    repo = AuditRepository(dbsession)
+    dummy_id = uuid.uuid4()
+
+    with pytest.raises(NotImplementedError, match="strictly immutable"):
+        await repo.update(dummy_id, {"details": "tampered"})
+
+    with pytest.raises(NotImplementedError, match="strictly immutable"):
+        await repo.update_many([dummy_id], data={"details": "tampered"})
+
+    with pytest.raises(NotImplementedError, match="strictly immutable"):
+        await repo.delete(dummy_id)
+
+    with pytest.raises(NotImplementedError, match="strictly immutable"):
+        await repo.delete_many([dummy_id])
+
+    with pytest.raises(NotImplementedError, match="strictly immutable"):
+        await repo.delete_where()
+
+
+@pytest.mark.anyio
+async def test_audit_sort_by_whitelist_fallback(
+    test_app: FastAPI,
+    dbsession: AsyncSession,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify invalid or malicious sort_by values safely fall back to created_at."""
+    admin, _ = audit_users
+    test_app.dependency_overrides[get_current_active_superuser] = lambda: admin
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://test"
+    ) as client:
+        # Invalid column name should not 500, should return 200 sorted by created_at
+        res = await client.get("/api/audit?sort_by=__table__&sort_order=desc")
+        assert res.status_code == 200
+
+        res_malicious = await client.get("/api/audit?sort_by=non_existent_column")
+        assert res_malicious.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_audit_entity_name_icontains_escape(
+    test_app: FastAPI,
+    dbsession: AsyncSession,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify entity_name search escapes wildcards and uses icontains."""
+    admin, _ = audit_users
+    test_app.dependency_overrides[get_current_active_superuser] = lambda: admin
+
+    repo = AuditRepository(dbsession)
+    target_id = generate_uuid7()
+    special_name = "Invoice 100% Final_v1"
+    await repo.record_entry(
+        AuditEntry(
+            entity_type="invoice",
+            entity_id=target_id,
+            entity_name=special_name,
+            action="CREATE",
+            actor_id=admin.id,
+        )
+    )
+    await dbsession.commit()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://test"
+    ) as client:
+        res = await client.get("/api/audit?entity_name=100% Final")
+        assert res.status_code == 200
+        items = res.json()["data"]
+        assert any(i["entity_name"] == special_name for i in items)
+
+
+@pytest.mark.anyio
+async def test_audit_setting_name_enrichment(
+    dbsession: AsyncSession,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify SystemSetting entity names (key) are enriched via MODEL_TYPE_MAP."""
+    from fastapi_plantilla.modules.settings.models import SystemSetting
+
+    admin, _ = audit_users
+    setting = SystemSetting(
+        id=generate_uuid7(),
+        key="app.custom_feature_flag",
+        value=True,
+        category="custom",
+    )
+    dbsession.add(setting)
+    await dbsession.flush()
+
+    repo = AuditRepository(dbsession)
+    log = await repo.record_entry(
+        AuditEntry(
+            entity_type="setting",
+            entity_id=setting.id,
+            entity_name=None,  # missing entity name
+            action="UPDATE",
+            actor_id=admin.id,
+            changes={"value": {"old": False, "new": True}},
+        )
+    )
+    await dbsession.commit()
+
+    service = AuditService(repo)
+    result = await service.get_by_id(log.id)
+    assert result.entity_name == "app.custom_feature_flag"
+
+
+@pytest.mark.anyio
+async def test_audit_retention_purge(
+    dbsession: AsyncSession,
+    test_app: FastAPI,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify purge-expired endpoint and purge_before retention logic."""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import update
+
+    from fastapi_plantilla.modules.audit.models import AuditLog
+
+    admin, _ = audit_users
+    test_app.dependency_overrides[get_current_active_superuser] = lambda: admin
+
+    repo = AuditRepository(dbsession)
+    old_entry = await repo.record_entry(
+        AuditEntry(
+            entity_type="server",
+            entity_id=uuid.uuid4(),
+            entity_name="Legacy Server 2020",
+            action="UPDATE",
+            actor_id=admin.id,
+        )
+    )
+    # Manually backdate created_at to 400 days ago
+    past_date = datetime.now(UTC) - timedelta(days=400)
+    await dbsession.execute(
+        update(AuditLog).where(AuditLog.id == old_entry.id).values(created_at=past_date)
+    )
+    await dbsession.commit()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://test"
+    ) as client:
+        res = await client.post("/api/audit/purge-expired")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["purged_count"] >= 1
+
+    # Verify old entry is gone
+    assert await repo.get_by_id(old_entry.id) is None
+
+
+@pytest.mark.anyio
+async def test_audit_export_invalid_filters_graceful(
+    test_app: FastAPI,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify export endpoint gracefully ignores invalid filter formats without 500."""
+    admin, _ = audit_users
+    test_app.dependency_overrides[get_current_active_superuser] = lambda: admin
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://test"
+    ) as client:
+        res = await client.post(
+            "/api/audit/export",
+            json={"format": "json", "filters": {"created_at_from": "not-a-valid-date"}},
+        )
+        assert res.status_code == 200
+        assert "x-total-count" in res.headers
+
+
+@pytest.mark.anyio
+async def test_purge_expired_audit_helper(
+    dbsession: AsyncSession,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify purge_expired_audit helper purges old entries using settings."""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import update
+
+    from fastapi_plantilla.modules.audit.models import AuditLog
+    from fastapi_plantilla.modules.audit.service import purge_expired_audit
+    from fastapi_plantilla.modules.settings.repository import SystemSettingRepository
+    from fastapi_plantilla.modules.settings.service import SystemSettingService
+
+    admin, _ = audit_users
+    repo = AuditRepository(dbsession)
+    old_log = await repo.record_entry(
+        AuditEntry(
+            entity_type="server",
+            entity_id=uuid.uuid4(),
+            entity_name="Helper Old Server",
+            action="DELETE",
+            actor_id=admin.id,
+        )
+    )
+    past_date = datetime.now(UTC) - timedelta(days=500)
+    await dbsession.execute(
+        update(AuditLog).where(AuditLog.id == old_log.id).values(created_at=past_date)
+    )
+    await dbsession.commit()
+
+    settings_svc = SystemSettingService(SystemSettingRepository(dbsession))
+    count = await purge_expired_audit(dbsession, settings_service=settings_svc)
+    assert count >= 1
+
+    assert await repo.get_by_id(old_log.id) is None

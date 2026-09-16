@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.database import Base
 from fastapi_plantilla.modules.common.schema import (
-    EntityType,
     PrincipalEntityModule,
 )
 
@@ -19,37 +18,12 @@ __all__ = [
     "resolve_principal_entity_name",
 ]
 
-_KNOWN_MODELS: dict[str, type[Base]] = {}
-
-
-def _get_known_models() -> dict[str, type[Base]]:
-    if not _KNOWN_MODELS:
-        from fastapi_plantilla.modules.auth.models import User  # noqa: PLC0415
-        from fastapi_plantilla.modules.companies.models import Company  # noqa: PLC0415
-        from fastapi_plantilla.modules.rbac.models import Role  # noqa: PLC0415
-        from fastapi_plantilla.modules.storage.models import Storage  # noqa: PLC0415
-        from fastapi_plantilla.modules.teams.models import Team  # noqa: PLC0415
-
-        _KNOWN_MODELS.update(
-            {
-                EntityType.COMPANY.value: Company,
-                EntityType.USER.value: User,
-                EntityType.TEAM.value: Team,
-                EntityType.ROLE.value: Role,
-                EntityType.STORAGE.value: Storage,
-            }
-        )
-    return _KNOWN_MODELS
+from fastapi_plantilla.modules.common.resolvers import resolve_entity_model
 
 
 def _get_known_model(entity_type: str) -> type[Base] | None:
-    """Resolve SQLAlchemy model class for entity type with O(1) fast paths."""
-    from fastapi_plantilla.modules.trash.repository import (  # noqa: PLC0415
-        resolve_model,
-    )
-
-    norm = entity_type.strip().lower()
-    return _get_known_models().get(norm) or resolve_model(norm)
+    """Resolve SQLAlchemy model class for entity type with centralized SSOT."""
+    return resolve_entity_model(entity_type)
 
 
 async def resolve_principal_entity_name(

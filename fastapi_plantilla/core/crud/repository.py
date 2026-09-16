@@ -31,7 +31,7 @@ class BaseRepository[ModelT: Base]:
         if order_by is not None:
             stmt = stmt.order_by(order_by)
         result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def find_many(
         self, *where: Any, skip: int = 0, limit: int = 10, order_by: Any = None

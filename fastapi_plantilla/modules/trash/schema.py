@@ -13,9 +13,13 @@ from fastapi_plantilla.core.crud.schema import (
 from fastapi_plantilla.modules.common.schema import PrincipalEntityModule
 
 DEFAULT_TRASH_PURGE_LIMIT: int = 500
+MAX_TRASH_PURGE_LIMIT: int = 5000
+DEFAULT_TRASH_RETENTION_DAYS: int = 30
 
 __all__ = [
     "DEFAULT_TRASH_PURGE_LIMIT",
+    "DEFAULT_TRASH_RETENTION_DAYS",
+    "MAX_TRASH_PURGE_LIMIT",
     "BulkTrashActionRequest",
     "BulkTrashResponse",
     "PrincipalEntityModule",

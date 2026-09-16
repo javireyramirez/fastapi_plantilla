@@ -1,6 +1,9 @@
+from fastapi_plantilla.modules.settings.dependencies import (
+    get_settings_repository,
+    get_settings_service,
+)
 from fastapi_plantilla.modules.settings.models import SystemSetting
 from fastapi_plantilla.modules.settings.repository import SystemSettingRepository
-from fastapi_plantilla.modules.settings.routes import router
 from fastapi_plantilla.modules.settings.schema import (
     SettingResponse,
     SettingUpdate,
@@ -13,5 +16,6 @@ __all__ = [
     "SystemSetting",
     "SystemSettingRepository",
     "SystemSettingService",
-    "router",
+    "get_settings_repository",
+    "get_settings_service",
 ]

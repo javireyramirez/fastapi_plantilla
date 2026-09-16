@@ -130,6 +130,11 @@ class Settings(BaseSettings):
     trash_purge_interval_hours: int = 24
     trash_purge_enabled: bool = True
 
+    # Audit & Retention
+    audit_retention_days: int = 365
+    audit_purge_interval_hours: int = 24
+    audit_purge_enabled: bool = True
+
     @property
     def db_url(self) -> URL:
         """Assemble database URL from settings."""

@@ -119,9 +119,9 @@ class Verification(UUID7PrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "auth_verifications"
 
     identifier: Mapped[str] = mapped_column(String(length=255), nullable=False)
-    value: Mapped[str] = mapped_column(String(length=255), nullable=False)
+    value: Mapped[str] = mapped_column(String(length=255), nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
+        DateTime(timezone=True), nullable=False, index=True
     )
 
     __table_args__ = (

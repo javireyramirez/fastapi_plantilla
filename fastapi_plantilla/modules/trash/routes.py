@@ -21,14 +21,16 @@ from fastapi_plantilla.modules.auth.dependencies import (
     get_current_user,
 )
 from fastapi_plantilla.modules.auth.schema import UserResponse
+from fastapi_plantilla.modules.trash.dependencies import get_trash_service
 from fastapi_plantilla.modules.trash.schema import (
     DEFAULT_TRASH_PURGE_LIMIT,
+    MAX_TRASH_PURGE_LIMIT,
     BulkTrashActionRequest,
     TrashFilterParams,
     TrashItemResponse,
     TrashPurgeResponse,
 )
-from fastapi_plantilla.modules.trash.service import TrashService, get_trash_service
+from fastapi_plantilla.modules.trash.service import TrashService
 
 router = APIRouter(prefix="/trash", tags=["Trash"])
 
@@ -83,12 +85,14 @@ async def bulk_purge_trash(
     summary="Trigger immediate purge of all expired trash records (SuperAdmin only)",
 )
 async def purge_expired_trash(
-    limit: int = Query(default=DEFAULT_TRASH_PURGE_LIMIT, ge=1, le=5000),
+    limit: int = Query(
+        default=DEFAULT_TRASH_PURGE_LIMIT, ge=1, le=MAX_TRASH_PURGE_LIMIT
+    ),
     service: TrashService = Depends(get_trash_service),
-    _: UserResponse = Depends(get_current_active_superuser),
+    current_user: UserResponse = Depends(get_current_active_superuser),
 ) -> TrashPurgeResponse:
     """Execute administrative purge of records that passed retention deadline."""
-    count = await service.purge_expired(limit=limit)
+    count = await service.purge_expired(limit=limit, user_id=current_user.id)
     return TrashPurgeResponse(
         purged_count=count,
         message=f"Successfully purged {count} expired items from the trash bin.",

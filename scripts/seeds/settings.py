@@ -133,14 +133,18 @@ DEFAULT_SYSTEM_SETTINGS: Final[list[SettingDef]] = [
     {
         "key": "storage.max_zip_file_count",
         "value": 100,
-        "description": "Número máximo de ficheros empaquetados por entidad en un archivo ZIP",
+        "description": (
+            "Número máximo de ficheros empaquetados por entidad en un archivo ZIP"
+        ),
         "category": "storage",
         "is_public": True,
     },
     {
         "key": "storage.presigned_expiry_seconds",
         "value": 3600,
-        "description": "Tiempo de expiración en segundos para URLs presignadas de subida",
+        "description": (
+            "Tiempo de expiración en segundos para URLs presignadas de subida"
+        ),
         "category": "storage",
         "is_public": True,
     },
@@ -149,6 +153,24 @@ DEFAULT_SYSTEM_SETTINGS: Final[list[SettingDef]] = [
         "value": 86400,
         "description": "Tiempo de retención en segundos para purgar subidas pendientes",
         "category": "storage",
+        "is_public": False,
+    },
+    {
+        "key": "auth.password_reset_expiry_minutes",
+        "value": 30,
+        "description": (
+            "Tiempo de expiración en minutos para tokens de recuperación de contraseña"
+        ),
+        "category": "auth",
+        "is_public": False,
+    },
+    {
+        "key": "auth.email_verification_expiry_hours",
+        "value": 24,
+        "description": (
+            "Tiempo de expiración en horas para enlaces de verificación de email"
+        ),
+        "category": "auth",
         "is_public": False,
     },
     {
@@ -185,6 +207,48 @@ DEFAULT_SYSTEM_SETTINGS: Final[list[SettingDef]] = [
         "description": "Límite máximo permitido de elementos por página",
         "category": "pagination",
         "is_public": True,
+    },
+    {
+        "key": "trash.retention_days",
+        "value": 30,
+        "description": "Días de retención de elementos en la papelera antes de su purga automática",
+        "category": "trash",
+        "is_public": True,
+    },
+    {
+        "key": "trash.purge_limit",
+        "value": 500,
+        "description": "Límite máximo de elementos purgados por lote en la papelera",
+        "category": "trash",
+        "is_public": False,
+    },
+    {
+        "key": "trash.auto_purge_enabled",
+        "value": True,
+        "description": "Habilitar purga automática periódica de elementos caducados en la papelera",
+        "category": "trash",
+        "is_public": False,
+    },
+    {
+        "key": "audit.retention_days",
+        "value": 365,
+        "description": "Días de retención de registros de auditoría antes de su purga automática",
+        "category": "audit",
+        "is_public": False,
+    },
+    {
+        "key": "audit.purge_limit",
+        "value": 1000,
+        "description": "Límite máximo de registros de auditoría purgados por lote",
+        "category": "audit",
+        "is_public": False,
+    },
+    {
+        "key": "audit.auto_purge_enabled",
+        "value": True,
+        "description": "Habilitar purga automática periódica de registros de auditoría caducados",
+        "category": "audit",
+        "is_public": False,
     },
 ]
 

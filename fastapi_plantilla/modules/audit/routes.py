@@ -11,9 +11,12 @@ from fastapi_plantilla.modules.audit.schema import (
 )
 from fastapi_plantilla.modules.audit.service import AuditService
 from fastapi_plantilla.modules.auth.dependencies import get_current_active_superuser
-from fastapi_plantilla.modules.auth.schema import UserResponse
 
-router = APIRouter(prefix="/audit", tags=["Audit"])
+router = APIRouter(
+    prefix="/audit",
+    tags=["Audit"],
+    dependencies=[Depends(get_current_active_superuser)],
+)
 
 
 @router.post(
@@ -24,15 +27,33 @@ router = APIRouter(prefix="/audit", tags=["Audit"])
 async def export_audit_logs(
     req: ExportRequest,
     service: AuditService = Depends(get_audit_service),
-    _: UserResponse = Depends(get_current_active_superuser),
 ) -> Response:
     """Export filtered audit logs."""
-    content, media_type, filename = await service.export_data(req)
+    result = await service.export_data(req)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{result.filename}"',
+        "X-Total-Count": str(result.total_count),
+    }
+    if result.is_truncated:
+        headers["X-Export-Truncated"] = "true"
     return Response(
-        content=content,
-        media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        content=result.content,
+        media_type=result.media_type,
+        headers=headers,
     )
+
+
+@router.post(
+    "/purge-expired",
+    summary="Purge audit logs older than retention period",
+)
+async def purge_expired_logs(
+    limit: int | None = None,
+    service: AuditService = Depends(get_audit_service),
+) -> dict[str, int]:
+    """Purge audit logs older than retention period."""
+    purged_count = await service.purge_expired(limit=limit)
+    return {"purged_count": purged_count}
 
 
 @router.get(
@@ -43,7 +64,6 @@ async def export_audit_logs(
 async def list_audit_logs(
     params: Annotated[AuditFilterParams, Depends()],
     service: AuditService = Depends(get_audit_service),
-    _: UserResponse = Depends(get_current_active_superuser),
 ) -> PaginatedResponse[AuditLogResponse]:
     """Retrieve paginated audit logs filtered by entity, action, or date range."""
     return await service.list_logs(params)
@@ -57,7 +77,6 @@ async def list_audit_logs(
 async def get_audit_log(
     id: uuid.UUID,
     service: AuditService = Depends(get_audit_service),
-    _: UserResponse = Depends(get_current_active_superuser),
 ) -> AuditLogResponse:
     """Retrieve detailed metadata and field diffs for a specific audit log record."""
     return await service.get_by_id(id)
@@ -72,7 +91,6 @@ async def get_entity_audit_history(
     entity_type: str,
     entity_id: uuid.UUID,
     service: AuditService = Depends(get_audit_service),
-    _: UserResponse = Depends(get_current_active_superuser),
 ) -> list[AuditLogResponse]:
     """Retrieve all chronological audit records associated with a specific entity."""
     return await service.get_entity_history(entity_type, entity_id)

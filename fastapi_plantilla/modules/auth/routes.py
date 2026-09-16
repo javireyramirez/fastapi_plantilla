@@ -11,6 +11,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import RedirectResponse
+from yarl import URL
 
 from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.core.crud.schema import MessageResponse
@@ -34,9 +35,33 @@ from fastapi_plantilla.modules.auth.schema import (
     UserResponse,
     VerifyEmailInput,
 )
-from fastapi_plantilla.modules.auth.service import AuthService
+from fastapi_plantilla.modules.auth.service import DEFAULT_TOKEN_BYTES, AuthService
+
+SECONDS_PER_DAY: int = 86400
+DEFAULT_OAUTH_STATE_MAX_AGE_SECONDS: int = 300
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
+
+
+def _is_safe_callback_url(url_str: str) -> bool:
+    """Validate that callback_url is a relative path or matches frontend_url origin."""
+    if not url_str:
+        return False
+    if url_str.startswith("/") and not url_str.startswith("//"):
+        return True
+    if settings.frontend_url:
+        try:
+            target = URL(url_str)
+            frontend = URL(settings.frontend_url)
+            if (
+                target.scheme in ("http", "https")
+                and target.host == frontend.host
+                and target.port == frontend.port
+            ):
+                return True
+        except Exception:
+            return False
+    return False
 
 
 def set_session_cookie(response: Response, token: str) -> None:
@@ -47,7 +72,7 @@ def set_session_cookie(response: Response, token: str) -> None:
         httponly=True,
         secure=settings.cookie_secure,
         samesite="lax",
-        max_age=settings.session_expire_days * 86400,
+        max_age=settings.session_expire_days * SECONDS_PER_DAY,
         path="/",
     )
 
@@ -57,6 +82,9 @@ def delete_session_cookie(response: Response) -> None:
     response.delete_cookie(
         key=settings.session_cookie_name,
         path="/",
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
     )
 
 
@@ -110,6 +138,7 @@ async def sign_in_email(
 
 @router.post("/sign-out", response_model=bool)
 async def sign_out(
+    request: Request,
     response: Response,
     service: AuthService = Depends(),
     session: AuthResponse = Depends(get_current_session),
@@ -120,7 +149,12 @@ async def sign_out(
     Invalidates the active session token in database and deletes the session cookie.
     """
     if session.session:
-        await service.logout(token=session.session.token)
+        await service.logout(
+            token=session.session.token,
+            user=session.user,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
     delete_session_cookie(response=response)
     return True
 
@@ -174,6 +208,7 @@ async def revoke_session(
 
 @router.post("/revoke-sessions", response_model=bool)
 async def revoke_sessions(
+    request: Request,
     response: Response,
     service: AuthService = Depends(),
     user: UserResponse = Depends(get_current_user),
@@ -184,7 +219,11 @@ async def revoke_sessions(
     Logs out the user from all connections and clears the local session cookie.
     """
     if user:
-        await service.logout_all(user_id=user.id)
+        await service.logout_all(
+            user_id=user.id,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
     delete_session_cookie(response=response)
     return True
 
@@ -192,6 +231,7 @@ async def revoke_sessions(
 @router.post("/change-password", response_model=bool)
 async def change_password(
     schema: PasswordChange,
+    request: Request,
     service: AuthService = Depends(),
     session: AuthResponse = Depends(get_current_session),
 ) -> bool:
@@ -200,12 +240,18 @@ async def change_password(
 
     Optionally revokes other active sessions if revoke_other_sessions is true.
     """
-    if session.session:
-        await service.change_password(
-            user_id=session.user.id,
-            schema=schema,
-            token=session.session.token,
+    if not session.session:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sesión no válida",
         )
+    await service.change_password(
+        user_id=session.user.id,
+        schema=schema,
+        token=session.session.token,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
     return True
 
 
@@ -228,6 +274,7 @@ async def change_email(
 
 @router.post("/delete-user", response_model=bool)
 async def delete_user(
+    request: Request,
     response: Response,
     schema: DeleteAccountInput,
     service: AuthService = Depends(),
@@ -242,6 +289,8 @@ async def delete_user(
     await service.delete_user(
         user_id=session.user.id,
         schema=schema,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
     )
     delete_session_cookie(response=response)
     return True
@@ -264,6 +313,7 @@ async def forget_password(
 @router.post("/reset-password", response_model=bool)
 async def reset_password(
     schema: ResetPasswordInput,
+    request: Request,
     service: AuthService = Depends(),
 ) -> bool:
     """
@@ -271,7 +321,11 @@ async def reset_password(
 
     Validates the one-time token, updates password hash, and revokes previous sessions.
     """
-    await service.reset_password(schema=schema)
+    await service.reset_password(
+        schema=schema,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
     return True
 
 
@@ -308,7 +362,12 @@ async def sign_in_google(
     service: AuthService = Depends(),
 ) -> RedirectResponse:
     """Redirect to Google OAuth consent screen with CSRF protection."""
-    state = secrets.token_urlsafe(32)
+    if callback_url and not _is_safe_callback_url(callback_url):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="URL de redirección no permitida",
+        )
+    state = secrets.token_urlsafe(DEFAULT_TOKEN_BYTES)
     redirect_uri = str(request.url_for("google_callback"))
     auth_url = service.get_google_auth_url(redirect_uri, state)
     redirect = RedirectResponse(
@@ -317,7 +376,7 @@ async def sign_in_google(
     redirect.set_cookie(
         key="oauth_state",
         value=state,
-        max_age=5 * 60,
+        max_age=DEFAULT_OAUTH_STATE_MAX_AGE_SECONDS,
         httponly=True,
         samesite="lax",
     )
@@ -325,7 +384,7 @@ async def sign_in_google(
         redirect.set_cookie(
             key="oauth_callback_url",
             value=callback_url,
-            max_age=5 * 60,
+            max_age=DEFAULT_OAUTH_STATE_MAX_AGE_SECONDS,
             httponly=True,
             samesite="lax",
         )
@@ -361,25 +420,35 @@ async def callback_google(
     )
 
     if oauth_callback_url:
+        if not _is_safe_callback_url(oauth_callback_url):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="URL de redirección no permitida",
+            )
         redirect = RedirectResponse(
             url=oauth_callback_url,
             status_code=status.HTTP_307_TEMPORARY_REDIRECT,
         )
         if auth_data.session:
             set_session_cookie(redirect, auth_data.session.token)
-        redirect.delete_cookie("oauth_state", path="/")
-        redirect.delete_cookie("oauth_callback_url", path="/")
+        redirect.delete_cookie("oauth_state", path="/", httponly=True, samesite="lax")
+        redirect.delete_cookie(
+            "oauth_callback_url", path="/", httponly=True, samesite="lax"
+        )
         return redirect
 
     if auth_data.session:
         set_session_cookie(response, auth_data.session.token)
-    response.delete_cookie("oauth_state", path="/")
-    response.delete_cookie("oauth_callback_url", path="/")
+    response.delete_cookie("oauth_state", path="/", httponly=True, samesite="lax")
+    response.delete_cookie(
+        "oauth_callback_url", path="/", httponly=True, samesite="lax"
+    )
     return auth_data
 
 
 @router.post("/impersonate/exit", response_model=MessageResponse)
 async def exit_impersonation(
+    request: Request,
     response: Response,
     current_session: AuthResponse = Depends(get_current_session),
     service: AuthService = Depends(),
@@ -390,7 +459,11 @@ async def exit_impersonation(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No active session found",
         )
-    await service.exit_impersonation(current_session.session.token)
+    await service.exit_impersonation(
+        token=current_session.session.token,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
     delete_session_cookie(response)
     return MessageResponse(message="Impersonación finalizada")
 

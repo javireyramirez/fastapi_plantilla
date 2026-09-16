@@ -3,14 +3,22 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from fastapi_plantilla.core.crud.schema import SortOrder, UserReference
 
+DEFAULT_AUDIT_EXPORT_LIMIT: int = 1000
+MAX_AUDIT_EXPORT_LIMIT: int = 5000
+DEFAULT_AUDIT_RETENTION_DAYS: int = 365
+DEFAULT_AUDIT_PURGE_LIMIT: int = 1000
+
 __all__ = [
+    "DEFAULT_AUDIT_EXPORT_LIMIT",
+    "DEFAULT_AUDIT_PURGE_LIMIT",
+    "DEFAULT_AUDIT_RETENTION_DAYS",
+    "MAX_AUDIT_EXPORT_LIMIT",
     "AuditAction",
     "AuditFilterParams",
-    "AuditLogCreate",
     "AuditLogExportResponse",
     "AuditLogResponse",
 ]
@@ -30,6 +38,7 @@ class AuditAction(enum.StrEnum):
     REACTIVATE = "REACTIVATE"
     ACTIVATE = "ACTIVATE"
     LOGIN = "LOGIN"
+    LOGIN_FAILED = "LOGIN_FAILED"
     LOGOUT = "LOGOUT"
     IMPERSONATE = "IMPERSONATE"
     PASSWORD_CHANGE = "PASSWORD_CHANGE"  # noqa: S105
@@ -78,22 +87,6 @@ class AuditLogExportResponse(BaseModel):
     changes: dict[str, Any] | None = None
 
 
-class AuditLogCreate(BaseModel):
-    """Payload to create an explicit domain audit log record."""
-
-    entity_type: str = Field(..., min_length=1, max_length=100)
-    entity_id: uuid.UUID | None = None
-    entity_name: str | None = Field(default=None, max_length=255)
-    action: str = Field(..., min_length=1, max_length=50)
-    actor_id: uuid.UUID | None = None
-    actor_name: str | None = Field(default=None, max_length=255)
-    actor_email: str | None = Field(default=None, max_length=255)
-    ip_address: str | None = Field(default=None, max_length=45)
-    user_agent: str | None = Field(default=None, max_length=500)
-    changes: dict[str, Any] | None = None
-    details: str | None = None
-
-
 class AuditFilterParams(BaseModel):
     """Query filters for retrieving paginated audit logs."""
 
@@ -103,12 +96,18 @@ class AuditFilterParams(BaseModel):
     entity_id: uuid.UUID | None = None
     entity_name: str | None = None
     action: str | None = None
-    actor_id: uuid.UUID | None = None
-    user_id: uuid.UUID | None = None
-    from_date: datetime | None = None
-    to_date: datetime | None = None
-    created_at_from: datetime | None = None
-    created_at_to: datetime | None = None
+    actor_id: uuid.UUID | None = Field(
+        default=None,
+        validation_alias=AliasChoices("actor_id", "user_id"),
+    )
+    created_at_from: datetime | None = Field(
+        default=None,
+        validation_alias=AliasChoices("created_at_from", "from_date"),
+    )
+    created_at_to: datetime | None = Field(
+        default=None,
+        validation_alias=AliasChoices("created_at_to", "to_date"),
+    )
     page: int = Field(default=1, ge=1, le=1000)
     limit: int = Field(default=20, ge=1, le=100)
     sort_by: str = "created_at"

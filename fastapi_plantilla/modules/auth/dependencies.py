@@ -16,10 +16,12 @@ async def get_current_session(
     ),
     service: AuthService = Depends(),
 ) -> AuthResponse:
-    """Validate session token from cookie or Authorization header."""
-    token = session_token
-    if not token and auth_header and auth_header.startswith("Bearer "):
+    """Validate session token from Authorization header or cookie."""
+    token = None
+    if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.removeprefix("Bearer ").strip()
+    if not token:
+        token = session_token
 
     if not token:
         raise HTTPException(

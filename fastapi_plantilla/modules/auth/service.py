@@ -1,13 +1,23 @@
+import contextlib
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from yarl import URL
 
 from fastapi_plantilla.core.config import settings
+from fastapi_plantilla.core.crud.schema import AuditEntry
+from fastapi_plantilla.core.crud.service_audit import (
+    dispatch_audit_event,
+    dispatch_trash_hook,
+)
+from fastapi_plantilla.core.mixins import RecordStatus
+from fastapi_plantilla.modules.audit.schema import AuditAction
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.auth.oauth import GoogleOAuthClient
 from fastapi_plantilla.modules.auth.repository import AuthRepository
@@ -29,6 +39,26 @@ from fastapi_plantilla.modules.auth.schema import (
 from fastapi_plantilla.modules.auth.utils import sign_token, unsign_token
 from fastapi_plantilla.modules.email.dependencies import get_email_service
 from fastapi_plantilla.modules.email.service import EmailService
+from fastapi_plantilla.modules.settings.dependencies import get_settings_service
+from fastapi_plantilla.modules.settings.service import SystemSettingService
+
+DEFAULT_TOKEN_BYTES: int = 32
+DEFAULT_PASSWORD_RESET_EXPIRY_MINUTES: int = 30
+DEFAULT_EMAIL_VERIFICATION_EXPIRY_HOURS: int = 24
+DEFAULT_CREDENTIAL_PROVIDER: str = "credential"
+DUMMY_PASSWORD_HASH: str = (
+    "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$RdescudvJCsgqlfreSAeYQ"  # noqa: S105
+)
+
+__all__ = [
+    "DEFAULT_CREDENTIAL_PROVIDER",
+    "DEFAULT_EMAIL_VERIFICATION_EXPIRY_HOURS",
+    "DEFAULT_PASSWORD_RESET_EXPIRY_MINUTES",
+    "DEFAULT_TOKEN_BYTES",
+    "DUMMY_PASSWORD_HASH",
+    "AuthService",
+    "ph",
+]
 
 ph = PasswordHasher()
 
@@ -40,9 +70,65 @@ class AuthService:
         self,
         repository: AuthRepository = Depends(),
         email_service: EmailService = Depends(get_email_service),
+        settings_service: SystemSettingService | None = Depends(get_settings_service),
     ) -> None:
         self.repository = repository
         self.email_service = email_service
+        self.settings_service = settings_service
+
+    async def get_password_reset_expiry_minutes(self) -> int:
+        """Get configured expiry for password reset tokens in minutes."""
+        if self.settings_service:
+            return int(
+                await self.settings_service.get_value(
+                    "auth.password_reset_expiry_minutes",
+                    default=DEFAULT_PASSWORD_RESET_EXPIRY_MINUTES,
+                )
+            )
+        return DEFAULT_PASSWORD_RESET_EXPIRY_MINUTES
+
+    async def get_email_verification_expiry_hours(self) -> int:
+        """Get configured expiry for email verification tokens in hours."""
+        if self.settings_service:
+            return int(
+                await self.settings_service.get_value(
+                    "auth.email_verification_expiry_hours",
+                    default=DEFAULT_EMAIL_VERIFICATION_EXPIRY_HOURS,
+                )
+            )
+        return DEFAULT_EMAIL_VERIFICATION_EXPIRY_HOURS
+
+    async def _emit_audit(
+        self,
+        action: str,
+        user: User | UserResponse | None = None,
+        user_id: uuid.UUID | None = None,
+        actor_id: uuid.UUID | None = None,
+        actor_name: str | None = None,
+        actor_email: str | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+        changes: dict[str, Any] | None = None,
+        details: str | None = None,
+    ) -> None:
+        """Emit decoupled audit event into centralized sys_audit_logs."""
+        target_id = user.id if user else user_id
+        target_name = (user.name or user.email) if user else (actor_name or actor_email)
+        target_email = user.email if user else actor_email
+        entry = AuditEntry(
+            entity_type="user",
+            entity_id=target_id,
+            entity_name=target_name,
+            action=action,
+            actor_id=actor_id if actor_id is not None else target_id,
+            actor_name=actor_name if actor_name is not None else target_name,
+            actor_email=actor_email if actor_email is not None else target_email,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            changes=changes,
+            details=details,
+        )
+        await dispatch_audit_event(self.repository.session, entry)
 
     async def _create_user_session(
         self,
@@ -52,7 +138,7 @@ class AuthService:
         impersonated_by: uuid.UUID | None = None,
     ) -> AuthResponse:
         """Helper to create session token and construct AuthResponse."""
-        raw_token = secrets.token_urlsafe(32)
+        raw_token = secrets.token_urlsafe(DEFAULT_TOKEN_BYTES)
         session = await self.repository.create_session(
             user_id=user.id,
             token=raw_token,
@@ -90,7 +176,7 @@ class AuthService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Usuario no encontrado",
                 )
-            if not user.is_active:
+            if not user.is_active or user.status == RecordStatus.TRASHED:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Usuario inactivo o suspendido",
@@ -102,11 +188,19 @@ class AuthService:
                 id_token=id_token,
                 expires_at=expires_at,
             )
-            return await self._create_user_session(user, ip_address, user_agent)
+            resp = await self._create_user_session(user, ip_address, user_agent)
+            await self._emit_audit(
+                action=AuditAction.LOGIN,
+                user=user,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details=f"OAuth login via {user_info.provider_id}",
+            )
+            return resp
 
         user = await self.repository.get_user_by_email(user_info.email)
         if user:
-            if not user.is_active:
+            if not user.is_active or user.status == RecordStatus.TRASHED:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Usuario inactivo o suspendido",
@@ -120,17 +214,25 @@ class AuthService:
                 id_token=id_token,
                 access_token_expires_at=expires_at,
             )
-            if not user.email_verified:
+            if not user.email_verified and user_info.email_verified:
                 await self.repository.update_user_by_id(
                     user_id=user.id, update_data={"email_verified": True}
                 )
-            return await self._create_user_session(user, ip_address, user_agent)
+            resp = await self._create_user_session(user, ip_address, user_agent)
+            await self._emit_audit(
+                action=AuditAction.LOGIN,
+                user=user,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details=f"OAuth login and account link via {user_info.provider_id}",
+            )
+            return resp
 
         new_user = await self.repository.create_user(
             name=user_info.name,
             email=user_info.email,
             image=user_info.image,
-            email_verified=True,
+            email_verified=user_info.email_verified,
         )
         await self.repository.create_account(
             user_id=new_user.id,
@@ -141,7 +243,22 @@ class AuthService:
             id_token=id_token,
             access_token_expires_at=expires_at,
         )
-        return await self._create_user_session(new_user, ip_address, user_agent)
+        resp = await self._create_user_session(new_user, ip_address, user_agent)
+        await self._emit_audit(
+            action=AuditAction.CREATE,
+            user=new_user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details=f"User registered via {user_info.provider_id} OAuth",
+        )
+        await self._emit_audit(
+            action=AuditAction.LOGIN,
+            user=new_user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details=f"Initial OAuth login via {user_info.provider_id}",
+        )
+        return resp
 
     def get_google_auth_url(self, redirect_uri: str, state: str) -> str:
         """Generate Google OAuth authorization URL."""
@@ -185,20 +302,42 @@ class AuthService:
                 detail="El email ya está registrado",
             )
 
-        user = await self.repository.create_user(
-            name=schema.name,
-            email=schema.email,
-            image=None,
-        )
-        await self.repository.create_account(
-            user_id=user.id,
-            provider_id="credential",
-            account_id=schema.email,
-            password_hash=ph.hash(schema.password),
-        )
+        try:
+            user = await self.repository.create_user(
+                name=schema.name,
+                email=schema.email,
+                image=None,
+            )
+            await self.repository.create_account(
+                user_id=user.id,
+                provider_id=DEFAULT_CREDENTIAL_PROVIDER,
+                account_id=schema.email,
+                password_hash=ph.hash(schema.password),
+            )
+        except IntegrityError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El email ya está registrado",
+            ) from e
+
         if settings.frontend_url:
             await self.send_verification_email(email=user.email)
-        return await self._create_user_session(user, ip_address, user_agent)
+        resp = await self._create_user_session(user, ip_address, user_agent)
+        await self._emit_audit(
+            action=AuditAction.CREATE,
+            user=user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details="User registered via email/password",
+        )
+        await self._emit_audit(
+            action=AuditAction.LOGIN,
+            user=user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details="Initial login on registration",
+        )
+        return resp
 
     async def login(
         self,
@@ -209,12 +348,32 @@ class AuthService:
         """Login user and start active session."""
         user = await self.repository.get_user_by_email(schema.email)
         if not user:
+            with contextlib.suppress(VerifyMismatchError):
+                ph.verify(DUMMY_PASSWORD_HASH, schema.password)
+            await self._emit_audit(
+                action=AuditAction.LOGIN_FAILED,
+                actor_email=schema.email,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details=f"Failed login attempt for non-existent user '{schema.email}'",
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Credenciales inválidas",
             )
 
-        if not user.is_active:
+        if not user.is_active or user.status == RecordStatus.TRASHED:
+            await self._emit_audit(
+                action=AuditAction.LOGIN_FAILED,
+                user=user,
+                actor_email=schema.email,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details=(
+                    f"Failed login attempt for inactive or suspended user "
+                    f"'{schema.email}'"
+                ),
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Usuario inactivo o suspendido",
@@ -222,9 +381,22 @@ class AuthService:
 
         account = await self.repository.get_account_by_provider(
             user_id=user.id,
-            provider_id="credential",
+            provider_id=DEFAULT_CREDENTIAL_PROVIDER,
         )
         if not account or account.password is None:
+            with contextlib.suppress(VerifyMismatchError):
+                ph.verify(DUMMY_PASSWORD_HASH, schema.password)
+            await self._emit_audit(
+                action=AuditAction.LOGIN_FAILED,
+                user=user,
+                actor_email=schema.email,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details=(
+                    f"Failed login attempt: account without password credentials "
+                    f"for '{schema.email}'"
+                ),
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Credenciales inválidas",
@@ -233,12 +405,28 @@ class AuthService:
         try:
             ph.verify(account.password, schema.password)
         except VerifyMismatchError as e:
+            await self._emit_audit(
+                action=AuditAction.LOGIN_FAILED,
+                user=user,
+                actor_email=schema.email,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details=f"Failed login attempt: invalid password for '{schema.email}'",
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Credenciales inválidas",
             ) from e
 
-        return await self._create_user_session(user, ip_address, user_agent)
+        resp = await self._create_user_session(user, ip_address, user_agent)
+        await self._emit_audit(
+            action=AuditAction.LOGIN,
+            user=user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details="User logged in via password",
+        )
+        return resp
 
     async def get_session(self, token: str) -> AuthResponse:
         """Validate active session token and return authenticated user data."""
@@ -257,7 +445,7 @@ class AuthService:
                 detail="Sesión no válida o expirada",
             )
 
-        if not session.user.is_active:
+        if not session.user.is_active or session.user.status == RecordStatus.TRASHED:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Usuario inactivo o suspendido",
@@ -270,27 +458,63 @@ class AuthService:
             session=session_dto,
         )
 
-    async def logout(self, token: str) -> bool:
+    async def logout(
+        self,
+        token: str,
+        user: User | UserResponse | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> bool:
         """Logout user and invalidate active session."""
         raw_token = unsign_token(token, settings.auth_secret)
         if not raw_token:
             return False
-        return await self.repository.invalidate_session(token=raw_token)
+        if not user:
+            sess = await self.repository.get_session_with_user(token=raw_token)
+            if sess:
+                user = sess.user
+        result = await self.repository.invalidate_session(token=raw_token)
+        if user:
+            await self._emit_audit(
+                action=AuditAction.LOGOUT,
+                user=user,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details="User logged out",
+            )
+        return result
 
-    async def logout_all(self, user_id: uuid.UUID | str) -> int:
+    async def logout_all(
+        self,
+        user_id: uuid.UUID | str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> int:
         """Invalidate all active sessions of a user (Logout from all devices)."""
-        return await self.repository.invalidate_all_user_sessions(user_id=user_id)
+        count = await self.repository.invalidate_all_user_sessions(user_id=user_id)
+        user = await self.repository.get_user_by_id(user_id)
+        if user:
+            await self._emit_audit(
+                action=AuditAction.LOGOUT,
+                user=user,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details=f"All active sessions revoked ({count} sessions)",
+            )
+        return count
 
     async def change_password(
         self,
         user_id: uuid.UUID | str,
         schema: PasswordChange,
         token: str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
     ) -> bool:
         """Change password, ensure difference and revoke existing sessions."""
         account = await self.repository.get_account_by_provider(
             user_id=user_id,
-            provider_id="credential",
+            provider_id=DEFAULT_CREDENTIAL_PROVIDER,
         )
         if not account or account.password is None:
             raise HTTPException(
@@ -321,6 +545,16 @@ class AuthService:
             raw_token = unsign_token(token, settings.auth_secret) or token
             await self.repository.invalidate_other_user_sessions(
                 user_id=user_id, current_token=raw_token
+            )
+
+        user = await self.repository.get_user_by_id(user_id)
+        if user:
+            await self._emit_audit(
+                action=AuditAction.PASSWORD_CHANGE,
+                user=user,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details="Password changed by user",
             )
         return True
 
@@ -367,17 +601,24 @@ class AuthService:
     async def forget_password(self, schema: ForgotPasswordRequest) -> bool:
         """Generate password reset token (safe against user enumeration)."""
         user = await self.repository.get_user_by_email(schema.email)
-        if user and user.is_active:
-            token = secrets.token_urlsafe(32)
+        if user and user.is_active and user.status != RecordStatus.TRASHED:
+            await self.repository.delete_verifications_by_identifier(schema.email)
+            token = secrets.token_urlsafe(DEFAULT_TOKEN_BYTES)
+            expiry_minutes = await self.get_password_reset_expiry_minutes()
             await self.repository.create_verification(
                 identifier=schema.email,
                 value=token,
-                expires_at=datetime.now(UTC) + timedelta(minutes=30),
+                expires_at=datetime.now(UTC) + timedelta(minutes=expiry_minutes),
             )
             await self._send_reset_password_email(user, token)
         return True
 
-    async def reset_password(self, schema: ResetPasswordInput) -> bool:
+    async def reset_password(
+        self,
+        schema: ResetPasswordInput,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> bool:
         """Reset password using one-time token and revoke sessions."""
         verification = await self.repository.get_valid_verification_by_value(
             value=schema.token,
@@ -389,7 +630,7 @@ class AuthService:
             )
 
         user = await self.repository.get_user_by_email(verification.identifier)
-        if not user or not user.is_active:
+        if not user or not user.is_active or user.status == RecordStatus.TRASHED:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Usuario no encontrado o inactivo",
@@ -402,7 +643,7 @@ class AuthService:
         if not updated:
             await self.repository.create_account(
                 user_id=user.id,
-                provider_id="credential",
+                provider_id=DEFAULT_CREDENTIAL_PROVIDER,
                 account_id=user.email,
                 password_hash=ph.hash(schema.new_password),
             )
@@ -418,17 +659,31 @@ class AuthService:
         )
 
         await self.repository.invalidate_all_user_sessions(user_id=user.id)
+        await self._emit_audit(
+            action=AuditAction.PASSWORD_CHANGE,
+            user=user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details="Password reset via one-time recovery token",
+        )
         return True
 
     async def send_verification_email(self, email: str) -> bool:
         """Generate verification token and send verification email."""
         user = await self.repository.get_user_by_email(email)
-        if user and not user.email_verified and user.is_active:
-            token = secrets.token_urlsafe(32)
+        if (
+            user
+            and not user.email_verified
+            and user.is_active
+            and user.status != RecordStatus.TRASHED
+        ):
+            await self.repository.delete_verifications_by_identifier(user.email)
+            token = secrets.token_urlsafe(DEFAULT_TOKEN_BYTES)
+            expiry_hours = await self.get_email_verification_expiry_hours()
             await self.repository.create_verification(
                 identifier=user.email,
                 value=token,
-                expires_at=datetime.now(UTC) + timedelta(hours=24),
+                expires_at=datetime.now(UTC) + timedelta(hours=expiry_hours),
             )
             await self._send_verification_email(user, token)
 
@@ -446,7 +701,7 @@ class AuthService:
             )
 
         user = await self.repository.get_user_by_email(verification.identifier)
-        if not user or not user.is_active:
+        if not user or not user.is_active or user.status == RecordStatus.TRASHED:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Usuario no encontrado o inactivo",
@@ -507,7 +762,7 @@ class AuthService:
     async def change_email(self, user_id: uuid.UUID, schema: ChangeEmailInput) -> bool:
         """Update user email address and re-trigger verification flow."""
         user = await self.repository.get_user_by_id(user_id)
-        if not user or not user.is_active:
+        if not user or not user.is_active or user.status == RecordStatus.TRASHED:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Usuario no encontrado o inactivo",
@@ -521,7 +776,7 @@ class AuthService:
             )
 
         account = await self.repository.get_account_by_provider(
-            user_id=user_id, provider_id="credential"
+            user_id=user_id, provider_id=DEFAULT_CREDENTIAL_PROVIDER
         )
 
         if account and account.password:
@@ -540,7 +795,7 @@ class AuthService:
 
             await self.repository.update_account_by_provider(
                 user_id=user_id,
-                provider_id="credential",
+                provider_id=DEFAULT_CREDENTIAL_PROVIDER,
                 update_data={"account_id": schema.new_email},
             )
 
@@ -554,8 +809,14 @@ class AuthService:
 
         return True
 
-    async def delete_user(self, user_id: uuid.UUID, schema: DeleteAccountInput) -> bool:
-        """Permanently delete user account and invalidate credentials."""
+    async def delete_user(
+        self,
+        user_id: uuid.UUID,
+        schema: DeleteAccountInput,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> bool:
+        """Soft-delete user account, invalidate sessions and credentials."""
         user = await self.repository.get_user_by_id(user_id)
         if not user:
             raise HTTPException(
@@ -563,8 +824,25 @@ class AuthService:
                 detail="Usuario no encontrado",
             )
 
+        if user.is_system:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No se puede eliminar un usuario del sistema",
+            )
+
+        if user.is_super_admin and user.is_active:
+            superadmin_count = await self.repository.count_active_superadmins()
+            if superadmin_count <= 1:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "No se puede eliminar el único superadministrador activo "
+                        "del sistema"
+                    ),
+                )
+
         account = await self.repository.get_account_by_provider(
-            user_id=user_id, provider_id="credential"
+            user_id=user_id, provider_id=DEFAULT_CREDENTIAL_PROVIDER
         )
         if account and account.password:
             if not schema.password:
@@ -580,7 +858,30 @@ class AuthService:
                     detail="Contraseña incorrecta",
                 ) from e
 
-        await self.repository.delete_user_by_id(user_id=user_id)
+        now = datetime.now(UTC)
+        await self.repository.update_user_by_id(
+            user_id=user_id,
+            update_data={
+                "status": RecordStatus.TRASHED,
+                "is_active": False,
+                "deleted_at": now,
+                "deleted_by": user.email,
+            },
+        )
+        await self.repository.invalidate_all_user_sessions(user_id=user.id)
+        await dispatch_trash_hook(
+            self.repository.session,
+            user,
+            is_trash=True,
+            user_id=user.id,
+        )
+        await self._emit_audit(
+            action=AuditAction.TRASH,
+            user=user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details="User self-deleted account (moved to trash)",
+        )
         return True
 
     async def impersonate_user(
@@ -613,20 +914,36 @@ class AuthService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No se permite impersonar a otro superadministrador",
             )
-        if not target_user.is_active:
+        if not target_user.is_active or target_user.status == RecordStatus.TRASHED:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No se puede impersonar a un usuario inactivo o suspendido",
             )
 
-        return await self._create_user_session(
+        resp = await self._create_user_session(
             user=target_user,
             ip_address=ip_address,
             user_agent=user_agent,
             impersonated_by=admin_user.id,
         )
+        await self._emit_audit(
+            action=AuditAction.IMPERSONATE,
+            user=admin_user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details=(
+                f"SuperAdmin {admin_user.email} started impersonating "
+                f"{target_user.email} (ID: {target_user.id})"
+            ),
+        )
+        return resp
 
-    async def exit_impersonation(self, token: str) -> bool:
+    async def exit_impersonation(
+        self,
+        token: str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> bool:
         """Terminate the active impersonated session."""
         raw_token = unsign_token(token, settings.auth_secret)
         if not raw_token:
@@ -640,4 +957,18 @@ class AuthService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="La sesión actual no es una sesión impersonada",
             )
-        return await self.repository.invalidate_session(token=raw_token)
+        target_user = session.user
+        admin_user = await self.repository.get_user_by_id(session.impersonated_by)
+        result = await self.repository.invalidate_session(token=raw_token)
+        if admin_user:
+            await self._emit_audit(
+                action=AuditAction.IMPERSONATE,
+                user=admin_user,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details=(
+                    f"SuperAdmin {admin_user.email} exited impersonation of "
+                    f"{target_user.email} (ID: {target_user.id})"
+                ),
+            )
+        return result

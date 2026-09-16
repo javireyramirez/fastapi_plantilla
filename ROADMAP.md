@@ -173,14 +173,20 @@ flowchart TD
 
 ### ⚪ FASE 9: Motor de Prompts IA en DB con Versionado Git (`modules/ai_prompts`) *(⏳ PENDIENTE)*
 * **9.1 Plantillas Polimórficas (`ai_prompt_templates`):** *(⏳ PENDIENTE)*
-  * *Descripción:* Registro con `slug`, `category`, `entity_type` y `entity_id`. Soporta resolución en cascada (busca el prompt específico de la Entidad/Compañía y si no existe, cae al `GLOBAL` default).
-  * *Problema que soluciona:* Permite tener comportamientos de IA personalizados por cliente (ej. un OCR diferente por empresa) sin tocar código.
+  * *Descripción:* Registro con `slug`, `category`, `entity_type` y `entity_id`. Soporta resolución en cascada (busca el prompt específico de la Entidad/Compañía y si no existe, cae al `GLOBAL` default). Incluye control de sincronización y mutabilidad (`is_updatable_from_code` / directivas de actualización) para elegir si la plantilla puede actualizarse automáticamente cuando se sube nuevo código.
+  * *Problema que soluciona:* Permite tener comportamientos de IA personalizados por cliente (ej. un OCR diferente por empresa) sin tocar código y protege las plantillas de sobreescrituras accidentales.
 * **9.2 Versiones Inmutables Tipo Git (`ai_prompt_versions`):** *(⏳ PENDIENTE)*
   * *Descripción:* Commits de prompts con `system_prompt`, `user_prompt`, `few_shot_examples`, `commit_message`, estados (`DRAFT`, `ACTIVE`, `ARCHIVED`), endpoint de **Diff** y endpoint de **Rollback**.
   * *Problema que soluciona:* Control de versiones, pruebas seguras de prompts desde el frontend y capacidad de volver atrás al instante si un prompt empeora.
 * **9.3 Trazabilidad y Auditoría de Ejecuciones (`sys_ai_executions`):** *(⏳ PENDIENTE)*
   * *Descripción:* Registro de cada llamada al LLM vinculando la versión exacta del prompt, variables inyectadas, modelo, latencia, tokens, coste (\$ USD) y salida estructurada.
   * *Problema que soluciona:* Trazabilidad absoluta de por qué la IA respondió lo que respondió y auditoría de costes.
+* **9.4 Sincronización Segura de Plantillas & Estrategias Multi-Entorno (`dev`, `uat`, `prod`):** *(⏳ PENDIENTE)*
+  * *Descripción:* Motor de sincronización y siembra segura de plantillas al desplegar nuevas versiones de código. Permite elegir granularmente (por plantilla mediante directivas o por configuración de entorno) si una plantilla puede ser actualizada o no desde el código fuente, garantizando seguridad y comportamientos diferenciados según el entorno de ejecución:
+    - **Entorno `dev`:** Sincronización automática y directa desde los archivos de código para agilizar el ciclo de desarrollo y la iteración rápida de prompts.
+    - **Entorno `uat`:** Despliegue controlado donde las actualizaciones de código generan nuevas versiones en estado borrador (`DRAFT`) o solo actualizan plantillas que no hayan sufrido modificaciones en base de datos, protegiendo las pruebas de aceptación.
+    - **Entorno `prod`:** Blindaje de alta seguridad (*fail-safe/fail-closed*). Por defecto bloquea la sobreescritura destructiva de plantillas activas o customizadas en producción; los cambios procedentes de una nueva versión de código se registran como versiones inactivas pendientes de revisión o requieren confirmación explícita mediante migración/CLI para activarse.
+  * *Problema que soluciona:* Elimina el riesgo crítico de que un despliegue de código nuevo pise o rompa accidentalmente prompts de producción ajustados en caliente para clientes, manteniendo flexibilidad total en desarrollo y control riguroso en UAT.
 
 ---
 

@@ -34,3 +34,9 @@ class SystemSetting(UUID7PrimaryKeyMixin, TimestampMixin, Base):
     is_public: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false"), index=True, nullable=False
     )
+
+    def __repr__(self) -> str:
+        return (
+            f"<SystemSetting(key='{self.key}', "
+            f"category='{self.category}', is_public={self.is_public})>"
+        )

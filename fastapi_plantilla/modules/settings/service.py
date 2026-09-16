@@ -1,8 +1,10 @@
+import copy
 from typing import Any, ClassVar
 
-from fastapi import Depends, HTTPException, status
+from fastapi import HTTPException, status
 
 from fastapi_plantilla.core.crud.schema import AuditEntry
+from fastapi_plantilla.core.crud.service_audit import dispatch_audit_event
 from fastapi_plantilla.modules.auth.schema import UserResponse
 from fastapi_plantilla.modules.settings.models import SystemSetting
 from fastapi_plantilla.modules.settings.repository import SystemSettingRepository
@@ -17,6 +19,11 @@ def _get_value_category(val: Any) -> type:
 
 def _validate_setting_value(existing: Any, new_val: Any) -> None:
     """Validate that new value type is consistent with existing setting type."""
+    if existing is not None and new_val is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Setting value cannot be null",
+        )
     if existing is None or new_val is None:
         return
 
@@ -35,6 +42,17 @@ def _validate_setting_value(existing: Any, new_val: Any) -> None:
             detail="Integer value cannot be negative",
         )
 
+    if (
+        orig_type is str
+        and isinstance(existing, str)
+        and existing.strip()
+        and (not isinstance(new_val, str) or not new_val.strip())
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Setting value cannot be an empty string",
+        )
+
 
 class SystemSettingService:
     """Service managing system configuration with in-memory caching."""
@@ -44,7 +62,7 @@ class SystemSettingService:
 
     def __init__(
         self,
-        repository: SystemSettingRepository = Depends(),
+        repository: SystemSettingRepository,
     ) -> None:
         self.repository = repository
 
@@ -58,36 +76,37 @@ class SystemSettingService:
         """
         Retrieve setting value by key with memory cache fallback.
 
-        Reads from process memory first. On cache miss, loads from PostgreSQL
-        and populates the cache.
+        Reads from process memory first. On cache miss, loads from database
+        and populates the cache. Returns a defensive copy for mutable objects.
         """
-        if key in self.cache:
-            return self.cache[key]
+        clean_key = key.strip()
+        if clean_key in self.cache:
+            return copy.deepcopy(self.cache[clean_key])
 
-        setting = await self.repository.get_by_key(key)
+        setting = await self.repository.get_by_key(clean_key)
         if setting is None:
-            return default
+            return copy.deepcopy(default)
 
-        self.cache[key] = setting.value
-        return setting.value
+        self.cache[clean_key] = copy.deepcopy(setting.value)
+        return copy.deepcopy(setting.value)
 
     async def get_public_settings(self) -> dict[str, Any]:
         """
         Retrieve all public settings as a key-value dictionary for frontend consumption.
 
-        Cached in process memory for zero-latency responses.
+        Cached in process memory for zero-latency responses. Returns a defensive copy.
         """
         if self.public_cache is not None:
-            return self.public_cache
+            return copy.deepcopy(self.public_cache)
 
         public_settings = await self.repository.get_all_public()
         mapping: dict[str, Any] = {}
         for s in public_settings:
-            mapping[s.key] = s.value
-            self.cache[s.key] = s.value
+            mapping[s.key] = copy.deepcopy(s.value)
+            self.cache[s.key] = copy.deepcopy(s.value)
 
         self.__class__.public_cache = mapping
-        return mapping
+        return copy.deepcopy(mapping)
 
     async def list_settings(self, category: str | None = None) -> list[SystemSetting]:
         """List settings optionally filtered by category (Admin)."""
@@ -97,13 +116,19 @@ class SystemSettingService:
             items = await self.repository.find_many()
         return list(items)
 
+    async def get_categories(self) -> list[str]:
+        """List all distinct setting categories (Admin)."""
+        categories = await self.repository.get_categories()
+        return list(categories)
+
     async def get_setting(self, key: str) -> SystemSetting:
         """Get full setting entity by key or raise 404."""
-        setting = await self.repository.get_by_key(key)
+        clean_key = key.strip()
+        setting = await self.repository.get_by_key(clean_key)
         if not setting:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Setting '{key}' not found",
+                detail=f"Setting '{clean_key}' not found",
             )
         return setting
 
@@ -118,15 +143,23 @@ class SystemSettingService:
 
         update_payload: dict[str, Any] = {}
         changes: dict[str, Any] = {}
-        if data.value is not None and setting.value != data.value:
+        if "value" in data.model_fields_set and setting.value != data.value:
             _validate_setting_value(setting.value, data.value)
             update_payload["value"] = data.value
             changes["value"] = {"old": setting.value, "new": data.value}
-        if data.description is not None and setting.description != data.description:
-            update_payload["description"] = data.description
+        if (
+            "description" in data.model_fields_set
+            and setting.description != data.description
+        ):
+            clean_desc = (
+                data.description.strip()
+                if isinstance(data.description, str)
+                else data.description
+            )
+            update_payload["description"] = clean_desc
             changes["description"] = {
                 "old": setting.description,
-                "new": data.description,
+                "new": clean_desc,
             }
 
         if update_payload:
@@ -135,13 +168,8 @@ class SystemSettingService:
                 setting = updated
 
             if changes and actor is not None:
-                # Deferred import to break circular import between settings and audit
-                from fastapi_plantilla.modules.audit.repository import (  # noqa: PLC0415
-                    AuditRepository,
-                )
-
-                audit_repo = AuditRepository(self.repository.session)
-                await audit_repo.record_entry(
+                await dispatch_audit_event(
+                    self.repository.session,
                     AuditEntry(
                         entity_type="settings",
                         entity_id=setting.id,
@@ -152,11 +180,11 @@ class SystemSettingService:
                         actor_email=actor.email,
                         changes=changes,
                         details=f"System setting '{setting.key}' updated",
-                    )
+                    ),
                 )
 
         # Invalidate / update cache
-        self.cache[setting.key] = setting.value
+        self.cache[setting.key] = copy.deepcopy(setting.value)
         self.__class__.public_cache = None
 
         return setting

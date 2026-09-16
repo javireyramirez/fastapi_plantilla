@@ -132,6 +132,9 @@ async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:  # no
     assert "pagination.default_page_size" in setting_keys
     assert "pagination.page_size_options" in setting_keys
     assert "pagination.max_page_size" in setting_keys
+    assert "trash.retention_days" in setting_keys
+    assert "trash.purge_limit" in setting_keys
+    assert "trash.auto_purge_enabled" in setting_keys
 
     # Run 2: Verify Idempotency (running again doesn't crash or duplicate)
     await run_all_seeds(dbsession)

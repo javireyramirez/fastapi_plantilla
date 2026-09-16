@@ -53,6 +53,19 @@ async def list_settings(
     return [SettingResponse.model_validate(s) for s in settings_list]
 
 
+@router.get(
+    "/categories",
+    response_model=list[str],
+    summary="List all setting categories",
+)
+async def list_categories(
+    _: UserResponse = Depends(get_current_active_superuser),
+    service: SystemSettingService = Depends(get_settings_service),
+) -> list[str]:
+    """Retrieve list of distinct setting categories (SuperAdmin only)."""
+    return await service.get_categories()
+
+
 @router.get("/{key}", response_model=SettingResponse)
 async def get_setting(
     key: str,
@@ -60,7 +73,7 @@ async def get_setting(
     service: SystemSettingService = Depends(get_settings_service),
 ) -> SettingResponse:
     """Retrieve detailed setting by key (SuperAdmin only)."""
-    setting = await service.get_setting(key)
+    setting = await service.get_setting(key.strip())
     return SettingResponse.model_validate(setting)
 
 
@@ -76,5 +89,5 @@ async def update_setting(
 
     Automatically invalidates the in-memory cache and records an audit log.
     """
-    setting = await service.update_setting(key, data, actor=current_user)
+    setting = await service.update_setting(key.strip(), data, actor=current_user)
     return SettingResponse.model_validate(setting)
