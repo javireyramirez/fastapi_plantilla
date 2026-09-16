@@ -108,16 +108,23 @@ class SystemSettingService:
         cls.public_cache = None
         cls.public_cache_at = 0.0
 
-    async def get_value(self, key: str, default: Any = None) -> Any:
+    async def get_value(
+        self,
+        key: str,
+        default: Any = None,
+        *,
+        use_cache: bool = True,
+    ) -> Any:
         """
         Retrieve setting value by key with memory cache fallback and TTL check.
 
-        Reads from process memory first if within TTL. On miss/expiration, loads
-        from database, logs a warning on missing keys, and populates the cache.
+        Reads from process memory first if within TTL and use_cache is True. On
+        miss/expiration or when use_cache is False, loads directly from database,
+        logs a warning on missing keys, and populates the cache.
         """
         clean_key = key.strip()
         now = time.monotonic()
-        if clean_key in self.cache:
+        if use_cache and clean_key in self.cache:
             cached_val, cached_at = self.cache[clean_key]
             if (now - cached_at) < self.ttl_seconds:
                 return copy.deepcopy(cached_val)

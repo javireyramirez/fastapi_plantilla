@@ -20,7 +20,12 @@ from fastapi_plantilla.core.crud.schema import (
 )
 from fastapi_plantilla.core.crud.service_audit import dispatch_audit_event
 from fastapi_plantilla.core.mixins import RecordStatus
-from fastapi_plantilla.modules.common.resolvers import CODE_TO_ENTITY as _CODE_TO_ENTITY
+from fastapi_plantilla.modules.common.resolvers import (
+    CODE_TO_ENTITY as _CODE_TO_ENTITY,
+)
+from fastapi_plantilla.modules.common.resolvers import (
+    resolve_module_metadata,
+)
 from fastapi_plantilla.modules.common.schema import EntityType
 from fastapi_plantilla.modules.rbac.catalog import CORE_SYSTEM_MODULES
 from fastapi_plantilla.modules.settings.service import SystemSettingService
@@ -72,23 +77,30 @@ def register_trash_entity(
 
 MODULE_CATALOG: dict[str, TrashModuleResponse] = {}
 for _mod in CORE_SYSTEM_MODULES:
+    _code, _name = resolve_module_metadata(_mod["code"])
     _resp = TrashModuleResponse(
-        code=_mod["code"],
-        name=_mod["name"],
+        code=_code,
+        name=_name,
         description=_mod.get("description"),
         icon=_mod.get("icon"),
         category=_mod.get("category"),
     )
-    MODULE_CATALOG[_mod["code"].lower()] = _resp
+    MODULE_CATALOG[_code.lower()] = _resp
     if _mod["code"] in _CODE_TO_ENTITY:
         MODULE_CATALOG[_CODE_TO_ENTITY[_mod["code"]]] = _resp
 
 
 def resolve_module(entity_type: str | None) -> TrashModuleResponse | None:
-    """Resolve module metadata in O(1) from central system catalog."""
+    """Resolve module metadata in O(1) from central system catalog with fallback."""
     if not entity_type:
         return None
-    return MODULE_CATALOG.get(entity_type.strip().lower())
+    raw = entity_type.strip().lower()
+    if raw in MODULE_CATALOG:
+        return MODULE_CATALOG[raw]
+    code, name = resolve_module_metadata(raw)
+    if code in MODULE_CATALOG:
+        return MODULE_CATALOG[code]
+    return TrashModuleResponse(code=code, name=name)
 
 
 async def resolve_entity_name(

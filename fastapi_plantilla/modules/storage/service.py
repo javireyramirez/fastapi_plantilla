@@ -20,9 +20,9 @@ from fastapi_plantilla.core.crud.schema import (
 )
 from fastapi_plantilla.core.crud.service_owned import BaseOwnedService
 from fastapi_plantilla.core.mixins import RecordStatus, generate_uuid7
-from fastapi_plantilla.modules.common.principal import (
-    _get_known_model,
+from fastapi_plantilla.modules.common import (
     enrich_principal_entities,
+    resolve_entity_model,
 )
 from fastapi_plantilla.modules.settings.service import SystemSettingService
 from fastapi_plantilla.modules.storage.models import Storage
@@ -238,7 +238,7 @@ class StorageService(BaseOwnedService[Storage]):
         entity_id: uuid.UUID,
     ) -> None:
         """Verify target known entity exists in database (referential integrity)."""
-        model = _get_known_model(norm_type)
+        model = resolve_entity_model(norm_type)
         if model is not None:
             try:
                 pk_col = inspect(model).primary_key[0]

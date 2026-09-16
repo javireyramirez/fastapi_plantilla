@@ -17,7 +17,7 @@ class EntityType(enum.StrEnum):
 
 
 class PrincipalEntityModule(BaseModel):
-    """Metadata of the parent entity to which a storage item belongs."""
+    """Metadata of the parent or target polymorphic entity across modules."""
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

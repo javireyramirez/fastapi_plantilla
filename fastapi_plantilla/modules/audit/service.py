@@ -30,13 +30,10 @@ from fastapi_plantilla.modules.audit.schema import (
 )
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.common.resolvers import (
-    CODE_TO_ENTITY as _CODE_TO_ENTITY,
-)
-from fastapi_plantilla.modules.common.resolvers import (
     resolve_entity_model,
+    resolve_module_metadata,
 )
 from fastapi_plantilla.modules.companies.models import Company
-from fastapi_plantilla.modules.rbac.catalog import CORE_SYSTEM_MODULES
 from fastapi_plantilla.modules.rbac.models import Role, SystemModule
 from fastapi_plantilla.modules.settings.models import SystemSetting
 from fastapi_plantilla.modules.settings.service import SystemSettingService
@@ -197,27 +194,9 @@ async def enrich_entity_names(
             item.entity_name = id_to_name[item.entity_id]
 
 
-AUDIT_MODULE_CATALOG: dict[str, tuple[str, str]] = {}
-for _m in CORE_SYSTEM_MODULES:
-    _code = _m["code"]
-    _name = _m["name"]
-    AUDIT_MODULE_CATALOG[_code.lower()] = (_code, _name)
-    if _code in _CODE_TO_ENTITY:
-        AUDIT_MODULE_CATALOG[_CODE_TO_ENTITY[_code]] = (_code, _name)
-
-# Map auth events to the canonical users module
-AUDIT_MODULE_CATALOG["auth"] = ("users", "Usuarios")
-
-
 def resolve_audit_module(entity_type: str | None) -> tuple[str, str]:
-    """Resolve canonical module_slug and module_name from entity_type."""
-    if not entity_type:
-        return ("unknown", "Desconocido")
-    raw = entity_type.strip().lower()
-    if raw in AUDIT_MODULE_CATALOG:
-        return AUDIT_MODULE_CATALOG[raw]
-    clean_code = raw.rstrip("s") if raw.endswith("s") and len(raw) > 3 else raw
-    return (raw, clean_code.replace("_", " ").title())
+    """Resolve canonical module_slug and module_name via common SSOT."""
+    return resolve_module_metadata(entity_type)
 
 
 def enrich_audit_modules(items: Sequence[AuditLog]) -> None:

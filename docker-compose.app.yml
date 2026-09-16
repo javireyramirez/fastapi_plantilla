@@ -34,11 +34,23 @@ services:
       FASTAPI_PLANTILLA_STORAGE_S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
     volumes:
       - .:/app/src/
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   migrator:
     <<: *main_app
     restart: "no"
     ports: []
+    healthcheck:
+      disable: true
     command: sh -c "alembic upgrade head && python -m scripts.seed"
     depends_on:
       db:

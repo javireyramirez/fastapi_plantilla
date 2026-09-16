@@ -156,3 +156,55 @@ docker compose up -d --wait db
 pytest -vv .
 ```
 
+## Health Probes & Deployment (Docker & Kubernetes)
+
+The application provides two observability endpoints:
+
+- `GET /health/live`: **Liveness Probe**. Verifies that the FastAPI process is alive and responsive without touching external dependencies. Returns `200 OK` (`{"status": "ok"}`).
+- `GET /health/ready`: **Readiness Probe**. Verifies external dependencies (executes `SELECT 1` on PostgreSQL with a 2-second timeout) and operational status (`app.maintenance_mode`). If healthy, returns `200 OK`; if database connection fails or maintenance mode is active, returns `503 Service Unavailable` (`{"status": "unhealthy", ...}`).
+
+### Docker & Docker Compose
+
+- In `Dockerfile`, the production stage includes a native `HEALTHCHECK` using Python standard library:
+  ```dockerfile
+  HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+      CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live')" || exit 1
+  ```
+- In `docker-compose.app.yml`, the `api` service monitors `/health/ready` to ensure dependencies and migrations are ready before accepting traffic.
+
+### Kubernetes Deployment Configuration
+
+When deploying to Kubernetes, configure `livenessProbe` and `readinessProbe` in your Deployment manifest:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fastapi-plantilla
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: api
+          image: fastapi_plantilla:latest
+          ports:
+            - containerPort: 8000
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+```
+

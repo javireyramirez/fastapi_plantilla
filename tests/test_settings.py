@@ -77,6 +77,11 @@ async def test_settings_service_cache_and_invalidation(dbsession: AsyncSession) 
     cached_val = await service.get_value("test.timeout")
     assert cached_val == 30  # Still cached in memory!
 
+    # 2b. Bypassing cache loads fresh DB value immediately
+    # without invalidating the whole in-memory cache
+    bypass_val = await service.get_value("test.timeout", use_cache=False)
+    assert bypass_val == 60
+
     # 3. Invalidate cache and fetch again
     service.invalidate_cache()
     fresh_val = await service.get_value("test.timeout")
