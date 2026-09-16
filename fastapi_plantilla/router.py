@@ -6,6 +6,7 @@ from fastapi_plantilla.modules.companies.routes import router as companies_route
 from fastapi_plantilla.modules.health.routes import router as health_router
 from fastapi_plantilla.modules.jobs.routes import router as jobs_router
 from fastapi_plantilla.modules.rbac.routes import router as rbac_router
+from fastapi_plantilla.modules.sessions.routes import router as sessions_router
 from fastapi_plantilla.modules.settings.routes import router as settings_router
 from fastapi_plantilla.modules.storage.routes import router as storage_router
 from fastapi_plantilla.modules.teams.routes import router as teams_router
@@ -17,6 +18,7 @@ api_router = APIRouter(prefix="/api")
 api_router.include_router(health_router)
 api_router.include_router(auth_router)
 api_router.include_router(rbac_router)
+api_router.include_router(sessions_router)
 api_router.include_router(teams_router)
 api_router.include_router(users_router)
 api_router.include_router(companies_router)

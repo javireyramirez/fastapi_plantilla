@@ -1,9 +1,10 @@
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
 from fastapi import Depends
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import asc, delete, desc, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -338,6 +339,218 @@ class AuthRepository:
         if isinstance(result, CursorResult):
             return int(result.rowcount)
         return 0
+
+    async def get_session_by_id_with_user(
+        self, session_id: uuid.UUID | str
+    ) -> Session | None:
+        """Fetch session by ID with associated user eagerly loaded."""
+        query = (
+            select(Session)
+            .options(joinedload(Session.user))
+            .where(Session.id == session_id)
+        )
+        result = await self.session.execute(query)
+        return result.scalars().first()
+
+    async def invalidate_session_admin(self, session_id: uuid.UUID | str) -> bool:
+        """Invalidate a specific active session by ID without user restriction."""
+        query = (
+            update(Session)
+            .where(
+                Session.id == session_id,
+                Session.is_valid.is_(True),
+            )
+            .values(is_valid=False)
+        )
+        result = await self.session.execute(query)
+        await self.session.flush()
+        if isinstance(result, CursorResult):
+            return int(result.rowcount) > 0
+        return False
+
+    async def bulk_invalidate_sessions_admin(
+        self,
+        session_ids: Sequence[uuid.UUID],
+        allowed_user_ids: Sequence[uuid.UUID] | None = None,
+    ) -> list[uuid.UUID]:
+        """Invalidate multiple active sessions and return IDs of revoked sessions."""
+        if not session_ids:
+            return []
+        conditions: list[Any] = [
+            Session.id.in_(session_ids),
+            Session.is_valid.is_(True),
+        ]
+        if allowed_user_ids is not None:
+            conditions.append(Session.user_id.in_(allowed_user_ids))
+
+        find_stmt = select(Session.id).where(*conditions)
+        res = await self.session.execute(find_stmt)
+        target_ids = list(res.scalars().all())
+        if not target_ids:
+            return []
+
+        upd_stmt = (
+            update(Session).where(Session.id.in_(target_ids)).values(is_valid=False)
+        )
+        await self.session.execute(upd_stmt)
+        await self.session.flush()
+        return target_ids
+
+    def _build_session_conditions(
+        self,
+        user_id: uuid.UUID | str | None = None,
+        is_valid: bool | None = None,
+        search: str | None = None,
+        created_at_from: datetime | None = None,
+        created_at_to: datetime | None = None,
+        expires_at_from: datetime | None = None,
+        expires_at_to: datetime | None = None,
+        allowed_user_ids: Sequence[uuid.UUID] | None = None,
+    ) -> list[Any]:
+        """Build shared SQLAlchemy conditions for session queries."""
+        conditions: list[Any] = []
+
+        if allowed_user_ids is not None:
+            conditions.append(Session.user_id.in_(allowed_user_ids))
+
+        if user_id is not None:
+            conditions.append(Session.user_id == user_id)
+
+        if is_valid is None:
+            conditions.append(Session.is_valid.is_(True))
+            conditions.append(Session.expires_at > func.now())
+        elif is_valid is True:
+            conditions.append(Session.is_valid.is_(True))
+        else:
+            conditions.append(Session.is_valid.is_(False))
+
+        if created_at_from is not None:
+            conditions.append(Session.created_at >= created_at_from)
+        if created_at_to is not None:
+            conditions.append(Session.created_at <= created_at_to)
+        if expires_at_from is not None:
+            conditions.append(Session.expires_at >= expires_at_from)
+        if expires_at_to is not None:
+            conditions.append(Session.expires_at <= expires_at_to)
+
+        if search and search.strip():
+            term = f"%{search.strip()}%"
+            conditions.append(
+                or_(
+                    User.name.ilike(term),
+                    User.email.ilike(term),
+                    Session.ip_address.ilike(term),
+                    Session.user_agent.ilike(term),
+                )
+            )
+
+        return conditions
+
+    async def list_sessions_paginated(
+        self,
+        page: int = 1,
+        limit: int = 20,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+        user_id: uuid.UUID | str | None = None,
+        is_valid: bool | None = None,
+        search: str | None = None,
+        created_at_from: datetime | None = None,
+        created_at_to: datetime | None = None,
+        expires_at_from: datetime | None = None,
+        expires_at_to: datetime | None = None,
+        allowed_user_ids: Sequence[uuid.UUID] | None = None,
+    ) -> tuple[list[Session], int]:
+        """Fetch paginated sessions with user information and total count."""
+        conditions = self._build_session_conditions(
+            user_id=user_id,
+            is_valid=is_valid,
+            search=search,
+            created_at_from=created_at_from,
+            created_at_to=created_at_to,
+            expires_at_from=expires_at_from,
+            expires_at_to=expires_at_to,
+            allowed_user_ids=allowed_user_ids,
+        )
+
+        count_stmt = (
+            select(func.count(Session.id)).join(Session.user).where(*conditions)
+        )
+        count_res = await self.session.execute(count_stmt)
+        total = count_res.scalar_one()
+
+        allowed_sorts = {"created_at", "expires_at", "updated_at"}
+        effective_sort = sort_by if sort_by in allowed_sorts else "created_at"
+        sort_col = getattr(Session, effective_sort, Session.created_at)
+        order_clause = (
+            desc(sort_col) if str(sort_order).lower() == "desc" else asc(sort_col)
+        )
+
+        offset = max(0, (page - 1) * limit)
+        items_stmt = (
+            select(Session)
+            .options(joinedload(Session.user))
+            .join(Session.user)
+            .where(*conditions)
+            .order_by(order_clause)
+            .offset(offset)
+            .limit(limit)
+        )
+        items_res = await self.session.execute(items_stmt)
+        items = list(items_res.scalars().all())
+
+        return items, total
+
+    async def get_sessions_for_export(
+        self,
+        ids: list[uuid.UUID] | None = None,
+        user_id: uuid.UUID | str | None = None,
+        is_valid: bool | None = None,
+        search: str | None = None,
+        created_at_from: datetime | None = None,
+        created_at_to: datetime | None = None,
+        expires_at_from: datetime | None = None,
+        expires_at_to: datetime | None = None,
+        allowed_user_ids: Sequence[uuid.UUID] | None = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+        limit: int = 1000,
+    ) -> list[Session]:
+        """Fetch sessions for export matching criteria."""
+        conditions: list[Any] = []
+        if ids:
+            conditions.append(Session.id.in_(ids))
+            if allowed_user_ids is not None:
+                conditions.append(Session.user_id.in_(allowed_user_ids))
+        else:
+            conditions = self._build_session_conditions(
+                user_id=user_id,
+                is_valid=is_valid,
+                search=search,
+                created_at_from=created_at_from,
+                created_at_to=created_at_to,
+                expires_at_from=expires_at_from,
+                expires_at_to=expires_at_to,
+                allowed_user_ids=allowed_user_ids,
+            )
+
+        allowed_sorts = {"created_at", "expires_at", "updated_at"}
+        effective_sort = sort_by if sort_by in allowed_sorts else "created_at"
+        sort_col = getattr(Session, effective_sort, Session.created_at)
+        order_clause = (
+            desc(sort_col) if str(sort_order).lower() == "desc" else asc(sort_col)
+        )
+
+        stmt = (
+            select(Session)
+            .options(joinedload(Session.user))
+            .join(Session.user)
+            .where(*conditions)
+            .order_by(order_clause)
+            .limit(limit)
+        )
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
 
     # ==========================================
     # 4. Verification Operations

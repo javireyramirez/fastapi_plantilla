@@ -158,6 +158,23 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         ],
     },
     {
+        "code": "sessions",
+        "name": "Sesiones",
+        "description": "Control y gestión de sesiones de usuarios",
+        "category": "security",
+        "category_name": "Seguridad",
+        "category_icon": "shield",
+        "category_order": 3,
+        "icon": "monitor",
+        "sort_order": 3,
+        "is_active": True,
+        "supported_actions": [
+            RbacActions.READ,
+            RbacActions.DELETE,
+            RbacActions.EXPORT,
+        ],
+    },
+    {
         "code": "audit",
         "name": "Auditoría",
         "description": "Logs y auditoría",
