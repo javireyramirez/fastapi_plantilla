@@ -1,12 +1,33 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import delete, func, inspect, select, update
+from sqlalchemy import delete, false, func, inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi_plantilla.core.crud.schema import ScopeContext, ScopeType
 from fastapi_plantilla.core.database import Base
 
+__all__ = ["BaseRepository", "build_scope_filter"]
+
 _MODEL_PK_CACHE: dict[type[Any], Any] = {}
+
+
+def build_scope_filter(column: Any, scope: ScopeContext | None) -> Any | None:
+    """Build ownership filter clause based on RBAC scope context for a given column."""
+    if not scope or scope.is_super_admin:
+        return None
+
+    scope_str = str(scope.scope).upper()
+    if scope_str == ScopeType.GLOBAL:
+        return None
+    if scope_str == ScopeType.OWN:
+        return column == scope.user_id if scope.user_id else false()
+    if scope_str == ScopeType.TEAM:
+        allowed_ids = list(scope.teammate_ids or [])
+        if scope.user_id and scope.user_id not in allowed_ids:
+            allowed_ids.append(scope.user_id)
+        return column.in_(allowed_ids) if allowed_ids else false()
+    return false()
 
 
 class BaseRepository[ModelT: Base]:

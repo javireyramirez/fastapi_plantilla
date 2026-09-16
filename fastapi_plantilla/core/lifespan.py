@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
 from fastapi_plantilla.core.config import EmailBackend, settings
 from fastapi_plantilla.modules.audit.listener import setup_audit_listeners
 from fastapi_plantilla.modules.audit.service import purge_expired_audit
+from fastapi_plantilla.modules.jobs.worker import BackgroundJobWorker
 from fastapi_plantilla.modules.rbac.catalog import sync_system_modules
 from fastapi_plantilla.modules.settings.repository import SystemSettingRepository
 from fastapi_plantilla.modules.settings.service import SystemSettingService
@@ -120,6 +121,8 @@ async def lifespan_setup(
         logger.warning(f"Could not sync system modules on startup: {exc}")
 
     purge_tasks: list[asyncio.Task[None]] = []
+    jobs_worker: BackgroundJobWorker | None = None
+
     if settings.environment != "test":
         if settings.trash_purge_enabled:
             purge_tasks.append(
@@ -129,8 +132,14 @@ async def lifespan_setup(
             purge_tasks.append(
                 asyncio.create_task(_audit_purge_worker(session_factory))
             )
+        if settings.jobs_worker_enabled:
+            jobs_worker = BackgroundJobWorker(session_factory)
+            jobs_worker.start()
 
     yield
+
+    if jobs_worker:
+        await jobs_worker.stop()
 
     for task in purge_tasks:
         task.cancel()

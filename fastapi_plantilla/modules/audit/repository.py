@@ -6,8 +6,11 @@ from typing import Any
 from sqlalchemy import asc, delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi_plantilla.core.crud.repository import BaseRepository
-from fastapi_plantilla.core.crud.schema import AuditEntry
+from fastapi_plantilla.core.crud.repository import (
+    BaseRepository,
+    build_scope_filter,
+)
+from fastapi_plantilla.core.crud.schema import AuditEntry, ScopeContext
 from fastapi_plantilla.core.crud.service_base import adjust_end_of_day
 from fastapi_plantilla.modules.audit.models import AuditLog
 from fastapi_plantilla.modules.audit.schema import (
@@ -67,9 +70,14 @@ def _resolve_date_conditions(params: AuditFilterParams) -> list[Any]:
     return conditions
 
 
-def _build_audit_conditions(params: AuditFilterParams) -> list[Any]:
+def _build_audit_conditions(
+    params: AuditFilterParams, scope: ScopeContext | None = None
+) -> list[Any]:
     """Construct SQLAlchemy query filters from AuditFilterParams."""
     conditions: list[Any] = []
+    scope_clause = build_scope_filter(AuditLog.actor_id, scope)
+    if scope_clause is not None:
+        conditions.append(scope_clause)
     entity_types = normalize_entity_types(params.entity_type)
     if len(entity_types) == 1:
         conditions.append(AuditLog.entity_type == entity_types[0])
@@ -155,9 +163,21 @@ class AuditRepository(BaseRepository[AuditLog]):
         await self.session.flush()
         return log
 
-    async def list_logs(self, params: AuditFilterParams) -> tuple[list[AuditLog], int]:
+    async def get_by_id(
+        self, id: uuid.UUID, scope: ScopeContext | None = None
+    ) -> AuditLog | None:
+        """Retrieve an audit log entry by ID enforcing RBAC scope context."""
+        conditions = [AuditLog.id == id]
+        scope_clause = build_scope_filter(AuditLog.actor_id, scope)
+        if scope_clause is not None:
+            conditions.append(scope_clause)
+        return await self.find_first(*conditions)
+
+    async def list_logs(
+        self, params: AuditFilterParams, scope: ScopeContext | None = None
+    ) -> tuple[list[AuditLog], int]:
         """Query paginated audit logs applying optional filters and dynamic ordering."""
-        conditions = _build_audit_conditions(params)
+        conditions = _build_audit_conditions(params, scope=scope)
         order_clause = _build_audit_order_by(params.sort_by, params.sort_order)
         return await self.find_many_with_count(
             *conditions,
@@ -167,14 +187,23 @@ class AuditRepository(BaseRepository[AuditLog]):
         )
 
     async def get_entity_history(
-        self, entity_type: str, entity_id: uuid.UUID
+        self,
+        entity_type: str,
+        entity_id: uuid.UUID,
+        scope: ScopeContext | None = None,
     ) -> list[AuditLog]:
         """Fetch all chronological audit logs for a specific entity."""
         normalized = normalize_entity_types(entity_type)
         entity_filter = normalized[0] if normalized else entity_type.strip().lower()
-        return await self.find_many(
+        conditions = [
             AuditLog.entity_type == entity_filter,
             AuditLog.entity_id == entity_id,
+        ]
+        scope_clause = build_scope_filter(AuditLog.actor_id, scope)
+        if scope_clause is not None:
+            conditions.append(scope_clause)
+        return await self.find_many(
+            *conditions,
             limit=500,
             order_by=desc(AuditLog.created_at),
         )
@@ -186,9 +215,13 @@ class AuditRepository(BaseRepository[AuditLog]):
         sort_by: str = "created_at",
         sort_order: Any = "desc",
         limit: int = 1000,
+        scope: ScopeContext | None = None,
     ) -> list[AuditLog]:
         """Fetch audit log records for data export with optional filters."""
         conditions: list[Any] = []
+        scope_clause = build_scope_filter(AuditLog.actor_id, scope)
+        if scope_clause is not None:
+            conditions.append(scope_clause)
         if ids:
             conditions.append(AuditLog.id.in_(ids))
         elif filters:
@@ -196,7 +229,7 @@ class AuditRepository(BaseRepository[AuditLog]):
                 filter_params = AuditFilterParams.model_validate(filters)
             except Exception:
                 filter_params = AuditFilterParams()
-            conditions.extend(_build_audit_conditions(filter_params))
+            conditions.extend(_build_audit_conditions(filter_params, scope=None))
 
         order_clause = _build_audit_order_by(sort_by, sort_order)
         return await self.find_many(

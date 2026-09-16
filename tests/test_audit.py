@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -13,7 +14,12 @@ from fastapi_plantilla.core.crud.audit_diff import (
     serialize_audit_val,
 )
 from fastapi_plantilla.core.crud.repository import BaseRepository
-from fastapi_plantilla.core.crud.schema import AuditEntry, AuditLevel, WriteOptions
+from fastapi_plantilla.core.crud.schema import (
+    AuditEntry,
+    AuditLevel,
+    ScopeType,
+    WriteOptions,
+)
 from fastapi_plantilla.core.crud.service_audit import BaseAuditService
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import generate_uuid7
@@ -22,9 +28,12 @@ from fastapi_plantilla.modules.audit.routes import router as audit_router
 from fastapi_plantilla.modules.audit.service import AuditService
 from fastapi_plantilla.modules.auth.dependencies import (
     get_current_active_superuser,
+    get_current_user,
 )
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.auth.schema import UserResponse
+from fastapi_plantilla.modules.rbac.dependencies import get_rbac_service
+from fastapi_plantilla.modules.rbac.schema import RbacActions
 from fastapi_plantilla.modules.rbac.service import RbacService
 from fastapi_plantilla.modules.teams.models import Team
 from fastapi_plantilla.modules.teams.service import TeamService
@@ -88,8 +97,11 @@ async def audit_users(
 
 
 @pytest.fixture
-def test_app(dbsession: AsyncSession) -> FastAPI:
+def test_app(
+    dbsession: AsyncSession, audit_users: tuple[UserResponse, UserResponse]
+) -> FastAPI:
     """Create test FastAPI application with audit router."""
+    admin, _ = audit_users
     app = FastAPI()
     app.include_router(audit_router, prefix="/api")
 
@@ -97,6 +109,8 @@ def test_app(dbsession: AsyncSession) -> FastAPI:
         yield dbsession
 
     app.dependency_overrides[get_db_session] = override_db
+    app.dependency_overrides[get_current_user] = lambda: admin
+    app.dependency_overrides[get_current_active_superuser] = lambda: admin
     return app
 
 
@@ -268,7 +282,7 @@ async def test_audit_api_endpoints(
     audit_users: tuple[UserResponse, UserResponse],
 ) -> None:
     """Verify GET /api/audit, GET /api/audit/{id} and RBAC access control."""
-    admin, _ = audit_users
+    admin, normal_user = audit_users
 
     audit_service = AuditService(AuditRepository(dbsession))
     entity_uuid = generate_uuid7()
@@ -283,7 +297,7 @@ async def test_audit_api_endpoints(
     await dbsession.commit()
 
     # 1. SuperAdmin access: list
-    test_app.dependency_overrides[get_current_active_superuser] = lambda: admin
+    test_app.dependency_overrides[get_current_user] = lambda: admin
     async with AsyncClient(
         transport=ASGITransport(app=test_app), base_url="http://test"
     ) as client:
@@ -315,16 +329,8 @@ async def test_audit_api_endpoints(
         assert len(hist_data) >= 1
         assert hist_data[0]["module_slug"] == "system_test"
 
-    # 4. Non-admin access: 403 Forbidden
-    async def override_forbidden() -> UserResponse:
-        from fastapi import HTTPException, status
-
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Permisos insuficientes",
-        )
-
-    test_app.dependency_overrides[get_current_active_superuser] = override_forbidden
+    # 4. Non-admin access without permissions: 403 Forbidden
+    test_app.dependency_overrides[get_current_user] = lambda: normal_user
     async with AsyncClient(
         transport=ASGITransport(app=test_app), base_url="http://test"
     ) as client:
@@ -726,6 +732,7 @@ async def test_audit_export(
     test_app = FastAPI()
     test_app.include_router(audit_router, prefix="/api")
     test_app.dependency_overrides[get_db_session] = lambda: dbsession
+    test_app.dependency_overrides[get_current_user] = lambda: _user_to_response(admin)
     test_app.dependency_overrides[get_current_active_superuser] = lambda: (
         _user_to_response(admin)
     )
@@ -1040,3 +1047,128 @@ async def test_audit_query_plural_module_codes(
         found_ids = {d["entity_id"] for d in res.json()["data"]}
         assert str(company_id) in found_ids
         assert str(storage_id) in found_ids
+
+
+@pytest.mark.anyio
+async def test_audit_rbac_own_scope_filtering_and_404_masking(
+    test_app: FastAPI,
+    dbsession: AsyncSession,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Users with OWN scope only see their own logs and foreign IDs return 404."""
+    admin, normal_user = audit_users
+
+    # Setup 2 audit log entries: one by normal_user and one by admin
+    repo = AuditRepository(dbsession)
+    log_user = await repo.record_entry(
+        AuditEntry(
+            entity_type="document",
+            entity_id=generate_uuid7(),
+            action="CREATE",
+            actor_id=normal_user.id,
+            details="User created document",
+        )
+    )
+    log_admin = await repo.record_entry(
+        AuditEntry(
+            entity_type="document",
+            entity_id=generate_uuid7(),
+            action="DELETE",
+            actor_id=admin.id,
+            details="Admin deleted document",
+        )
+    )
+    await dbsession.commit()
+
+    # Mock RBAC service granting OWN scope on audit to normal_user
+    class OwnScopeRbacService:
+        async def resolve_user_permission(
+            self,
+            user_id: uuid.UUID,
+            module_code: str,
+            action: Any,
+            is_super_admin: bool,
+        ) -> tuple[Any, list[Any], list[Any]]:
+            if module_code == "audit" and action in (
+                RbacActions.READ,
+                RbacActions.EXPORT,
+            ):
+                return ScopeType.OWN, [], []
+            return None, [], []
+
+    test_app.dependency_overrides[get_current_user] = lambda: normal_user
+    test_app.dependency_overrides[get_rbac_service] = OwnScopeRbacService
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://test"
+    ) as client:
+        # 1. Listing should ONLY return user's own log
+        res = await client.get("/api/audit")
+        assert res.status_code == 200
+        data = res.json()["data"]
+        returned_ids = [item["id"] for item in data]
+        assert str(log_user.id) in returned_ids
+        assert str(log_admin.id) not in returned_ids
+
+        # 2. Accessing own log by ID returns 200
+        own_res = await client.get(f"/api/audit/{log_user.id}")
+        assert own_res.status_code == 200
+        assert own_res.json()["id"] == str(log_user.id)
+
+        # 3. Accessing foreign log by ID returns 404 (Anti-IDOR masking)
+        foreign_res = await client.get(f"/api/audit/{log_admin.id}")
+        assert foreign_res.status_code == 404
+        assert foreign_res.json()["detail"] == "Audit log entry not found"
+
+
+@pytest.mark.anyio
+async def test_audit_rbac_without_permission_forbidden_403(
+    test_app: FastAPI,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify requests without RBAC permissions return 403 Forbidden."""
+    _, normal_user = audit_users
+
+    class NoPermissionRbacService:
+        async def resolve_user_permission(
+            self,
+            user_id: uuid.UUID,
+            module_code: str,
+            action: Any,
+            is_super_admin: bool,
+        ) -> tuple[Any, list[Any], list[Any]]:
+            return None, [], []
+
+    test_app.dependency_overrides[get_current_user] = lambda: normal_user
+    test_app.dependency_overrides[get_rbac_service] = NoPermissionRbacService
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://test"
+    ) as client:
+        res_get = await client.get("/api/audit")
+        assert res_get.status_code == 403
+        assert "Insufficient permissions" in res_get.json()["detail"]
+
+        res_export = await client.post("/api/audit/export", json={"format": "csv"})
+        assert res_export.status_code == 403
+        assert "Insufficient permissions" in res_export.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_audit_purge_expired_requires_superadmin(
+    test_app: FastAPI,
+    audit_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify purge-expired endpoint strictly rejects non-superadmins with 403."""
+    _, normal_user = audit_users
+    test_app.dependency_overrides[get_current_user] = lambda: normal_user
+    test_app.dependency_overrides[get_current_active_superuser] = (
+        get_current_active_superuser
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://test"
+    ) as client:
+        res = await client.post("/api/audit/purge-expired")
+        assert res.status_code == 403
+        assert res.json()["detail"] == "Permisos insuficientes"

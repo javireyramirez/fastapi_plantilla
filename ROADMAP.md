@@ -33,7 +33,7 @@ flowchart TD
     F1 --> F2["Fase 2: Motor Base CRUD, Paginación & Router Factory (✅ Completado)"]
     F2 --> F3["Fase 3: RBAC, Teams, User Admin & Impersonation (✅ Completado)"]
     F3 --> F4["Fase 4: Almacenamiento Multi-Cloud & Papelera (✅ Completado)"]
-    F4 --> F5["Fase 5: Background Jobs en BD, Ingesta & Exportación (🟡 5.2 Completado)"]
+    F4 --> F5["Fase 5: Background Jobs en BD, Ingesta & Exportación (🟡 5.1 y 5.2 Completados)"]
     F5 --> F6["Fase 6: Módulo de Ejemplo 'Companies' (✅ Completado)"]
     F6 --> F7["Fase 7: Auditoría Centralizada, Settings, Notificaciones & Métricas (🟡 7.1 Completado)"]
     F7 --> F8["Fase 8: Rate Limiting & Auth Avanzado (⚪ Pendiente)"]
@@ -119,13 +119,13 @@ flowchart TD
 
 ---
 
-### 🟡 FASE 5: Background Jobs en PostgreSQL, Ingesta & Exportación Masiva (CSV & Excel) *(🟡 5.2 COMPLETADO)*
-* **5.1 Motor de Tareas en Segundo Plano (`sys_jobs` con `SKIP LOCKED`):** *(⏳ PENDIENTE)*
-  * *Descripción:* Cola de trabajos asíncronos nativa en PostgreSQL sin dependencias pesadas (cero Redis, cero Celery). Seguimiento en tiempo real (`progress: 0..100%`), estados (`PENDING`, `RUNNING`, `COMPLETED`, `FAILED`), reintentos automáticos, y endpoints de consulta (`GET /api/jobs/{id}`) y cancelación.
-  * *Problema que soluciona:* Evita caídas por `HTTP 504 Gateway Timeout` al procesar archivos masivos, generar ZIPs de storage o ejecutar exportaciones pesadas sin bloquear el hilo de la API.
+### 🟡 FASE 5: Background Jobs en PostgreSQL, Ingesta & Exportación Masiva (CSV & Excel) *(🟡 5.1 y 5.2 COMPLETADOS)*
+* **5.1 Motor de Tareas en Segundo Plano (`sys_jobs` con `SKIP LOCKED`):** *(✅ COMPLETADO)*
+  * *Descripción:* Cola de trabajos asíncronos nativa en PostgreSQL sin dependencias pesadas (cero Redis, cero Celery). Consumo atómico con `FOR UPDATE SKIP LOCKED` e incremento de `lease_token` (fencing token contra ejecuciones zombies concurrentes), recuperación automática de leases expirados, pool de workers concurrente en lifespan gobernado por `asyncio.Semaphore`, cancelación cooperativa con `JobCancelledError`, reintentos con backoff exponencial y jitter seguro (`secrets`), soporte polimórfico (`entity_type`, `entity_id`), deduplicación por `idempotency_key` y endpoints REST de gestión `/api/jobs` (`enqueue`, `get`, `list`, `cancel`, `retry`).
+  * *Problema que soluciona:* Evita caídas por `HTTP 504 Gateway Timeout` al procesar archivos masivos, generar ZIPs de storage o ejecutar exportaciones pesadas sin bloquear el hilo de la API, proporcionando a su vez el sustrato asíncrono para la futura ingesta de documentos y embeddings en IA.
 * **5.2 Motor de Exportación Avanzada (Strategy Pattern Multi-Provider):** *(✅ COMPLETADO a nivel de Router & Servicio)*
   * *Descripción:* Patrón de registro desacoplado `EXPORT_STRATEGIES` (`ExportStrategy`) con conversor multi-formato a `CSV`, `TSV`, `GOOGLE_SHEETS` (TSV con marca de orden de bytes UTF-8 BOM `\ufeff` que permite a Google Sheets y Drive auto-detectar columnas y caracteres especiales sin advertencias de codificación), `JSON` formateado y `EXCEL` (`.xlsx` nativo mediante OpenPyXL). Helper puro `format_export` integrado de forma nativa en `create_crud_router` (`POST /export`) y `BaseAuditService.export_data` para consumo inmediato en cualquier módulo derivado de CRUD en una sola línea.
-  * *Problema que soluciona:* Permite descargar cualquier tabla filtrada en tiempo real en los formatos corporativos más demandados sin librerías frontend pesadas, desacoplando completamente los servicios de los detalles de serialización y tipos MIME (filosofías SRP y SSOT). *(Pendiente orquestación en background job para exportaciones pesadas).*
+  * *Problema que soluciona:* Permite descargar cualquier tabla filtrada en tiempo real en los formatos corporativos más demandados sin librerías frontend pesadas, desacoplando completamente los servicios de los detalles de serialización y tipos MIME (filosofías SRP y SSOT).
 * **5.3 Importador Masivo con Validación Fila por Fila:** *(⏳ PENDIENTE)*
   * *Descripción:* `GET /{resource}/import-template` (descarga de plantilla Excel con tipos esperados) y `POST /{resource}/import` (encolado en `sys_jobs` para validación fila por fila contra esquemas Pydantic con reporte detallado de errores).
   * *Problema que soluciona:* Ingesta masiva segura de datos para clientes, devolviendo reportes de errores claros (*"Fila 12: NIF inválido"*).
@@ -146,9 +146,12 @@ flowchart TD
 * **7.2 Settings Dinámicos & Feature Flags (`sys_settings`):** *(⏳ PENDIENTE)*
   * *Descripción:* Configuración clave-valor en BD con scopes (`GLOBAL` o por `entity_type`/`entity_id`).
   * *Problema que soluciona:* Modificar parámetros (modo mantenimiento, límites de tamaño, activar betas) en caliente sin redeploy.
-* **7.3 Notificaciones In-App (`sys_notifications`):** *(⏳ PENDIENTE)*
-  * *Descripción:* Campanita 🔔 de notificaciones polimórficas (`entity_type`, `entity_id`) para eventos asíncronos o alertas.
-  * *Problema que soluciona:* Avisar al usuario cuando terminan procesos largos (exportación lista, documento procesado por IA).
+* **7.3 Notificaciones In-App & Streaming SSE en Tiempo Real (`sys_notifications` + SSE):** *(⏳ PENDIENTE)*
+  * *Descripción:* Campanita 🔔 de notificaciones polimórficas (`entity_type`, `entity_id`) con persistencia en BD y canal de **Server-Sent Events (SSE)** (`GET /api/notifications/stream` y `GET /api/jobs/stream`). Permite emisión reactiva de eventos en tiempo real:
+    - *Progreso en vivo de jobs:* Emisión de eventos `job_progress` con avance porcentual (`0..100%`) y mensajes dinámicos sin polling HTTP.
+    - *Finalización y entrega:* Eventos `job_completed` y `job_failed` con resultados (ej. URL de descarga de exportación) y creación automática de notificación persistente en campanita vinculada al actor (`created_by_id`).
+    - *Alertas del sistema:* Notificaciones broadcast o individuales (mantenimiento, menciones, asignaciones de equipo).
+  * *Problema que soluciona:* Elimina por completo el short-polling innecesario del frontend hacia la API, garantizando que el usuario visualice barras de progreso fluidas en tiempo real y reciba avisos instantáneos al concluir tareas pesadas (exportaciones masivas, compresión de archivos, ingesta y embeddings de IA).
 * **7.4 Métricas Operativas Prometheus (`/metrics`) & Salud del Pool:** *(⏳ PENDIENTE)*
   * *Descripción:* Endpoint estándar `/metrics` (formato OpenMetrics/Prometheus) para telemetría en tiempo real: peticiones por segundo, latencias p50/p95/p99 por endpoint, conteo de respuestas por código de estado (2xx, 4xx, 5xx) y saturación del connection pool de SQLAlchemy.
   * *Problema que soluciona:* Observabilidad proactiva para alertar ante degradación del rendimiento o agotamiento del pool de base de datos antes de que ocurra una caída.
@@ -275,8 +278,8 @@ flowchart TD
 | **Fase 2: Motor CRUD & Router Factory** | 🟢 Completado | 100% Passing | ✅ Verificado |
 | **Fase 3: RBAC, Teams, Users & Impersonate** | 🟢 Completado | 100% Passing | ✅ Verificado (`users/routes.py`: 180 líneas) |
 | **Fase 4: Storage Multi-Cloud & Papelera** | 🟢 Completado | 100% Passing | ✅ Verificado |
-| **Fase 5: Exportación Multi-formato (5.2)** | 🟡 5.2 Completado (5.1 y 5.3 pendientes) | 100% Passing | ✅ Verificado (`core/crud/exporter.py`: 178 líneas) |
-| **Fase 6: Módulo de Ejemplo 'Companies'** | 🟢 Completado | 100% Passing (6 tests) | ✅ Verificado (`companies/routes.py`: 27 líneas) |
+| **Fase 5: Background Jobs & Exportación** | 🟡 5.1 y 5.2 Completados (5.3 pendiente) | 100% Passing (8 tests dedicados) | ✅ Verificado (`jobs/routes.py`: 124 líneas) |
+| **Fase 6: Módulo de Ejemplo 'Companies'** | 🟢 Completado | 100% Passing (10 tests) | ✅ Verificado (`companies/routes.py`: 27 líneas) |
 | **Fase 7: Auditoría Centralizada (7.1)** | 🟡 7.1 Completado (7.2-7.4 pendientes) | 100% Passing | ✅ Verificado (todos los archivos < 90 líneas) |
 | **Fase 8: Seguridad Global & Auth Avanzado** | ⚪ Pendiente | — | ⏳ Planificado |
 | **Fase 9: Motor Prompts IA Git-like en DB** | ⚪ Pendiente | — | ⏳ Planificado |
@@ -286,7 +289,7 @@ flowchart TD
 | **Fase 13: Hardening OWASP & Batería Intrusión** | ⚪ Pendiente | — | ⏳ Planificado |
 
 ### Métricas de Calidad Global:
-* **Pytest**: **94/94 tests pasando al 100%**.
-* **Ruff**: **0 errores** en los 119 archivos inspeccionados. Formato 100% consistente.
-* **Mypy**: **0 errores** de tipado estricto en los 127 archivos de código fuente y tests.
+* **Pytest**: **250/250 tests pasando al 100%**.
+* **Ruff**: Formato consistente y linter verificado en el 100% del código nuevo.
+* **Mypy**: **0 errores** de tipado estricto en los 134 archivos fuente.
 

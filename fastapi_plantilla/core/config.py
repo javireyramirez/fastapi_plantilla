@@ -139,6 +139,13 @@ class Settings(BaseSettings):
     audit_purge_interval_hours: int = 24
     audit_purge_enabled: bool = True
 
+    # Background Jobs
+    jobs_worker_enabled: bool = True
+    jobs_max_concurrency: int = 2
+    jobs_poll_interval_seconds: float = 2.0
+    jobs_shutdown_timeout_seconds: float = 15.0
+    jobs_retention_days: int = 30
+
     @property
     def db_url(self) -> URL:
         """Assemble database URL from settings."""

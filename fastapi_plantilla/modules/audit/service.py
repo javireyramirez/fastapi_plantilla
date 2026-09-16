@@ -15,6 +15,7 @@ from fastapi_plantilla.core.crud.schema import (
     ExportRequest,
     PaginatedResponse,
     PaginationMeta,
+    ScopeContext,
 )
 from fastapi_plantilla.core.crud.service_base import ExportResult
 from fastapi_plantilla.modules.audit.models import AuditLog
@@ -257,10 +258,10 @@ class AuditService:
         return await self.record_entry(entry)
 
     async def list_logs(
-        self, params: AuditFilterParams
+        self, params: AuditFilterParams, scope: ScopeContext | None = None
     ) -> PaginatedResponse[AuditLogResponse]:
-        """Fetch filtered paginated audit logs with metadata."""
-        items, total = await self.repository.list_logs(params)
+        """Fetch filtered paginated audit logs with metadata and RBAC scope."""
+        items, total = await self.repository.list_logs(params, scope=scope)
         await enrich_actors(self.repository.session, items)
         await enrich_entity_names(self.repository.session, items)
         enrich_audit_modules(items)
@@ -273,9 +274,11 @@ class AuditService:
             ),
         )
 
-    async def get_by_id(self, log_id: uuid.UUID) -> AuditLogResponse:
-        """Retrieve a single audit log entry by ID."""
-        item: AuditLog | None = await self.repository.get_by_id(log_id)
+    async def get_by_id(
+        self, log_id: uuid.UUID, scope: ScopeContext | None = None
+    ) -> AuditLogResponse:
+        """Retrieve a single audit log entry by ID enforcing RBAC scope."""
+        item: AuditLog | None = await self.repository.get_by_id(log_id, scope=scope)
         if not item:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -287,10 +290,15 @@ class AuditService:
         return AuditLogResponse.model_validate(item)
 
     async def get_entity_history(
-        self, entity_type: str, entity_id: uuid.UUID
+        self,
+        entity_type: str,
+        entity_id: uuid.UUID,
+        scope: ScopeContext | None = None,
     ) -> list[AuditLogResponse]:
-        """Retrieve full chronological history for a specific entity."""
-        items = await self.repository.get_entity_history(entity_type, entity_id)
+        """Retrieve full chronological for a specific entity enforcing RBAC scope."""
+        items = await self.repository.get_entity_history(
+            entity_type, entity_id, scope=scope
+        )
         await enrich_actors(self.repository.session, items)
         await enrich_entity_names(self.repository.session, items)
         enrich_audit_modules(items)
@@ -324,6 +332,7 @@ class AuditService:
         self,
         req: ExportRequest,
         limit: int = DEFAULT_AUDIT_EXPORT_LIMIT,
+        scope: ScopeContext | None = None,
     ) -> ExportResult:
         """Export audit logs to CSV, Excel, or JSON format with standard headers."""
         effective_limit = (
@@ -335,6 +344,7 @@ class AuditService:
             sort_by=req.sort_by,
             sort_order=req.sort_order,
             limit=effective_limit + 1,
+            scope=scope,
         )
 
         is_truncated = len(items) > effective_limit

@@ -3,13 +3,15 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, false, inspect, or_, update
+from sqlalchemy import delete, inspect, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi_plantilla.core.crud.repository import BaseRepository
+from fastapi_plantilla.core.crud.repository import (
+    BaseRepository,
+    build_scope_filter,
+)
 from fastapi_plantilla.core.crud.schema import (
     ScopeContext,
-    ScopeType,
     SortOrder,
 )
 from fastapi_plantilla.core.crud.service_base import adjust_end_of_day
@@ -78,20 +80,7 @@ def _build_date_filters(params: TrashFilterParams) -> list[Any]:
 
 def _build_scope_filter(scope: ScopeContext | None) -> Any | None:
     """Build ownership filter clause based on RBAC scope context."""
-    if not scope or scope.is_super_admin:
-        return None
-
-    scope_str = str(scope.scope).upper()
-    if scope_str == ScopeType.OWN:
-        return TrashItem.owner_id == scope.user_id if scope.user_id else false()
-    if scope_str == ScopeType.TEAM:
-        allowed_ids = list(scope.teammate_ids or [])
-        if scope.user_id and scope.user_id not in allowed_ids:
-            allowed_ids.append(scope.user_id)
-        return TrashItem.owner_id.in_(allowed_ids) if allowed_ids else false()
-    if scope_str != ScopeType.GLOBAL:
-        return false()
-    return None
+    return build_scope_filter(TrashItem.owner_id, scope)
 
 
 def _build_trash_filters(
