@@ -26,6 +26,8 @@ class EmailBackend(enum.StrEnum):
 
     SMTP = "smtp"
     RESEND = "resend"
+    CONSOLE = "console"
+    MEMORY = "memory"
 
 
 class StorageBackend(enum.StrEnum):
@@ -41,6 +43,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # Server / App
+    app_name: str = "FastAPI Plantilla"
     host: str = "127.0.0.1"
     port: int = 8000
     workers_count: int = 1
@@ -90,6 +93,7 @@ class Settings(BaseSettings):
     email_backend: EmailBackend | None = None
     emails_from_email: str | None = None
     emails_from_name: str | None = None
+    support_email: str | None = None
 
     # Email - SMTP
     smtp_host: str | None = None

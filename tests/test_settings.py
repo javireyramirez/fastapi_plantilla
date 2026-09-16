@@ -375,3 +375,197 @@ async def test_settings_validation_null_and_empty(
     fastapi_app.dependency_overrides.clear()
     await dbsession.delete(s)
     await dbsession.flush()
+
+
+@pytest.mark.anyio
+async def test_list_settings_returns_all_without_truncation(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify list_settings returns all settings without 10-item truncation bug."""
+    repo = SystemSettingRepository(dbsession)
+    service = SystemSettingService(repo)
+
+    # Insert 15 items to definitively exceed the 10-item default
+    created = []
+    for i in range(15):
+        st = SystemSetting(
+            id=generate_uuid7(),
+            key=f"bulk.test.key_{i:02d}",
+            value=i,
+            category="bulk_test",
+            is_public=False,
+        )
+        created.append(st)
+        dbsession.add(st)
+    await dbsession.flush()
+
+    all_items = await service.list_settings()
+    # Must contain at least all 15 newly created items + seeds
+    bulk_items = [s for s in all_items if s.category == "bulk_test"]
+    assert len(bulk_items) == 15
+    assert len(all_items) >= 15
+
+    for st in created:
+        await dbsession.delete(st)
+    await dbsession.flush()
+
+
+@pytest.mark.anyio
+async def test_settings_cache_ttl_expiration(dbsession: AsyncSession) -> None:
+    """Verify in-memory cache expires and refreshes from database after TTL."""
+    import asyncio
+
+    from fastapi_plantilla.modules.settings.service import (
+        DEFAULT_SETTINGS_CACHE_TTL_SECONDS,
+    )
+
+    repo = SystemSettingRepository(dbsession)
+    service = SystemSettingService(repo)
+    service.invalidate_cache()
+
+    s = SystemSetting(
+        id=generate_uuid7(),
+        key="test.ttl_setting",
+        value="initial_value",
+        category="general",
+        is_public=True,
+    )
+    dbsession.add(s)
+    await dbsession.flush()
+
+    # Shorten TTL to 50ms for testing
+    service.__class__.ttl_seconds = 0.05
+    try:
+        # First read caches initial value
+        val1 = await service.get_value("test.ttl_setting")
+        assert val1 == "initial_value"
+
+        # Update in database directly behind the cache's back
+        s.value = "updated_in_db"
+        await dbsession.flush()
+
+        # Immediate read returns cached value (still within 50ms)
+        assert await service.get_value("test.ttl_setting") == "initial_value"
+
+        # Wait for TTL to expire
+        await asyncio.sleep(0.06)
+
+        # Post-TTL read automatically refreshes from database
+        val_refreshed = await service.get_value("test.ttl_setting")
+        assert val_refreshed == "updated_in_db"
+    finally:
+        service.__class__.ttl_seconds = DEFAULT_SETTINGS_CACHE_TTL_SECONDS
+        await dbsession.delete(s)
+        await dbsession.flush()
+        service.invalidate_cache()
+
+
+@pytest.mark.anyio
+async def test_settings_numeric_domain_constraints(
+    fastapi_app: FastAPI,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify numeric domain constraints reject out-of-range values."""
+    s = SystemSetting(
+        id=generate_uuid7(),
+        key="trash.purge_limit",
+        value=500,
+        category="trash",
+        is_public=False,
+    )
+    dbsession.add(s)
+    await dbsession.flush()
+
+    superuser = _mock_user(is_super=True)
+    fastapi_app.dependency_overrides[get_current_active_superuser] = lambda: superuser
+
+    transport = ASGITransport(app=fastapi_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Reject purge_limit > 5000
+        res_high = await client.patch(
+            "/api/settings/trash.purge_limit",
+            json={"value": 10000},
+        )
+        assert res_high.status_code == status.HTTP_400_BAD_REQUEST
+        assert "must be between 1 and 5000" in res_high.json()["detail"]
+
+        # Reject purge_limit < 1 (e.g. 0)
+        res_low = await client.patch(
+            "/api/settings/trash.purge_limit",
+            json={"value": 0},
+        )
+        assert res_low.status_code == status.HTTP_400_BAD_REQUEST
+        assert "must be between 1 and 5000" in res_low.json()["detail"]
+
+        # Accept valid limit within range
+        res_valid = await client.patch(
+            "/api/settings/trash.purge_limit",
+            json={"value": 1000},
+        )
+        assert res_valid.status_code == status.HTTP_200_OK
+        assert res_valid.json()["value"] == 1000
+
+        # storage.max_zip_total_bytes constraints: 1 MB to 2 GB
+        s_zip = SystemSetting(
+            id=generate_uuid7(),
+            key="storage.max_zip_total_bytes",
+            value=104857600,
+            category="storage",
+            is_public=True,
+        )
+        dbsession.add(s_zip)
+        await dbsession.flush()
+
+        res_zip_low = await client.patch(
+            "/api/settings/storage.max_zip_total_bytes",
+            json={"value": 500},
+        )
+        assert res_zip_low.status_code == status.HTTP_400_BAD_REQUEST
+        assert "must be between 1048576 and 2147483648" in res_zip_low.json()["detail"]
+
+        res_zip_high = await client.patch(
+            "/api/settings/storage.max_zip_total_bytes",
+            json={"value": 3000000000},
+        )
+        assert res_zip_high.status_code == status.HTTP_400_BAD_REQUEST
+
+        # storage.orphan_retention_seconds constraints: 60 to 2592000
+        s_orphan = SystemSetting(
+            id=generate_uuid7(),
+            key="storage.orphan_retention_seconds",
+            value=86400,
+            category="storage",
+            is_public=False,
+        )
+        dbsession.add(s_orphan)
+        await dbsession.flush()
+
+        res_orphan_low = await client.patch(
+            "/api/settings/storage.orphan_retention_seconds",
+            json={"value": 10},
+        )
+        assert res_orphan_low.status_code == status.HTTP_400_BAD_REQUEST
+        assert "must be between 60 and 2592000" in res_orphan_low.json()["detail"]
+
+        res_orphan_valid = await client.patch(
+            "/api/settings/storage.orphan_retention_seconds",
+            json={"value": 604800},
+        )
+        assert res_orphan_valid.status_code == status.HTTP_200_OK
+        assert res_orphan_valid.json()["value"] == 604800
+
+    fastapi_app.dependency_overrides.clear()
+    await dbsession.delete(s)
+    await dbsession.delete(s_zip)
+    await dbsession.delete(s_orphan)
+    await dbsession.flush()
+
+
+@pytest.mark.anyio
+async def test_settings_cache_miss_returns_default(dbsession: AsyncSession) -> None:
+    """Verify cache miss returns default and doesn't crash."""
+    repo = SystemSettingRepository(dbsession)
+    service = SystemSettingService(repo)
+
+    result = await service.get_value("non.existent.typo.key", default="fallback_val")
+    assert result == "fallback_val"

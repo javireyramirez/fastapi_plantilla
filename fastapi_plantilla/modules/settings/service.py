@@ -1,7 +1,9 @@
 import copy
-from typing import Any, ClassVar
+import time
+from typing import Any, ClassVar, Final
 
 from fastapi import HTTPException, status
+from loguru import logger
 
 from fastapi_plantilla.core.crud.schema import AuditEntry
 from fastapi_plantilla.core.crud.service_audit import dispatch_audit_event
@@ -10,15 +12,38 @@ from fastapi_plantilla.modules.settings.models import SystemSetting
 from fastapi_plantilla.modules.settings.repository import SystemSettingRepository
 from fastapi_plantilla.modules.settings.schema import SettingUpdate
 
-__all__ = ["SystemSettingService"]
+__all__ = [
+    "DEFAULT_SETTINGS_CACHE_TTL_SECONDS",
+    "SETTING_NUMERIC_CONSTRAINTS",
+    "SystemSettingService",
+]
+
+DEFAULT_SETTINGS_CACHE_TTL_SECONDS: Final[float] = 60.0
+
+SETTING_NUMERIC_CONSTRAINTS: Final[dict[str, tuple[int, int]]] = {
+    "storage.max_upload_size_bytes": (1024, 1073741824),  # 1 KB to 1 GB
+    "storage.max_zip_total_bytes": (1048576, 2147483648),  # 1 MB to 2 GB
+    "storage.max_zip_file_count": (1, 1000),
+    "storage.presigned_expiry_seconds": (60, 86400),  # 1 min to 24 h
+    "storage.orphan_retention_seconds": (60, 2592000),  # 1 min to 30 days
+    "auth.password_reset_expiry_minutes": (5, 1440),  # 5 min to 24 h
+    "auth.email_verification_expiry_hours": (1, 168),  # 1 h to 7 days
+    "auth.invitation_expiry_hours": (1, 168),  # 1 h to 7 days
+    "pagination.default_page_size": (1, 100),
+    "pagination.max_page_size": (10, 1000),
+    "trash.retention_days": (1, 3650),  # 1 day to 10 years
+    "trash.purge_limit": (1, 5000),
+    "audit.retention_days": (1, 3650),
+    "audit.purge_limit": (1, 5000),
+}
 
 
 def _get_value_category(val: Any) -> type:
     return bool if isinstance(val, bool) else type(val)
 
 
-def _validate_setting_value(existing: Any, new_val: Any) -> None:
-    """Validate that new value type is consistent with existing setting type."""
+def _validate_setting_value(key: str, existing: Any, new_val: Any) -> None:
+    """Validate value consistency with existing type and domain rules."""
     if existing is not None and new_val is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -42,6 +67,14 @@ def _validate_setting_value(existing: Any, new_val: Any) -> None:
             detail="Integer value cannot be negative",
         )
 
+    if key in SETTING_NUMERIC_CONSTRAINTS and isinstance(new_val, int):
+        min_val, max_val = SETTING_NUMERIC_CONSTRAINTS[key]
+        if not (min_val <= new_val <= max_val):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Setting '{key}' value must be between {min_val} and {max_val}",
+            )
+
     if (
         orig_type is str
         and isinstance(existing, str)
@@ -55,10 +88,12 @@ def _validate_setting_value(existing: Any, new_val: Any) -> None:
 
 
 class SystemSettingService:
-    """Service managing system configuration with in-memory caching."""
+    """Service managing system configuration with in-memory caching and TTL."""
 
-    cache: ClassVar[dict[str, Any]] = {}
+    cache: ClassVar[dict[str, tuple[Any, float]]] = {}
     public_cache: ClassVar[dict[str, Any] | None] = None
+    public_cache_at: ClassVar[float] = 0.0
+    ttl_seconds: ClassVar[float] = DEFAULT_SETTINGS_CACHE_TTL_SECONDS
 
     def __init__(
         self,
@@ -68,52 +103,67 @@ class SystemSettingService:
 
     @classmethod
     def invalidate_cache(cls) -> None:
-        """Clear all in-memory setting caches."""
+        """Clear all in-memory setting caches and reset expiration timestamps."""
         cls.cache.clear()
         cls.public_cache = None
+        cls.public_cache_at = 0.0
 
     async def get_value(self, key: str, default: Any = None) -> Any:
         """
-        Retrieve setting value by key with memory cache fallback.
+        Retrieve setting value by key with memory cache fallback and TTL check.
 
-        Reads from process memory first. On cache miss, loads from database
-        and populates the cache. Returns a defensive copy for mutable objects.
+        Reads from process memory first if within TTL. On miss/expiration, loads
+        from database, logs a warning on missing keys, and populates the cache.
         """
         clean_key = key.strip()
+        now = time.monotonic()
         if clean_key in self.cache:
-            return copy.deepcopy(self.cache[clean_key])
+            cached_val, cached_at = self.cache[clean_key]
+            if (now - cached_at) < self.ttl_seconds:
+                return copy.deepcopy(cached_val)
 
         setting = await self.repository.get_by_key(clean_key)
         if setting is None:
+            logger.warning(
+                "Setting key '{}' not found in database, using default: {}",
+                clean_key,
+                default,
+            )
             return copy.deepcopy(default)
 
-        self.cache[clean_key] = copy.deepcopy(setting.value)
+        self.cache[clean_key] = (copy.deepcopy(setting.value), now)
         return copy.deepcopy(setting.value)
 
     async def get_public_settings(self) -> dict[str, Any]:
         """
-        Retrieve all public settings as a key-value dictionary for frontend consumption.
+        Retrieve all public settings as a key-value dictionary for frontend.
 
-        Cached in process memory for zero-latency responses. Returns a defensive copy.
+        Cached in process memory with TTL for multi-worker freshness.
+        Returns a defensive copy.
         """
-        if self.public_cache is not None:
+        now = time.monotonic()
+        if (
+            self.public_cache is not None
+            and (now - self.public_cache_at) < self.ttl_seconds
+        ):
             return copy.deepcopy(self.public_cache)
 
         public_settings = await self.repository.get_all_public()
         mapping: dict[str, Any] = {}
         for s in public_settings:
             mapping[s.key] = copy.deepcopy(s.value)
-            self.cache[s.key] = copy.deepcopy(s.value)
+            self.cache[s.key] = (copy.deepcopy(s.value), now)
 
         self.__class__.public_cache = mapping
+        self.__class__.public_cache_at = now
         return copy.deepcopy(mapping)
 
     async def list_settings(self, category: str | None = None) -> list[SystemSetting]:
-        """List settings optionally filtered by category (Admin)."""
+        """List all settings without pagination truncation (Admin)."""
         if category:
             items = await self.repository.get_by_category(category)
         else:
-            items = await self.repository.find_many()
+            items = await self.repository.get_all()
         return list(items)
 
     async def get_categories(self) -> list[str]:
@@ -144,7 +194,7 @@ class SystemSettingService:
         update_payload: dict[str, Any] = {}
         changes: dict[str, Any] = {}
         if "value" in data.model_fields_set and setting.value != data.value:
-            _validate_setting_value(setting.value, data.value)
+            _validate_setting_value(setting.key, setting.value, data.value)
             update_payload["value"] = data.value
             changes["value"] = {"old": setting.value, "new": data.value}
         if (
@@ -183,8 +233,10 @@ class SystemSettingService:
                     ),
                 )
 
-        # Invalidate / update cache
-        self.cache[setting.key] = copy.deepcopy(setting.value)
+        # Invalidate / update cache with current timestamp
+        now = time.monotonic()
+        self.cache[setting.key] = (copy.deepcopy(setting.value), now)
         self.__class__.public_cache = None
+        self.__class__.public_cache_at = 0.0
 
         return setting

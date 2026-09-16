@@ -558,10 +558,15 @@ class AuthService:
             )
         return True
 
-    async def _send_reset_password_email(self, user: User, token: str) -> None:
+    async def _send_reset_password_email(
+        self, user: User, token: str, expiry_minutes: int | None = None
+    ) -> None:
         """Render and dispatch password reset email."""
         if not settings.frontend_url:
             return
+
+        if expiry_minutes is None:
+            expiry_minutes = await self.get_password_reset_expiry_minutes()
 
         reset_link = str(
             (URL(settings.frontend_url) / "reset-password").with_query(token=token)
@@ -574,14 +579,20 @@ class AuthService:
                 "auth/reset_password.html",
                 name=user.name,
                 reset_link=reset_link,
+                expiry_minutes=expiry_minutes,
             )
         )
-        await self.email_service.send(email_msg)
+        await self.email_service.send(email_msg, fail_silently=True)
 
-    async def _send_verification_email(self, user: User, token: str) -> None:
+    async def _send_verification_email(
+        self, user: User, token: str, expiry_hours: int | None = None
+    ) -> None:
         """Render and dispatch email verification link."""
         if not settings.frontend_url:
             return
+
+        if expiry_hours is None:
+            expiry_hours = await self.get_email_verification_expiry_hours()
 
         verify_link = str(
             (URL(settings.frontend_url) / "verify-email").with_query(token=token)
@@ -594,9 +605,10 @@ class AuthService:
                 "auth/verify_email.html",
                 name=user.name,
                 verify_link=verify_link,
+                expiry_hours=expiry_hours,
             )
         )
-        await self.email_service.send(email_msg)
+        await self.email_service.send(email_msg, fail_silently=True)
 
     async def forget_password(self, schema: ForgotPasswordRequest) -> bool:
         """Generate password reset token (safe against user enumeration)."""
@@ -610,7 +622,9 @@ class AuthService:
                 value=token,
                 expires_at=datetime.now(UTC) + timedelta(minutes=expiry_minutes),
             )
-            await self._send_reset_password_email(user, token)
+            await self._send_reset_password_email(
+                user, token, expiry_minutes=expiry_minutes
+            )
         return True
 
     async def reset_password(
@@ -685,7 +699,7 @@ class AuthService:
                 value=token,
                 expires_at=datetime.now(UTC) + timedelta(hours=expiry_hours),
             )
-            await self._send_verification_email(user, token)
+            await self._send_verification_email(user, token, expiry_hours=expiry_hours)
 
         return True
 

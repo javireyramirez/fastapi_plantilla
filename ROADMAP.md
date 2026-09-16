@@ -165,9 +165,10 @@ flowchart TD
 * **8.3 Doble Factor de Autenticación (2FA / TOTP):** *(⏳ PENDIENTE)*
   * *Descripción:* Códigos QR con `pyotp` para Google Authenticator / Authy + códigos de recuperación.
   * *Problema que soluciona:* Seguridad de grado corporativo para cuentas críticas y administradores.
-* **8.4 API Keys & Email Logs:** *(⏳ PENDIENTE)*
-  * *Descripción:* Modelo `Key` para integración programática con scripts externos + tabla `email_logs` para auditar envíos.
-  * *Problema que soluciona:* Interoperabilidad B2B y diagnóstico de correos rebotados o fallidos.
+* **8.4 API Keys & Trazabilidad de Envíos de Correo (`email_logs`):** *(⏳ PENDIENTE)*
+  * *Descripción:* Modelo `Key` para integración programática externa + tabla dedicada `sys_email_logs` para registrar historial de envíos (`to`, `subject`, `template_name`, `status`, error, timestamp), sanitizando y excluyendo estrictamente tokens temporales o URLs secretas por cumplimiento GDPR y seguridad (prevención de Account Takeover).
+  * *Gestión de Plantillas Dinámicas (`sys_email_templates`):* Soporte planificado para plantillas en base de datos editables desde backoffice, gobernadas mediante `BaseAuditService` para registrar versiones y diffs `before`/`after` de cada plantilla.
+  * *Problema que soluciona:* Interoperabilidad B2B, auditoría de entrega sin comprometer credenciales de usuarios y trazabilidad de fallos o rebotes de correo.
 
 ---
 

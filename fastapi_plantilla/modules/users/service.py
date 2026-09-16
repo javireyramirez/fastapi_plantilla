@@ -28,6 +28,8 @@ from fastapi_plantilla.modules.email.dependencies import get_email_service
 from fastapi_plantilla.modules.email.service import EmailService
 from fastapi_plantilla.modules.rbac.models import Role
 from fastapi_plantilla.modules.rbac.repository import RbacRepository
+from fastapi_plantilla.modules.settings.dependencies import get_settings_service
+from fastapi_plantilla.modules.settings.service import SystemSettingService
 from fastapi_plantilla.modules.teams.models import Team
 from fastapi_plantilla.modules.users.repository import UserAdminRepository
 from fastapi_plantilla.modules.users.schema import (
@@ -53,11 +55,24 @@ class UserAdminService(BaseAuditService[User]):
         repository: UserAdminRepository = Depends(),
         rbac_repository: RbacRepository = Depends(),
         email_service: EmailService = Depends(get_email_service),
+        settings_service: SystemSettingService | None = Depends(get_settings_service),
     ) -> None:
         super().__init__(repository)
         self.repository: UserAdminRepository = repository
         self.rbac_repo = rbac_repository
         self.email_service = email_service
+        self.settings_service = settings_service
+
+    async def get_invitation_expiry_hours(self) -> int:
+        """Get configured expiry for invitation tokens in hours."""
+        if self.settings_service:
+            return int(
+                await self.settings_service.get_value(
+                    "auth.invitation_expiry_hours",
+                    default=24,
+                )
+            )
+        return 24
 
     def _check_not_system(self, user: User, action: str) -> None:
         if user.is_system:
@@ -582,7 +597,8 @@ class UserAdminService(BaseAuditService[User]):
             delete(Verification).where(Verification.identifier == user.email)
         )
         token = secrets.token_urlsafe(32)
-        exp = datetime.now(UTC) + timedelta(hours=24)
+        expiry_hours = await self.get_invitation_expiry_hours()
+        exp = datetime.now(UTC) + timedelta(hours=expiry_hours)
         self.repository.session.add(
             Verification(identifier=user.email, value=token, expires_at=exp)
         )
@@ -594,12 +610,15 @@ class UserAdminService(BaseAuditService[User]):
             msg = (
                 self.email_service.create_builder()
                 .to(user.email)
-                .subject("Te damos la bienvenida a la plataforma")
+                .subject(f"Te damos la bienvenida a {settings.app_name}")
                 .template(
-                    "auth/invitation.html", name=user.name, invite_link=invite_link
+                    "auth/invitation.html",
+                    name=user.name,
+                    invite_link=invite_link,
+                    expiry_hours=expiry_hours,
                 )
             )
-            await self.email_service.send(msg)
+            await self.email_service.send(msg, fail_silently=True)
 
     async def resend_invitation(self, user_id: uuid.UUID) -> None:
         """Generate verification token and send invitation / email confirmation."""

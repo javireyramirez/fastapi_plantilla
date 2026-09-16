@@ -48,3 +48,11 @@ class SystemSettingRepository(BaseRepository[SystemSetting]):
         )
         result = await self.session.execute(stmt)
         return result.scalars().all()
+
+    async def get_all(self) -> Sequence[SystemSetting]:
+        """Fetch all settings ordered by category and key without truncation."""
+        stmt = select(SystemSetting).order_by(
+            SystemSetting.category.asc(), SystemSetting.key.asc()
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()

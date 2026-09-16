@@ -26,7 +26,13 @@ class SettingResponse(BaseModel):
 
 
 class SettingUpdate(BaseModel):
-    """Payload to update setting value and metadata."""
+    """
+    Payload to update setting value and metadata.
+
+    Note: `is_public` and `category` are intentionally immutable via API
+    for architectural security and catalog governance. System visibility and
+    classification must be defined through version-controlled database seeds.
+    """
 
     value: Any = None
     description: str | None = Field(default=None, max_length=255)

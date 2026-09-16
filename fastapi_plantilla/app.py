@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.core.lifespan import lifespan_setup
 from fastapi_plantilla.core.logging import configure_logging
 from fastapi_plantilla.core.middlewares import setup_middlewares
@@ -14,7 +15,7 @@ def get_app() -> FastAPI:
     """
     configure_logging()
     app = FastAPI(
-        title="fastapi_plantilla",
+        title=settings.app_name,
         lifespan=lifespan_setup,
         docs_url="/api/docs",
         redoc_url="/api/redoc",

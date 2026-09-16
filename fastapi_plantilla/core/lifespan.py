@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from fastapi_plantilla.core.config import settings
+from fastapi_plantilla.core.config import EmailBackend, settings
 from fastapi_plantilla.modules.audit.listener import setup_audit_listeners
 from fastapi_plantilla.modules.audit.service import purge_expired_audit
 from fastapi_plantilla.modules.rbac.catalog import sync_system_modules
@@ -87,11 +87,27 @@ async def _audit_purge_worker(
             logger.error(f"Error in periodic audit purge worker: {exc}")
 
 
+def _validate_email_configuration() -> None:
+    """Fail fast on invalid or missing email configuration in production."""
+    if settings.environment in ("development", "test", "dev"):
+        return
+
+    if settings.email_backend == EmailBackend.SMTP and not settings.smtp_host:
+        raise ValueError(
+            "Production requires 'SMTP_HOST' when EMAIL_BACKEND is 'smtp'."
+        )
+    if settings.email_backend == EmailBackend.RESEND and not settings.resend_api_key:
+        raise ValueError(
+            "Production requires 'RESEND_API_KEY' when EMAIL_BACKEND is 'resend'."
+        )
+
+
 @asynccontextmanager
 async def lifespan_setup(
     app: FastAPI,
 ) -> AsyncGenerator[None, None]:  # pragma: no cover
     """Manage startup and shutdown lifecycle for FastAPI."""
+    _validate_email_configuration()
     _setup_db(app)
     setup_audit_listeners()
     setup_trash_listeners()

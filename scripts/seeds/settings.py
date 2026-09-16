@@ -174,9 +174,25 @@ DEFAULT_SYSTEM_SETTINGS: Final[list[SettingDef]] = [
         "is_public": False,
     },
     {
+        "key": "auth.invitation_expiry_hours",
+        "value": 24,
+        "description": (
+            "Tiempo de expiración en horas para enlaces de invitación a nuevos usuarios"
+        ),
+        "category": "auth",
+        "is_public": False,
+    },
+    {
         "key": "app.name",
         "value": "FastAPI Plantilla",
         "description": "Nombre de la aplicación",
+        "category": "general",
+        "is_public": True,
+    },
+    {
+        "key": "app.support_email",
+        "value": "support@example.com",
+        "description": "Correo electrónico de contacto y soporte de la plataforma",
         "category": "general",
         "is_public": True,
     },

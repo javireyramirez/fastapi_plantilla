@@ -32,6 +32,8 @@ async def get_public_settings(
     return await service.get_public_settings()
 
 
+# Convenience utility endpoint hosted under /settings for frontend consumers
+# to discover supported file export options without a separate dedicated router.
 @router.get(
     "/export-formats",
     response_model=list[str],

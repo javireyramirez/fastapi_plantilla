@@ -13,7 +13,7 @@
           <!-- Header -->
           <tr>
             <td style="padding-bottom: 24px; border-bottom: 1px solid #f1f5f9;">
-              <h1 style="margin: 0; font-size: 18px; font-weight: 700; color: #0f172a;">FastAPI Plantilla</h1>
+              <h1 style="margin: 0; font-size: 18px; font-weight: 700; color: #0f172a;">{{ app_name | default("FastAPI Plantilla") }}</h1>
             </td>
           </tr>
           <!-- Body Content -->
@@ -26,7 +26,10 @@
           <tr>
             <td style="padding-top: 32px; border-top: 1px solid #f1f5f9; text-align: center; color: #94a3b8; font-size: 12px; line-height: 1.5;">
               <p style="margin: 0 0 4px 0;">Este es un mensaje automático, por favor no respondas a este correo.</p>
-              <p style="margin: 0;">&copy; FastAPI Plantilla. Todos los derechos reservados.</p>
+              {% if support_email %}
+              <p style="margin: 0 0 4px 0;">¿Necesitas ayuda? Escríbenos a <a href="mailto:{{ support_email }}" style="color: #64748b; text-decoration: underline;">{{ support_email }}</a></p>
+              {% endif %}
+              <p style="margin: 0;">&copy; {{ current_year | default(2026) }} {{ app_name | default("FastAPI Plantilla") }}. Todos los derechos reservados.</p>
             </td>
           </tr>
         </table>
