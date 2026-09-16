@@ -12,6 +12,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi_plantilla.core.crud.schema import ScopeContext, ScopeType, SortOrder
 from fastapi_plantilla.modules.jobs.exceptions import (
     JobCancelledError,
     JobLeaseLostError,
@@ -364,22 +365,25 @@ class JobRepository:
         name: str | None = None,
         entity_type: str | None = None,
         entity_id: uuid.UUID | None = None,
+        search: str | None = None,
+        sort_by: str = "created_at",
+        sort_order: SortOrder = SortOrder.DESC,
         page: int = 1,
         limit: int = 20,
+        scope: ScopeContext | None = None,
     ) -> tuple[list[Job], int]:
-        """Paginated list of jobs with query filters."""
+        """Paginated list of jobs with query filters and RBAC scope."""
         query = select(Job)
         count_query = select(func.count(Job.id))
 
-        filters = []
-        if status:
-            filters.append(Job.status == status)
-        if name:
-            filters.append(Job.name == name)
-        if entity_type:
-            filters.append(Job.entity_type == entity_type)
-        if entity_id:
-            filters.append(Job.entity_id == entity_id)
+        filters = _build_job_filters(
+            status=status,
+            name=name,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            search=search,
+            scope=scope,
+        )
 
         if filters:
             query = query.where(*filters)
@@ -388,9 +392,54 @@ class JobRepository:
         total_res = await self.session.execute(count_query)
         total = total_res.scalar_one()
 
+        allowed_sort_fields = {
+            "created_at": Job.created_at,
+            "scheduled_at": Job.scheduled_at,
+            "started_at": Job.started_at,
+            "completed_at": Job.completed_at,
+            "name": Job.name,
+            "status": Job.status,
+            "progress": Job.progress,
+            "attempts": Job.attempts,
+        }
+        sort_col = allowed_sort_fields.get(sort_by, Job.created_at)
+        order_expr = sort_col.desc() if sort_order == SortOrder.DESC else sort_col.asc()
+
         offset = (page - 1) * limit
-        query = query.order_by(Job.created_at.desc()).offset(offset).limit(limit)
+        query = query.order_by(order_expr).offset(offset).limit(limit)
         items_res = await self.session.execute(query)
         items = list(items_res.scalars().all())
 
         return items, total
+
+
+def _build_job_filters(
+    status: JobStatus | None = None,
+    name: str | None = None,
+    entity_type: str | None = None,
+    entity_id: uuid.UUID | None = None,
+    search: str | None = None,
+    scope: ScopeContext | None = None,
+) -> list[Any]:
+    filters: list[Any] = []
+    if status:
+        filters.append(Job.status == status)
+    if name:
+        filters.append(Job.name == name)
+    if entity_type:
+        filters.append(Job.entity_type == entity_type)
+    if entity_id:
+        filters.append(Job.entity_id == entity_id)
+    if search:
+        filters.append(Job.name.ilike(f"%{search}%"))
+
+    if scope and not scope.is_super_admin:
+        if scope.scope == ScopeType.OWN:
+            filters.append(Job.created_by_id == scope.user_id)
+        elif scope.scope == ScopeType.TEAM:
+            allowed_actors = set(scope.teammate_ids or [])
+            if scope.user_id:
+                allowed_actors.add(scope.user_id)
+            filters.append(Job.created_by_id.in_(allowed_actors))
+
+    return filters

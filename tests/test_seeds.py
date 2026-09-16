@@ -22,10 +22,10 @@ async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:  # no
     await run_all_seeds(dbsession)
     await dbsession.commit()
 
-    # 1. Verify 8 modules
+    # 1. Verify 9 modules
     mod_res = await dbsession.execute(select(SystemModule))
     modules = mod_res.scalars().all()
-    assert len(modules) >= 8
+    assert len(modules) >= 9
     mod_codes = {m.code for m in modules}
     expected_codes = {
         "users",
@@ -36,6 +36,7 @@ async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:  # no
         "audit",
         "trash",
         "settings",
+        "jobs",
     }
     assert expected_codes.issubset(mod_codes)
 

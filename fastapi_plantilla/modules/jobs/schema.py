@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi_plantilla.core.crud.schema import PaginationParams
 from fastapi_plantilla.modules.jobs.models import JobStatus
 
 __all__ = [
@@ -58,15 +59,13 @@ class JobCreateRequest(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=100)
 
 
-class JobFilterParams(BaseModel):
+class JobFilterParams(PaginationParams):
     """Query filters for listing jobs."""
 
     status: JobStatus | None = None
     name: str | None = None
     entity_type: str | None = None
     entity_id: uuid.UUID | None = None
-    page: int = Field(default=1, ge=1)
-    limit: int = Field(default=20, ge=1, le=100)
 
 
 class JobCancelResponse(BaseModel):

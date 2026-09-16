@@ -244,10 +244,14 @@ async def test_job_backoff_and_retry(dbsession: AsyncSession) -> None:
 
 
 @pytest.mark.anyio
-async def test_job_idempotency_and_purge(dbsession: AsyncSession) -> None:
+async def test_job_idempotency_and_purge(
+    dbsession: AsyncSession,
+    job_users: tuple[UserResponse, UserResponse],
+) -> None:
     """Verify deduplication with idempotency_key and purge_old_jobs."""
     repo = JobRepository(dbsession)
     service = JobService(repo)
+    user1, user2 = job_users
 
     req = JobCreateRequest(
         name="test.idempotent",
@@ -257,6 +261,19 @@ async def test_job_idempotency_and_purge(dbsession: AsyncSession) -> None:
     job1 = await service.enqueue(req)
     job2 = await service.enqueue(req)
     assert job1.id == job2.id
+
+    # Namespaced idempotency test (prevent cross-user leakage)
+    req_scoped = JobCreateRequest(
+        name="test.scoped_idem",
+        payload={"foo": "bar"},
+        idempotency_key="same-key-123",
+    )
+    job_u1 = await service.enqueue(req_scoped, created_by_id=user1.id)
+    job_u1_again = await service.enqueue(req_scoped, created_by_id=user1.id)
+    assert job_u1.id == job_u1_again.id
+
+    job_u2 = await service.enqueue(req_scoped, created_by_id=user2.id)
+    assert job_u2.id != job_u1.id  # Completely isolated across users
 
     # Test purge
     purged = await repo.purge_old_jobs(retention_days=30)
@@ -269,10 +286,10 @@ async def test_jobs_api_endpoints(
     job_users: tuple[UserResponse, UserResponse],
 ) -> None:
     """Test full HTTP REST endpoints: enqueue, get, list, cancel, retry."""
-    admin, user = job_users
+    admin, _user = job_users
     app = get_app()
     app.dependency_overrides[get_db_session] = lambda: dbsession
-    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_current_user] = lambda: admin
     app.dependency_overrides[get_current_active_superuser] = lambda: admin
 
     async with AsyncClient(
@@ -315,6 +332,77 @@ async def test_jobs_api_endpoints(
         resp_retry = await client.post(f"/api/jobs/{job_id}/retry")
         assert resp_retry.status_code == 200
         assert resp_retry.json()["status"] == "PENDING"
+
+
+@pytest.mark.anyio
+async def test_jobs_rbac_own_scope_isolation(
+    dbsession: AsyncSession,
+    job_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify that a user with OWN scope cannot see or cancel another user's job."""
+    admin, user = job_users
+    repo = JobRepository(dbsession)
+    admin_job = await repo.create(
+        name="admin.job",
+        payload={},
+        created_by_id=admin.id,
+    )
+    user_job = await repo.create(
+        name="user.job",
+        payload={},
+        created_by_id=user.id,
+    )
+    await dbsession.commit()
+
+    app = get_app()
+    app.dependency_overrides[get_db_session] = lambda: dbsession
+
+    # Mock RBAC service granting OWN scope for user on jobs
+    from fastapi_plantilla.core.crud.schema import ScopeType
+    from fastapi_plantilla.modules.rbac.dependencies import get_rbac_service
+    from fastapi_plantilla.modules.rbac.schema import RbacActions
+
+    class OwnRbacService:
+        async def resolve_user_permission(
+            self,
+            user_id: uuid.UUID,
+            module_code: str,
+            action: Any,
+            is_super_admin: bool,
+        ) -> tuple[Any, list[Any], list[Any]]:
+            if module_code == "jobs" and action in (
+                RbacActions.READ,
+                RbacActions.CREATE,
+                RbacActions.UPDATE,
+                RbacActions.SETTINGS,
+            ):
+                return ScopeType.OWN, [], []
+            return None, [], []
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_rbac_service] = OwnRbacService
+
+    async with AsyncClient(
+        transport=ASGITransport(app), base_url="http://test", timeout=5.0
+    ) as client:
+        # User only lists own jobs
+        res = await client.get("/api/jobs")
+        assert res.status_code == 200
+        listed_ids = [item["id"] for item in res.json()["data"]]
+        assert str(user_job.id) in listed_ids
+        assert str(admin_job.id) not in listed_ids
+
+        # User cannot fetch foreign job (anti-oracle 404)
+        res_foreign = await client.get(f"/api/jobs/{admin_job.id}")
+        assert res_foreign.status_code == 404
+
+        # User cannot cancel foreign job (anti-oracle 404)
+        res_cancel = await client.post(f"/api/jobs/{admin_job.id}/cancel")
+        assert res_cancel.status_code == 404
+
+        # User cannot retry foreign job (anti-oracle 404)
+        res_retry = await client.post(f"/api/jobs/{admin_job.id}/retry")
+        assert res_retry.status_code == 404
 
 
 @pytest.mark.anyio

@@ -207,6 +207,24 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         ],
         "requires_super_admin": True,
     },
+    {
+        "code": "jobs",
+        "name": "Tareas Asíncronas",
+        "description": "Monitoreo y ejecución de background jobs del sistema",
+        "category": "system",
+        "category_name": "Sistema",
+        "category_icon": "cpu",
+        "category_order": 4,
+        "icon": "loader",
+        "sort_order": 8,
+        "is_active": True,
+        "supported_actions": [
+            RbacActions.CREATE,
+            RbacActions.READ,
+            RbacActions.UPDATE,
+            RbacActions.SETTINGS,
+        ],
+    },
 ]
 
 

@@ -3,12 +3,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from fastapi_plantilla.core.crud.schema import PaginatedResponse, PaginationMeta
-from fastapi_plantilla.modules.auth.dependencies import (
-    get_current_active_superuser,
-    get_current_user,
+from fastapi_plantilla.core.crud.schema import (
+    PaginatedResponse,
+    PaginationMeta,
+    ScopeContext,
 )
-from fastapi_plantilla.modules.auth.schema import UserResponse
 from fastapi_plantilla.modules.jobs.dependencies import get_job_service
 from fastapi_plantilla.modules.jobs.exceptions import JobNotFoundError
 from fastapi_plantilla.modules.jobs.schema import (
@@ -19,6 +18,8 @@ from fastapi_plantilla.modules.jobs.schema import (
     JobRetryResponse,
 )
 from fastapi_plantilla.modules.jobs.service import JobService
+from fastapi_plantilla.modules.rbac.dependencies import require_permission
+from fastapi_plantilla.modules.rbac.schema import RbacActions
 
 __all__ = ["router"]
 
@@ -34,33 +35,29 @@ router = APIRouter(prefix="/jobs", tags=["Jobs"])
 async def enqueue_job(
     request: JobCreateRequest,
     service: Annotated[JobService, Depends(get_job_service)],
-    current_user: Annotated[UserResponse, Depends(get_current_user)],
+    scope: Annotated[
+        ScopeContext, Depends(require_permission("jobs", RbacActions.CREATE))
+    ],
 ) -> JobResponse:
     """Enqueue a job to be processed asynchronously by workers."""
-    return await service.enqueue(request, created_by_id=current_user.id)
+    return await service.enqueue(request, created_by_id=scope.user_id)
 
 
 @router.get(
     "",
     response_model=PaginatedResponse[JobResponse],
-    summary="List background jobs with filtering and pagination",
+    summary="List background jobs with filtering, pagination and RBAC scope",
 )
 async def list_jobs(
     params: Annotated[JobFilterParams, Depends()],
     service: Annotated[JobService, Depends(get_job_service)],
-    _: Annotated[UserResponse, Depends(get_current_user)],
+    scope: Annotated[
+        ScopeContext, Depends(require_permission("jobs", RbacActions.READ))
+    ],
 ) -> PaginatedResponse[JobResponse]:
-    """Retrieve paginated jobs filtered by name, status, or entity."""
-    items, total = await service.list_jobs(params)
-    total_pages = (total + params.limit - 1) // params.limit if total > 0 else 0
-    meta = PaginationMeta(
-        page=params.page,
-        limit=params.limit,
-        total=total,
-        total_pages=total_pages,
-        has_next=params.page < total_pages,
-        has_prev=params.page > 1,
-    )
+    """Retrieve paginated jobs filtered by name, status, or entity under user scope."""
+    items, total = await service.list_jobs(params, scope=scope)
+    meta = PaginationMeta.create(page=params.page, limit=params.limit, total=total)
     return PaginatedResponse(data=items, meta=meta)
 
 
@@ -72,11 +69,13 @@ async def list_jobs(
 async def get_job(
     job_id: uuid.UUID,
     service: Annotated[JobService, Depends(get_job_service)],
-    _: Annotated[UserResponse, Depends(get_current_user)],
+    scope: Annotated[
+        ScopeContext, Depends(require_permission("jobs", RbacActions.READ))
+    ],
 ) -> JobResponse:
     """Fetch status and real-time execution progress of a specific job."""
     try:
-        return await service.get_job(job_id)
+        return await service.get_job(job_id, scope=scope)
     except JobNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -92,11 +91,13 @@ async def get_job(
 async def cancel_job(
     job_id: uuid.UUID,
     service: Annotated[JobService, Depends(get_job_service)],
-    _: Annotated[UserResponse, Depends(get_current_user)],
+    scope: Annotated[
+        ScopeContext, Depends(require_permission("jobs", RbacActions.UPDATE))
+    ],
 ) -> JobCancelResponse:
-    """Request cooperative cancellation of a background job."""
+    """Request cooperative cancellation of a background job under user scope."""
     try:
-        return await service.cancel_job(job_id)
+        return await service.cancel_job(job_id, scope=scope)
     except JobNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -112,11 +113,13 @@ async def cancel_job(
 async def retry_job(
     job_id: uuid.UUID,
     service: Annotated[JobService, Depends(get_job_service)],
-    _: Annotated[UserResponse, Depends(get_current_active_superuser)],
+    scope: Annotated[
+        ScopeContext, Depends(require_permission("jobs", RbacActions.SETTINGS))
+    ],
 ) -> JobRetryResponse:
-    """Reschedule an uncompleted job back to PENDING (Superuser only)."""
+    """Reschedule an uncompleted job back to PENDING (SETTINGS permission required)."""
     try:
-        return await service.retry_job(job_id)
+        return await service.retry_job(job_id, scope=scope)
     except JobNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

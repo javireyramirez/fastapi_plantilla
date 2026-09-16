@@ -278,7 +278,7 @@ flowchart TD
 | **Fase 2: Motor CRUD & Router Factory** | 🟢 Completado | 100% Passing | ✅ Verificado |
 | **Fase 3: RBAC, Teams, Users & Impersonate** | 🟢 Completado | 100% Passing | ✅ Verificado (`users/routes.py`: 180 líneas) |
 | **Fase 4: Storage Multi-Cloud & Papelera** | 🟢 Completado | 100% Passing | ✅ Verificado |
-| **Fase 5: Background Jobs & Exportación** | 🟡 5.1 y 5.2 Completados (5.3 pendiente) | 100% Passing (8 tests dedicados) | ✅ Verificado (`jobs/routes.py`: 124 líneas) |
+| **Fase 5: Background Jobs & Exportación** | 🟡 5.1 y 5.2 Completados (5.3 pendiente) | 100% Passing (9 tests dedicados) | ✅ Verificado (`jobs/routes.py`: 124 líneas) |
 | **Fase 6: Módulo de Ejemplo 'Companies'** | 🟢 Completado | 100% Passing (10 tests) | ✅ Verificado (`companies/routes.py`: 27 líneas) |
 | **Fase 7: Auditoría Centralizada (7.1)** | 🟡 7.1 Completado (7.2-7.4 pendientes) | 100% Passing | ✅ Verificado (todos los archivos < 90 líneas) |
 | **Fase 8: Seguridad Global & Auth Avanzado** | ⚪ Pendiente | — | ⏳ Planificado |
@@ -289,7 +289,7 @@ flowchart TD
 | **Fase 13: Hardening OWASP & Batería Intrusión** | ⚪ Pendiente | — | ⏳ Planificado |
 
 ### Métricas de Calidad Global:
-* **Pytest**: **250/250 tests pasando al 100%**.
+* **Pytest**: **251/251 tests pasando al 100%**.
 * **Ruff**: Formato consistente y linter verificado en el 100% del código nuevo.
 * **Mypy**: **0 errores** de tipado estricto en los 134 archivos fuente.
 

@@ -7,6 +7,7 @@ from typing import Any
 from loguru import logger
 from pydantic import ValidationError
 
+from fastapi_plantilla.core.crud.schema import ScopeContext, ScopeType
 from fastapi_plantilla.modules.jobs.exceptions import (
     JobCancelledError,
     JobError,
@@ -51,11 +52,19 @@ class JobService:
         request: JobCreateRequest,
         created_by_id: uuid.UUID | None = None,
     ) -> JobResponse:
-        """Enqueue a new job with optional idempotency."""
+        """Enqueue a new job with optional user-namespaced idempotency."""
         if request.idempotency_key:
-            existing = await self.repo.get_by_idempotency_key(request.idempotency_key)
+            # Namespace idempotency by user to prevent cross-user job hijacking/leakage
+            scoped_key = (
+                f"{created_by_id}:{request.idempotency_key}"
+                if created_by_id
+                else request.idempotency_key
+            )
+            existing = await self.repo.get_by_idempotency_key(scoped_key)
             if existing:
                 return JobResponse.model_validate(existing)
+        else:
+            scoped_key = None
 
         job = await self.repo.create(
             name=request.name,
@@ -65,37 +74,69 @@ class JobService:
             max_retries=request.max_retries,
             lease_duration_seconds=request.lease_duration_seconds,
             scheduled_at=request.scheduled_at,
-            idempotency_key=request.idempotency_key,
+            idempotency_key=scoped_key,
             created_by_id=created_by_id,
         )
         return JobResponse.model_validate(job)
 
-    async def get_job(self, job_id: uuid.UUID) -> JobResponse:
-        """Fetch job details by ID."""
+    async def get_job(
+        self, job_id: uuid.UUID, scope: ScopeContext | None = None
+    ) -> JobResponse:
+        """Fetch job details by ID enforcing RBAC scope."""
         job = await self.repo.get_by_id(job_id)
         if not job:
             raise JobNotFoundError(f"Job {job_id} not found.")
+
+        if scope and not scope.is_super_admin:
+            if scope.scope == ScopeType.OWN and job.created_by_id != scope.user_id:
+                raise JobNotFoundError(f"Job {job_id} not found.")
+            if scope.scope == ScopeType.TEAM:
+                allowed = set(scope.teammate_ids or [])
+                if scope.user_id:
+                    allowed.add(scope.user_id)
+                if job.created_by_id not in allowed:
+                    raise JobNotFoundError(f"Job {job_id} not found.")
+
         return JobResponse.model_validate(job)
 
-    async def list_jobs(self, params: JobFilterParams) -> tuple[list[JobResponse], int]:
-        """Fetch paginated list of jobs."""
+    async def list_jobs(
+        self, params: JobFilterParams, scope: ScopeContext | None = None
+    ) -> tuple[list[JobResponse], int]:
+        """Fetch paginated list of jobs filtered by RBAC scope."""
         items, total = await self.repo.list_jobs(
             status=params.status,
             name=params.name,
             entity_type=params.entity_type,
             entity_id=params.entity_id,
+            search=params.search,
+            sort_by=params.sort_by,
+            sort_order=params.sort_order,
             page=params.page,
             limit=params.limit,
+            scope=scope,
         )
         return [JobResponse.model_validate(item) for item in items], total
 
-    async def cancel_job(self, job_id: uuid.UUID) -> JobCancelResponse:
-        """Cancel a pending or running job."""
+    async def cancel_job(
+        self, job_id: uuid.UUID, scope: ScopeContext | None = None
+    ) -> JobCancelResponse:
+        """Cancel a pending or running job enforcing RBAC scope."""
+        existing = await self.repo.get_by_id(job_id)
+        if not existing:
+            raise JobNotFoundError(f"Job {job_id} not found.")
+
+        if scope and not scope.is_super_admin:
+            if scope.scope == ScopeType.OWN and existing.created_by_id != scope.user_id:
+                raise JobNotFoundError(f"Job {job_id} not found.")
+            if scope.scope == ScopeType.TEAM:
+                allowed = set(scope.teammate_ids or [])
+                if scope.user_id:
+                    allowed.add(scope.user_id)
+                if existing.created_by_id not in allowed:
+                    raise JobNotFoundError(f"Job {job_id} not found.")
+
         job = await self.repo.cancel_job(job_id)
         if not job:
-            existing = await self.repo.get_by_id(job_id)
-            if not existing:
-                raise JobNotFoundError(f"Job {job_id} not found.")
             return JobCancelResponse(
                 id=existing.id,
                 status=existing.status,
@@ -110,13 +151,26 @@ class JobService:
             message="Job cancelled successfully.",
         )
 
-    async def retry_job(self, job_id: uuid.UUID) -> JobRetryResponse:
-        """Retry a failed or cancelled job."""
+    async def retry_job(
+        self, job_id: uuid.UUID, scope: ScopeContext | None = None
+    ) -> JobRetryResponse:
+        """Retry a failed or cancelled job enforcing RBAC scope."""
+        existing = await self.repo.get_by_id(job_id)
+        if not existing:
+            raise JobNotFoundError(f"Job {job_id} not found.")
+
+        if scope and not scope.is_super_admin:
+            if scope.scope == ScopeType.OWN and existing.created_by_id != scope.user_id:
+                raise JobNotFoundError(f"Job {job_id} not found.")
+            if scope.scope == ScopeType.TEAM:
+                allowed = set(scope.teammate_ids or [])
+                if scope.user_id:
+                    allowed.add(scope.user_id)
+                if existing.created_by_id not in allowed:
+                    raise JobNotFoundError(f"Job {job_id} not found.")
+
         job = await self.repo.retry_failed_job(job_id)
         if not job:
-            existing = await self.repo.get_by_id(job_id)
-            if not existing:
-                raise JobNotFoundError(f"Job {job_id} not found.")
             return JobRetryResponse(
                 id=existing.id,
                 status=existing.status,
