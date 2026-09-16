@@ -3,21 +3,27 @@ import mimetypes
 import re
 import uuid
 import zipfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from fastapi import HTTPException, status
 from loguru import logger
+from sqlalchemy import inspect, select
 
 from fastapi_plantilla.core.crud.schema import (
     PaginatedResponse,
+    PaginationParams,
     ScopeContext,
     ScopeType,
     WriteOptions,
 )
 from fastapi_plantilla.core.crud.service_owned import BaseOwnedService
 from fastapi_plantilla.core.mixins import RecordStatus, generate_uuid7
-from fastapi_plantilla.modules.common.principal import enrich_principal_entities
+from fastapi_plantilla.modules.common.principal import (
+    _get_known_model,
+    enrich_principal_entities,
+)
 from fastapi_plantilla.modules.settings.service import SystemSettingService
 from fastapi_plantilla.modules.storage.models import Storage
 from fastapi_plantilla.modules.storage.providers import (
@@ -36,8 +42,16 @@ from fastapi_plantilla.modules.storage.schema import (
 
 DEFAULT_PRESIGNED_EXPIRY_SECONDS: int = 3600
 DEFAULT_ZIP_FILENAME: str = "storage.zip"
+DEFAULT_MAX_UPLOAD_SIZE_BYTES: int = 52428800  # 50 MB
+DEFAULT_MAX_ZIP_TOTAL_BYTES: int = 104857600  # 100 MB
+DEFAULT_MAX_ZIP_FILE_COUNT: int = 100
+DEFAULT_ORPHAN_RETENTION_SECONDS: int = 86400  # 24 hours
 
 __all__ = [
+    "DEFAULT_MAX_UPLOAD_SIZE_BYTES",
+    "DEFAULT_MAX_ZIP_FILE_COUNT",
+    "DEFAULT_MAX_ZIP_TOTAL_BYTES",
+    "DEFAULT_ORPHAN_RETENTION_SECONDS",
     "DEFAULT_PRESIGNED_EXPIRY_SECONDS",
     "DEFAULT_ZIP_FILENAME",
     "StorageService",
@@ -58,6 +72,37 @@ class StorageService(BaseOwnedService[Storage]):
     display_field: str = "name"
     mask_forbidden_as_not_found: bool = True
     owner_field: str = "owner_id"
+    search_fields: ClassVar[list[str]] = ["name", "description", "file_key"]
+
+    def build_where_filters(self, params: PaginationParams) -> list[Any]:
+        """Build query clauses including storage entity criteria and content type."""
+        clauses = super().build_where_filters(params)
+
+        entity_id = getattr(params, "entity_id", None)
+        if entity_id is not None:
+            clauses.append(Storage.entity_id == entity_id)
+
+        entity_type = getattr(params, "entity_type", None)
+        if entity_type:
+            clauses.append(Storage.entity_type == entity_type)
+
+        is_uploaded = getattr(params, "is_uploaded", None)
+        if is_uploaded is not None:
+            clauses.append(Storage.is_uploaded == is_uploaded)
+
+        content_types = getattr(params, "content_types", None)
+        if content_types:
+            clauses.append(Storage.content_type.in_(content_types))
+
+        size_min = getattr(params, "size_min", None)
+        if size_min is not None:
+            clauses.append(Storage.size_bytes >= size_min)
+
+        size_max = getattr(params, "size_max", None)
+        if size_max is not None:
+            clauses.append(Storage.size_bytes <= size_max)
+
+        return clauses
 
     def __init__(
         self,
@@ -106,15 +151,157 @@ class StorageService(BaseOwnedService[Storage]):
         safe_name = sanitize_filename(filename)
         return f"storage/{entity_type}/{entity_id}/{storage_id}_{safe_name}"
 
+    async def get_max_upload_size(self) -> int:
+        """Get configured maximum upload size limit in bytes."""
+        if self.settings_service:
+            return int(
+                await self.settings_service.get_value(
+                    "storage.max_upload_size_bytes",
+                    default=DEFAULT_MAX_UPLOAD_SIZE_BYTES,
+                )
+            )
+        return DEFAULT_MAX_UPLOAD_SIZE_BYTES
+
+    async def get_max_zip_total_bytes(self) -> int:
+        """Get configured maximum total bytes for ZIP archives."""
+        if self.settings_service:
+            return int(
+                await self.settings_service.get_value(
+                    "storage.max_zip_total_bytes",
+                    default=DEFAULT_MAX_ZIP_TOTAL_BYTES,
+                )
+            )
+        return DEFAULT_MAX_ZIP_TOTAL_BYTES
+
+    async def get_max_zip_file_count(self) -> int:
+        """Get configured maximum number of files per ZIP archive."""
+        if self.settings_service:
+            return int(
+                await self.settings_service.get_value(
+                    "storage.max_zip_file_count",
+                    default=DEFAULT_MAX_ZIP_FILE_COUNT,
+                )
+            )
+        return DEFAULT_MAX_ZIP_FILE_COUNT
+
+    async def get_presigned_expiry_seconds(self) -> int:
+        """Get configured default expiry seconds for presigned URLs."""
+        if self.settings_service:
+            return int(
+                await self.settings_service.get_value(
+                    "storage.presigned_expiry_seconds",
+                    default=DEFAULT_PRESIGNED_EXPIRY_SECONDS,
+                )
+            )
+        return DEFAULT_PRESIGNED_EXPIRY_SECONDS
+
+    async def get_orphan_retention_seconds(self) -> int:
+        """Get configured retention seconds for pending orphan uploads."""
+        if self.settings_service:
+            return int(
+                await self.settings_service.get_value(
+                    "storage.orphan_retention_seconds",
+                    default=DEFAULT_ORPHAN_RETENTION_SECONDS,
+                )
+            )
+        return DEFAULT_ORPHAN_RETENTION_SECONDS
+
+    async def _validate_entity_access(
+        self,
+        entity_type: str,
+        entity_id: uuid.UUID,
+        scope: ScopeContext | None,
+    ) -> None:
+        """Verify caller authority (user/team) or referential integrity (known models).
+
+        File authorization is governed by the storage record's owner_id/team_id and
+        RBAC scope. Target entity checks ensure referential integrity.
+        """
+        if not scope or scope.is_super_admin:
+            return
+
+        scope_str = str(scope.scope).upper()
+        if scope_str == ScopeType.GLOBAL:
+            return
+
+        norm_type = entity_type.strip().lower()
+        if norm_type in ("user", "users"):
+            self._check_user_entity_access(entity_id, scope, scope_str)
+        elif norm_type in ("team", "teams"):
+            self._check_team_entity_access(entity_id, scope)
+        else:
+            await self._ensure_target_entity_exists(norm_type, entity_id)
+
+    async def _ensure_target_entity_exists(
+        self,
+        norm_type: str,
+        entity_id: uuid.UUID,
+    ) -> None:
+        """Verify target known entity exists in database (referential integrity)."""
+        model = _get_known_model(norm_type)
+        if model is not None:
+            try:
+                pk_col = inspect(model).primary_key[0]
+                stmt = select(pk_col).where(pk_col == entity_id)
+                res = await self.repository.session.execute(stmt)
+                if res.scalar_one_or_none() is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Target {norm_type} entity '{entity_id}' not found.",
+                    )
+            except HTTPException:
+                raise
+            except Exception as err:
+                logger.error(
+                    "Failed to check entity existence for %s %s: %s",
+                    norm_type,
+                    entity_id,
+                    err,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to verify target entity referential integrity.",
+                ) from err
+
+    def _check_user_entity_access(
+        self,
+        entity_id: uuid.UUID,
+        scope: ScopeContext,
+        scope_str: str,
+    ) -> None:
+        """Enforce RBAC isolation when attaching files to users."""
+        if scope_str == ScopeType.OWN and scope.user_id and entity_id != scope.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden: cannot attach files to another user.",
+            )
+        if scope_str == ScopeType.TEAM:
+            allowed = set(scope.teammate_ids)
+            if scope.user_id:
+                allowed.add(scope.user_id)
+            if allowed and entity_id not in allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Forbidden: cannot attach files outside your team.",
+                )
+
+    def _check_team_entity_access(
+        self,
+        entity_id: uuid.UUID,
+        scope: ScopeContext,
+    ) -> None:
+        """Enforce RBAC isolation when attaching files to teams."""
+        if scope.team_ids and entity_id not in scope.team_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden: cannot attach files to an unassociated team.",
+            )
+
     async def _validate_file_size(self, size_bytes: int | None) -> None:
         """Verify upload size does not exceed dynamic maximum limit."""
         if size_bytes is None:
             return
-        max_size_bytes = 52428800
-        if self.settings_service:
-            max_size_bytes = await self.settings_service.get_value(
-                "storage.max_upload_size_bytes", default=52428800
-            )
+        max_size_bytes = await self.get_max_upload_size()
         if size_bytes > max_size_bytes:
             max_mb = max_size_bytes / (1024 * 1024)
             raise HTTPException(
@@ -200,9 +387,10 @@ class StorageService(BaseOwnedService[Storage]):
             data.entity_type, data.entity_id, storage_id, safe_name
         )
 
+        expires_in = await self.get_presigned_expiry_seconds()
         upload_url = await self.storage_provider.get_presigned_url(
             key=file_key,
-            expires_in=DEFAULT_PRESIGNED_EXPIRY_SECONDS,
+            expires_in=expires_in,
             method=PresignedUrlMethod.PUT,
         )
 
@@ -221,6 +409,7 @@ class StorageService(BaseOwnedService[Storage]):
 
         user_id = options.user_id if options else None
         scope = options.scope if options else None
+        await self._validate_entity_access(data.entity_type, data.entity_id, scope)
         await self.create(
             create_payload,
             user_id=user_id,
@@ -232,7 +421,7 @@ class StorageService(BaseOwnedService[Storage]):
             storage_id=storage_id,
             upload_url=upload_url,
             file_key=file_key,
-            expires_in=DEFAULT_PRESIGNED_EXPIRY_SECONDS,
+            expires_in=expires_in,
             method="PUT",
         )
 
@@ -242,24 +431,31 @@ class StorageService(BaseOwnedService[Storage]):
         data: ConfirmUploadRequest | None = None,
         options: WriteOptions | None = None,
     ) -> Storage:
-        """Confirm that file was uploaded to storage provider."""
+        """Confirm that file was uploaded using factual backend metadata."""
         scope = options.scope if options else None
         user_id = options.user_id if options else None
         storage_record = await self.get_by_id(id, scope=scope)
 
-        exists = await self.storage_provider.exists(storage_record.file_key)
-        if not exists:
+        meta = await self.storage_provider.get_metadata(storage_record.file_key)
+        if meta is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="File has not been uploaded to storage yet.",
             )
 
-        update_payload: dict[str, Any] = {"is_uploaded": True}
-        if data:
-            if data.size_bytes is not None:
-                update_payload["size_bytes"] = data.size_bytes
-            if data.content_type is not None:
-                update_payload["content_type"] = data.content_type
+        mime = meta.content_type or storage_record.content_type
+        if mime is None and data and data.content_type:
+            mime = data.content_type
+        await self._validate_upload_limits(
+            meta.size_bytes, storage_record.extension, mime
+        )
+
+        update_payload: dict[str, Any] = {
+            "is_uploaded": True,
+            "size_bytes": meta.size_bytes,
+        }
+        if mime:
+            update_payload["content_type"] = mime
 
         doc = await self.update(
             id,
@@ -281,6 +477,10 @@ class StorageService(BaseOwnedService[Storage]):
         options: WriteOptions | None = None,
     ) -> Storage:
         """Direct file upload bypassing client-side presigned URLs."""
+        user_id = options.user_id if options else None
+        scope = options.scope if options else None
+        await self._validate_entity_access(entity_type, entity_id, scope)
+
         storage_id = generate_uuid7()
         safe_name = sanitize_filename(filename)
         extension = Path(safe_name).suffix.lstrip(".").lower() or None
@@ -289,6 +489,7 @@ class StorageService(BaseOwnedService[Storage]):
             or mimetypes.guess_type(safe_name)[0]
             or "application/octet-stream"
         )
+        await self._validate_upload_limits(len(file_data), extension, mime)
         file_key = self.build_storage_key(entity_type, entity_id, storage_id, safe_name)
 
         await self.storage_provider.upload(
@@ -310,8 +511,6 @@ class StorageService(BaseOwnedService[Storage]):
             "is_uploaded": True,
         }
 
-        user_id = options.user_id if options else None
-        scope = options.scope if options else None
         record = await self.create(
             create_payload,
             user_id=user_id,
@@ -327,6 +526,10 @@ class StorageService(BaseOwnedService[Storage]):
         options: WriteOptions | None = None,
     ) -> Storage:
         """Register an external URL resource directly as an active storage record."""
+        user_id = options.user_id if options else None
+        scope = options.scope if options else None
+        await self._validate_entity_access(data.entity_type, data.entity_id, scope)
+
         storage_id = generate_uuid7()
         name = data.name.strip()
         url_str = str(data.url)
@@ -349,8 +552,6 @@ class StorageService(BaseOwnedService[Storage]):
             "is_uploaded": True,
         }
 
-        user_id = options.user_id if options else None
-        scope = options.scope if options else None
         record = await self.create(
             create_payload,
             user_id=user_id,
@@ -358,6 +559,7 @@ class StorageService(BaseOwnedService[Storage]):
             allow_immutable=True,
         )
         await enrich_principal_entities(self.repository.session, [record])
+
         return record
 
     async def get_presigned_download(
@@ -400,11 +602,14 @@ class StorageService(BaseOwnedService[Storage]):
 
     async def download_content(
         self,
-        id: uuid.UUID,
+        id_or_record: uuid.UUID | Storage,
         scope: ScopeContext | None = None,
     ) -> tuple[bytes, str, str]:
         """Download file content bytes directly from storage."""
-        storage_record = await self.get_by_id(id, scope=scope)
+        if isinstance(id_or_record, Storage):
+            storage_record = id_or_record
+        else:
+            storage_record = await self.get_by_id(id_or_record, scope=scope)
 
         if not storage_record.is_uploaded:
             raise HTTPException(
@@ -421,49 +626,51 @@ class StorageService(BaseOwnedService[Storage]):
         data = await self.storage_provider.download(storage_record.file_key)
         return data, storage_record.name, storage_record.content_type
 
-    def _filter_accessible_items(
-        self,
-        items: list[Storage],
-        scope: ScopeContext | None,
-    ) -> list[Storage]:
-        """Filter storage records matching upload state and RBAC scope."""
-        accessible: list[Storage] = []
-        is_own_scope = bool(
-            scope
-            and not scope.is_super_admin
-            and str(scope.scope).upper() == ScopeType.OWN
-        )
-        for item in items:
-            if not item.is_uploaded or item.status == RecordStatus.TRASHED:
-                continue
-            if is_own_scope and scope and item.owner_id != scope.user_id:
-                continue
-            accessible.append(item)
-        return accessible
-
     async def download_zip(
         self,
         request: ZipDownloadRequest,
         scope: ScopeContext | None = None,
     ) -> tuple[bytes, str]:
         """Download multiple storage files bundled in a ZIP archive."""
+        scope_filters = self.build_scope_filters(scope) if scope else []
+
+        max_zip_files = await self.get_max_zip_file_count()
         if request.storage_ids:
             candidates = await self.storage_repo.find_uploaded_by_ids(
-                request.storage_ids
+                request.storage_ids, scope_filters=scope_filters
             )
         elif request.entity_type and request.entity_id:
             candidates = await self.storage_repo.find_by_entity(
-                request.entity_type, request.entity_id
+                request.entity_type,
+                request.entity_id,
+                limit=max_zip_files,
+                scope_filters=scope_filters,
             )
         else:
             candidates = []
 
-        accessible_items = self._filter_accessible_items(candidates, scope)
+        accessible_items = [
+            item
+            for item in candidates
+            if item.is_uploaded and item.status != RecordStatus.TRASHED
+        ]
 
         if not accessible_items:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="No accessible uploaded files found for criteria.",
+            )
+
+        max_zip_bytes = await self.get_max_zip_total_bytes()
+        total_size = sum(item.size_bytes for item in accessible_items)
+        if total_size > max_zip_bytes:
+            max_mb = max_zip_bytes / (1024 * 1024)
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=(
+                    f"Total size of files to zip ({total_size / (1024 * 1024):.1f} MB) "
+                    f"exceeds maximum limit of {max_mb:.0f} MB"
+                ),
             )
 
         zip_buffer = io.BytesIO()
@@ -520,3 +727,10 @@ class StorageService(BaseOwnedService[Storage]):
         if record.status != RecordStatus.TRASHED:
             await self.trash(id, user_id=user_id, scope=scope, options=options)
         await self.permanent_delete(id, scope=scope, options=options)
+
+    async def purge_pending_orphans(self, older_than_seconds: int | None = None) -> int:
+        """Purge unconfirmed pending uploads older than retention window."""
+        if older_than_seconds is None:
+            older_than_seconds = await self.get_orphan_retention_seconds()
+        cutoff = datetime.now(UTC) - timedelta(seconds=older_than_seconds)
+        return await self.storage_repo.purge_pending_orphans(cutoff)

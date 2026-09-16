@@ -7,7 +7,10 @@ from botocore.exceptions import ClientError
 from loguru import logger
 
 from fastapi_plantilla.core.config import settings
-from fastapi_plantilla.modules.storage.providers.base import PresignedUrlMethod
+from fastapi_plantilla.modules.storage.providers.base import (
+    PresignedUrlMethod,
+    StorageMetadata,
+)
 
 __all__ = ["S3StorageProvider"]
 
@@ -122,6 +125,25 @@ class S3StorageProvider:
                 code = e.response.get("Error", {}).get("Code")
                 if code in ("404", "NoSuchKey", "NotFound"):
                     return False
+                logger.error(f"S3 head_object error for key '{key}': {e}")
+                raise
+
+        return await anyio.to_thread.run_sync(_head)
+
+    async def get_metadata(self, key: str) -> StorageMetadata | None:
+        """Retrieve object metadata (size, content type) from S3."""
+
+        def _head() -> StorageMetadata | None:
+            try:
+                resp = self.client.head_object(Bucket=self.bucket, Key=key)
+                return StorageMetadata(
+                    size_bytes=int(resp.get("ContentLength", 0)),
+                    content_type=resp.get("ContentType"),
+                )
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code")
+                if code in ("404", "NoSuchKey", "NotFound"):
+                    return None
                 logger.error(f"S3 head_object error for key '{key}': {e}")
                 raise
 

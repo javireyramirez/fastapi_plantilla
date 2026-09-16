@@ -139,7 +139,7 @@ class StorageFilterParams(PaginationParams):
     entity_id: uuid.UUID | None = None
     is_uploaded: bool | None = None
     content_type: str | None = None
-    content_types: list[str] | None = None
+    content_types: list[str] | None = Field(default=None, max_length=100)
     size_min: int | None = None
     size_max: int | None = None
 

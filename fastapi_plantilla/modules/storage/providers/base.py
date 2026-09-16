@@ -1,7 +1,8 @@
 import enum
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-__all__ = ["PresignedUrlMethod", "StorageProvider"]
+__all__ = ["PresignedUrlMethod", "StorageMetadata", "StorageProvider"]
 
 
 class PresignedUrlMethod(enum.StrEnum):
@@ -9,6 +10,14 @@ class PresignedUrlMethod(enum.StrEnum):
 
     GET = "GET"
     PUT = "PUT"
+
+
+@dataclass(frozen=True, slots=True)
+class StorageMetadata:
+    """Authoritative metadata returned directly from storage backend."""
+
+    size_bytes: int
+    content_type: str | None = None
 
 
 @runtime_checkable
@@ -43,4 +52,8 @@ class StorageProvider(Protocol):
 
     async def exists(self, key: str) -> bool:
         """Check whether an object exists in storage."""
+        ...
+
+    async def get_metadata(self, key: str) -> StorageMetadata | None:
+        """Retrieve real object metadata (size, MIME type) directly from storage."""
         ...

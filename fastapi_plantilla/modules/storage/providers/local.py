@@ -1,12 +1,16 @@
 import hashlib
 import hmac
+import mimetypes
 import time
 from pathlib import Path
 
 import anyio
 
 from fastapi_plantilla.core.config import settings
-from fastapi_plantilla.modules.storage.providers.base import PresignedUrlMethod
+from fastapi_plantilla.modules.storage.providers.base import (
+    PresignedUrlMethod,
+    StorageMetadata,
+)
 
 __all__ = ["LocalStorageProvider"]
 
@@ -107,3 +111,16 @@ class LocalStorageProvider:
         """Check if local file exists."""
         path = self._resolve_path(key)
         return await anyio.to_thread.run_sync(path.is_file)
+
+    async def get_metadata(self, key: str) -> StorageMetadata | None:
+        """Retrieve file size and MIME type from local filesystem."""
+        path = self._resolve_path(key)
+
+        def _stat() -> StorageMetadata | None:
+            if not path.is_file():
+                return None
+            size = path.stat().st_size
+            mime, _ = mimetypes.guess_type(path.name)
+            return StorageMetadata(size_bytes=size, content_type=mime)
+
+        return await anyio.to_thread.run_sync(_stat)

@@ -1,12 +1,15 @@
 import uuid
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import (
     APIRouter,
     Depends,
     File,
     Form,
+    Header,
+    HTTPException,
     Query,
+    Request,
     Response,
     UploadFile,
     status,
@@ -17,6 +20,7 @@ from fastapi_plantilla.core.crud.dependencies import (
     get_scope_context,
     get_write_options,
 )
+from fastapi_plantilla.core.crud.router import parse_if_match_version
 from fastapi_plantilla.core.crud.schema import (
     PaginatedResponse,
     ScopeContext,
@@ -78,15 +82,53 @@ async def confirm_upload(
     summary="Direct multipart file upload through application server",
 )
 async def upload_direct(
+    request: Request,
     file: Annotated[UploadFile, File(...)],
     entity_type: Annotated[str, Form(max_length=50)],
     entity_id: Annotated[uuid.UUID, Form()],
-    description: Annotated[str | None, Form()] = None,
+    description: Annotated[str | None, Form(max_length=1000)] = None,
     service: StorageService = Depends(get_storage_service),
     options: WriteOptions = Depends(get_write_options),
 ) -> Storage:
     """Upload file directly to server and persist storage metadata."""
-    file_bytes = await file.read()
+    max_size = await service.get_max_upload_size()
+
+    # Early rejection: check file.size if known or Content-Length with multipart margin
+    if file.size is not None and file.size > max_size:
+        max_mb = max_size / (1024 * 1024)
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"File size exceeds maximum limit of {max_mb:.1f} MB",
+        )
+
+    content_length = request.headers.get("content-length")
+    if (
+        content_length
+        and content_length.isdigit()
+        and int(content_length) > max_size + 65536
+    ):
+        max_mb = max_size / (1024 * 1024)
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"File size exceeds maximum limit of {max_mb:.1f} MB",
+        )
+
+    # Safe bounded read: avoid unconstrained memory loading
+    chunks: list[bytes] = []
+    bytes_read = 0
+    chunk_size = 64 * 1024  # 64 KB
+
+    while chunk := await file.read(chunk_size):
+        bytes_read += len(chunk)
+        if bytes_read > max_size:
+            max_mb = max_size / (1024 * 1024)
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"File size exceeds maximum limit of {max_mb:.1f} MB",
+            )
+        chunks.append(chunk)
+
+    file_bytes = b"".join(chunks)
     filename = file.filename or "uploaded_file"
     return await service.upload_direct(
         file_data=file_bytes,
@@ -112,6 +154,25 @@ async def add_external_url(
 ) -> Storage:
     """Register external URL resource and persist storage metadata."""
     return await service.create_external_url(data, options=options)
+
+
+@router.delete(
+    "/pending/purge",
+    summary="Purge unconfirmed pending storage uploads older than retention window",
+)
+async def purge_pending_uploads(
+    older_than_seconds: int | None = Query(default=None, ge=0),
+    service: StorageService = Depends(get_storage_service),
+    scope: ScopeContext = Depends(get_scope_context),
+) -> dict[str, Any]:
+    """Purge orphaned pending presigned uploads from database."""
+    if not scope.is_super_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: only administrators can purge pending uploads.",
+        )
+    purged_count = await service.purge_pending_orphans(older_than_seconds)
+    return {"purged": purged_count}
 
 
 @router.get(
@@ -145,7 +206,7 @@ async def download_file(
             url=record.external_url,
             status_code=status.HTTP_307_TEMPORARY_REDIRECT,
         )
-    content, filename, mime = await service.download_content(id, scope=scope)
+    content, filename, mime = await service.download_content(record, scope=scope)
     return Response(
         content=content,
         media_type=mime,
@@ -182,26 +243,7 @@ async def list_storage(
     scope: ScopeContext = Depends(get_scope_context),
 ) -> PaginatedResponse[Storage]:
     """Retrieve paginated list of storage records with optional criteria filters."""
-    where = []
-    if params.entity_id is not None:
-        where.append(Storage.entity_id == params.entity_id)
-
-    if params.entity_type:
-        where.append(Storage.entity_type == params.entity_type)
-
-    if params.is_uploaded is not None:
-        where.append(Storage.is_uploaded == params.is_uploaded)
-
-    if params.content_types:
-        where.append(Storage.content_type.in_(params.content_types))
-
-    if params.size_min is not None:
-        where.append(Storage.size_bytes >= params.size_min)
-
-    if params.size_max is not None:
-        where.append(Storage.size_bytes <= params.size_max)
-
-    return await service.find_paginated(params, *where, scope=scope)
+    return await service.find_paginated(params, scope=scope)
 
 
 @router.get(
@@ -211,11 +253,14 @@ async def list_storage(
 )
 async def get_storage(
     id: uuid.UUID,
+    response: Response,
     service: StorageService = Depends(get_storage_service),
     scope: ScopeContext = Depends(get_scope_context),
 ) -> Storage:
     """Get storage details by primary key ID."""
-    return await service.get_by_id(id, scope=scope)
+    record = await service.get_by_id(id, scope=scope)
+    response.headers["ETag"] = f'W/"{record.version}"'
+    return record
 
 
 @router.patch(
@@ -226,16 +271,26 @@ async def get_storage(
 async def update_storage(
     id: uuid.UUID,
     data: StorageUpdateSchema,
+    response: Response,
+    expected_version: int | None = Query(default=None),
+    if_match: str | None = Header(default=None, alias="If-Match"),
     service: StorageService = Depends(get_storage_service),
     options: WriteOptions = Depends(get_write_options),
 ) -> Storage:
-    """Update editable storage metadata fields."""
-    return await service.update(
+    """Update editable storage metadata fields with optimistic concurrency."""
+    parsed_version = parse_if_match_version(if_match)
+    effective_version = (
+        parsed_version if parsed_version is not None else expected_version
+    )
+    record = await service.update(
         id,
         data,
+        expected_version=effective_version,
         user_id=options.user_id,
         scope=options.scope,
     )
+    response.headers["ETag"] = f'W/"{record.version}"'
+    return record
 
 
 @router.delete(

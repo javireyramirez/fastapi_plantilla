@@ -3,9 +3,11 @@ import time
 import uuid
 import zipfile
 from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +27,7 @@ from fastapi_plantilla.modules.auth.dependencies import get_current_user
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.auth.schema import UserResponse
 from fastapi_plantilla.modules.companies.models import Company
+from fastapi_plantilla.modules.settings.dependencies import get_settings_service
 from fastapi_plantilla.modules.storage.dependencies import (
     get_storage_provider,
 )
@@ -34,6 +37,7 @@ from fastapi_plantilla.modules.storage.providers import (
     PresignedUrlMethod,
     S3StorageProvider,
 )
+from fastapi_plantilla.modules.storage.repository import StorageRepository
 from fastapi_plantilla.modules.storage.routes import router as storage_router
 from fastapi_plantilla.modules.storage.service import sanitize_filename
 
@@ -810,3 +814,339 @@ async def test_external_url_document_flow(
     # Permanent delete succeeds cleanly without storage provider failure
     del_res = await storage_client.delete(f"/api/storage/{doc_id}/permanent")
     assert del_res.status_code == 204
+
+
+@pytest.mark.anyio
+async def test_storage_etag_and_optimistic_locking(
+    storage_client: AsyncClient,
+) -> None:
+    """Verify ETag headers on GET and optimistic locking on PATCH."""
+    entity_id = uuid.uuid4()
+    upload_res = await storage_client.post(
+        "/api/storage/upload",
+        files={"file": ("doc_version.txt", b"Version test", "text/plain")},
+        data={"entity_type": "company", "entity_id": str(entity_id)},
+    )
+    assert upload_res.status_code == status.HTTP_201_CREATED
+    doc_id = upload_res.json()["id"]
+
+    # 1. GET returns ETag W/"1"
+    get_res = await storage_client.get(f"/api/storage/{doc_id}")
+    assert get_res.status_code == status.HTTP_200_OK
+    assert get_res.headers.get("ETag") == 'W/"1"'
+
+    # 2. PATCH with stale If-Match returns 409
+    stale_patch = await storage_client.patch(
+        f"/api/storage/{doc_id}",
+        headers={"If-Match": 'W/"99"'},
+        json={"name": "stale_rename.txt"},
+    )
+    assert stale_patch.status_code == status.HTTP_409_CONFLICT
+
+    # 3. PATCH with matching If-Match succeeds and increments version
+    ok_patch = await storage_client.patch(
+        f"/api/storage/{doc_id}",
+        headers={"If-Match": 'W/"1"'},
+        json={"name": "valid_rename.txt"},
+    )
+    assert ok_patch.status_code == status.HTTP_200_OK
+    assert ok_patch.json()["version"] == 2
+    assert ok_patch.headers.get("ETag") == 'W/"2"'
+
+
+@pytest.mark.anyio
+async def test_storage_search_and_filtering(
+    storage_client: AsyncClient,
+) -> None:
+    """Verify search_fields and centralized build_where_filters in list_storage."""
+    entity_id = uuid.uuid4()
+    await storage_client.post(
+        "/api/storage/upload",
+        files={"file": ("report_financial_2026.txt", b"Report data", "text/plain")},
+        data={"entity_type": "company", "entity_id": str(entity_id)},
+    )
+    await storage_client.post(
+        "/api/storage/upload",
+        files={"file": ("invoice_vendor_acme.txt", b"Invoice data", "text/plain")},
+        data={"entity_type": "company", "entity_id": str(entity_id)},
+    )
+
+    # 1. Search for 'financial' matches only report
+    res_fin = await storage_client.get(
+        "/api/storage",
+        params={"entity_id": str(entity_id), "search": "financial"},
+    )
+    assert res_fin.status_code == status.HTTP_200_OK
+    items_fin = res_fin.json()["data"]
+    assert len(items_fin) == 1
+    assert "report_financial" in items_fin[0]["name"]
+
+    # 2. Search for 'vendor' matches only invoice
+    res_ven = await storage_client.get(
+        "/api/storage",
+        params={"entity_id": str(entity_id), "search": "vendor"},
+    )
+    assert res_ven.status_code == status.HTTP_200_OK
+    items_ven = res_ven.json()["data"]
+    assert len(items_ven) == 1
+    assert "invoice_vendor" in items_ven[0]["name"]
+
+
+@pytest.mark.anyio
+async def test_upload_direct_limits_and_validation(
+    storage_app: FastAPI,
+    storage_client: AsyncClient,
+) -> None:
+    """Verify upload_direct validates size and extension against settings."""
+    mock_settings = MagicMock()
+
+    async def _mock_get_value(key: str, default: Any = None) -> Any:
+        if key == "storage.max_upload_size_bytes":
+            return 25
+        if key == "storage.allowed_extensions":
+            return ["txt", "pdf"]
+        return default
+
+    mock_settings.get_value = AsyncMock(side_effect=_mock_get_value)
+    storage_app.dependency_overrides[get_settings_service] = lambda: mock_settings
+
+    try:
+        entity_id = uuid.uuid4()
+
+        # 1. Upload exceeding size limit (50 bytes > 25 bytes limit)
+        oversized_res = await storage_client.post(
+            "/api/storage/upload",
+            files={"file": ("oversized.txt", b"A" * 50, "text/plain")},
+            data={"entity_type": "company", "entity_id": str(entity_id)},
+        )
+        assert oversized_res.status_code == status.HTTP_413_CONTENT_TOO_LARGE
+        assert "exceeds maximum limit" in oversized_res.json()["detail"]
+
+        # 2. Upload with disallowed extension (.exe)
+        bad_ext_res = await storage_client.post(
+            "/api/storage/upload",
+            files={"file": ("malicious.exe", b"binary", "application/octet-stream")},
+            data={"entity_type": "company", "entity_id": str(entity_id)},
+        )
+        assert bad_ext_res.status_code == status.HTTP_400_BAD_REQUEST
+        assert "File extension '.exe' is not permitted" in bad_ext_res.json()["detail"]
+    finally:
+        storage_app.dependency_overrides.pop(get_settings_service, None)
+
+
+@pytest.mark.anyio
+async def test_find_by_entity_limit_in_repository(
+    dbsession: AsyncSession,
+) -> None:
+    """Verify find_by_entity in StorageRepository applies limit properly."""
+    repo = StorageRepository(dbsession)
+    entity_id = uuid.uuid4()
+
+    for idx in range(4):
+        await repo.create(
+            {
+                "id": generate_uuid7(),
+                "entity_type": "test_limit_entity",
+                "entity_id": entity_id,
+                "name": f"file_{idx}.txt",
+                "file_key": f"test_limit_{uuid.uuid4().hex[:6]}",
+                "content_type": "text/plain",
+                "size_bytes": 10,
+                "is_uploaded": True,
+            }
+        )
+
+    # Fetch with limit=2
+    items_limited = await repo.find_by_entity("test_limit_entity", entity_id, limit=2)
+    assert len(items_limited) == 2
+
+    # Fetch with limit=None
+    items_all = await repo.find_by_entity("test_limit_entity", entity_id, limit=None)
+    assert len(items_all) == 4
+
+
+@pytest.mark.anyio
+async def test_confirm_upload_uses_real_metadata(
+    storage_client: AsyncClient,
+    storage_app: FastAPI,
+) -> None:
+    """Verify confirm_upload reads real size and MIME from storage provider."""
+    entity_id = uuid.uuid4()
+    req_body = {
+        "name": "photo_real.png",
+        "content_type": "text/plain",
+        "size_bytes": 10,
+        "entity_type": "company",
+        "entity_id": str(entity_id),
+    }
+    presigned_res = await storage_client.post(
+        "/api/storage/presigned-upload", json=req_body
+    )
+    assert presigned_res.status_code == status.HTTP_201_CREATED
+    storage_id = presigned_res.json()["storage_id"]
+    file_key = presigned_res.json()["file_key"]
+
+    # Upload actual bytes (150 bytes) directly to local provider
+    provider = storage_app.dependency_overrides[get_storage_provider]()
+    actual_data = b"P" * 150
+    await provider.upload(file_key, actual_data, "image/png")
+
+    # Client confirms with fake declared size_bytes=5
+    confirm_res = await storage_client.post(
+        f"/api/storage/{storage_id}/confirm",
+        json={"size_bytes": 5},
+    )
+    assert confirm_res.status_code == status.HTTP_200_OK
+    data = confirm_res.json()
+    assert data["is_uploaded"] is True
+    # Factual size from provider (150) overrides fake declared size (5)
+    assert data["size_bytes"] == 150
+
+
+@pytest.mark.anyio
+async def test_zip_download_scope_isolation(
+    storage_client: AsyncClient,
+    auth_state: AuthContextState,
+    test_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify zip download enforces RBAC scope at SQL query level (SSOT)."""
+    admin_user, regular_user = test_users
+
+    # 1. Admin uploads document A
+    auth_state.user = admin_user
+    res_a = await storage_client.post(
+        "/api/storage/upload",
+        files={"file": ("admin_doc.txt", b"admin content", "text/plain")},
+        data={"entity_type": "company", "entity_id": str(uuid.uuid4())},
+    )
+    assert res_a.status_code == status.HTTP_201_CREATED
+    doc_a_id = res_a.json()["id"]
+
+    # 2. Regular user uploads document B
+    auth_state.user = regular_user
+    res_b = await storage_client.post(
+        "/api/storage/upload",
+        files={"file": ("regular_doc.txt", b"regular content", "text/plain")},
+        data={"entity_type": "user", "entity_id": str(regular_user.id)},
+    )
+    assert res_b.status_code == status.HTTP_201_CREATED
+    doc_b_id = res_b.json()["id"]
+
+    # 3. Regular user (OWN scope) requests ZIP of both docs
+    zip_res = await storage_client.post(
+        "/api/storage/zip",
+        json={"storage_ids": [doc_a_id, doc_b_id]},
+    )
+    assert zip_res.status_code == status.HTTP_200_OK
+    zip_bytes = zip_res.content
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        names = zf.namelist()
+        assert "regular_doc.txt" in names
+        assert "admin_doc.txt" not in names
+
+
+@pytest.mark.anyio
+async def test_zip_download_aggregate_size_limit(
+    storage_client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify zip download rejects when aggregate size exceeds safety limit."""
+    repo = StorageRepository(dbsession)
+    entity_id = uuid.uuid4()
+
+    # Create 2 records with aggregate size > 100 MB (104857600 bytes)
+    id1 = generate_uuid7()
+    id2 = generate_uuid7()
+    for doc_id, name in [(id1, "huge1.dat"), (id2, "huge2.dat")]:
+        await repo.create(
+            {
+                "id": doc_id,
+                "entity_type": "company",
+                "entity_id": entity_id,
+                "name": name,
+                "file_key": f"test_huge_{doc_id}",
+                "content_type": "application/octet-stream",
+                "size_bytes": 60 * 1024 * 1024,  # 60 MB each = 120 MB total
+                "is_uploaded": True,
+            }
+        )
+
+    zip_res = await storage_client.post(
+        "/api/storage/zip",
+        json={"storage_ids": [str(id1), str(id2)]},
+    )
+    assert zip_res.status_code == status.HTTP_413_CONTENT_TOO_LARGE
+    assert "exceeds maximum limit" in zip_res.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_entity_access_authorization(
+    storage_client: AsyncClient,
+    auth_state: AuthContextState,
+    test_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify non-admin users cannot attach files to arbitrary foreign entities."""
+    _, regular_user = test_users
+    auth_state.user = regular_user
+
+    other_user_id = uuid.uuid4()
+    # 1. Regular user trying to attach to another user's profile -> 403
+    forbidden_res = await storage_client.post(
+        "/api/storage/upload",
+        files={"file": ("hacked.txt", b"payload", "text/plain")},
+        data={"entity_type": "user", "entity_id": str(other_user_id)},
+    )
+    assert forbidden_res.status_code == status.HTTP_403_FORBIDDEN
+    assert "cannot attach files to another user" in forbidden_res.json()["detail"]
+
+    # 2. Regular user attaching to their own user profile -> 201
+    allowed_res = await storage_client.post(
+        "/api/storage/upload",
+        files={"file": ("legit.txt", b"payload", "text/plain")},
+        data={"entity_type": "user", "entity_id": str(regular_user.id)},
+    )
+    assert allowed_res.status_code == status.HTTP_201_CREATED
+
+
+@pytest.mark.anyio
+async def test_purge_pending_orphans_endpoint(
+    storage_client: AsyncClient,
+    auth_state: AuthContextState,
+    test_users: tuple[UserResponse, UserResponse],
+    dbsession: AsyncSession,
+) -> None:
+    """Verify administrative endpoint for purging orphaned pending uploads."""
+    admin_user, regular_user = test_users
+    repo = StorageRepository(dbsession)
+
+    orphan_id = generate_uuid7()
+    await repo.create(
+        {
+            "id": orphan_id,
+            "entity_type": "company",
+            "entity_id": uuid.uuid4(),
+            "name": "orphan.txt",
+            "file_key": f"orphan_{orphan_id}",
+            "content_type": "text/plain",
+            "size_bytes": 0,
+            "is_uploaded": False,
+        }
+    )
+
+    # 1. Regular user cannot trigger purge -> 403
+    auth_state.user = regular_user
+    forbidden_res = await storage_client.delete(
+        "/api/storage/pending/purge?older_than_seconds=0"
+    )
+    assert forbidden_res.status_code == status.HTTP_403_FORBIDDEN
+
+    # 2. Admin can trigger purge -> 200 with count
+    auth_state.user = admin_user
+    ok_res = await storage_client.delete(
+        "/api/storage/pending/purge?older_than_seconds=0"
+    )
+    assert ok_res.status_code == status.HTTP_200_OK
+    assert ok_res.json()["purged"] >= 1
+
+    # Verify orphan is deleted
+    assert await repo.get_by_id(orphan_id) is None

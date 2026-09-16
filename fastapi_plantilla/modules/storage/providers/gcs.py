@@ -4,7 +4,10 @@ import anyio
 from google.cloud import storage as gcs
 
 from fastapi_plantilla.core.config import settings
-from fastapi_plantilla.modules.storage.providers.base import PresignedUrlMethod
+from fastapi_plantilla.modules.storage.providers.base import (
+    PresignedUrlMethod,
+    StorageMetadata,
+)
 
 __all__ = ["GoogleCloudStorageProvider"]
 
@@ -88,3 +91,17 @@ class GoogleCloudStorageProvider:
             return bool(blob.exists())
 
         return await anyio.to_thread.run_sync(_exists)
+
+    async def get_metadata(self, key: str) -> StorageMetadata | None:
+        """Retrieve blob metadata (size, content type) from GCS bucket."""
+
+        def _get() -> StorageMetadata | None:
+            blob = self.bucket.get_blob(key)
+            if blob is None:
+                return None
+            return StorageMetadata(
+                size_bytes=blob.size or 0,
+                content_type=blob.content_type,
+            )
+
+        return await anyio.to_thread.run_sync(_get)

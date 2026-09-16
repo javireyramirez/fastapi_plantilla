@@ -9,7 +9,10 @@ from azure.storage.blob import (
 )
 
 from fastapi_plantilla.core.config import settings
-from fastapi_plantilla.modules.storage.providers.base import PresignedUrlMethod
+from fastapi_plantilla.modules.storage.providers.base import (
+    PresignedUrlMethod,
+    StorageMetadata,
+)
 
 __all__ = ["AzureBlobStorageProvider"]
 
@@ -133,3 +136,20 @@ class AzureBlobStorageProvider:
             return bool(blob_client.exists())
 
         return await anyio.to_thread.run_sync(_exists)
+
+    async def get_metadata(self, key: str) -> StorageMetadata | None:
+        """Retrieve blob metadata (size, content type) from Azure Blob Storage."""
+
+        def _get() -> StorageMetadata | None:
+            blob_client = self.service_client.get_blob_client(
+                container=self.container, blob=key
+            )
+            if not blob_client.exists():
+                return None
+            props = blob_client.get_blob_properties()
+            content_type = (
+                props.content_settings.content_type if props.content_settings else None
+            )
+            return StorageMetadata(size_bytes=props.size, content_type=content_type)
+
+        return await anyio.to_thread.run_sync(_get)

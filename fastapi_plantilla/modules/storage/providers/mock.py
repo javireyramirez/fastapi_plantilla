@@ -1,4 +1,7 @@
-from fastapi_plantilla.modules.storage.providers.base import PresignedUrlMethod
+from fastapi_plantilla.modules.storage.providers.base import (
+    PresignedUrlMethod,
+    StorageMetadata,
+)
 
 __all__ = ["MockStorageProvider"]
 
@@ -8,6 +11,7 @@ class MockStorageProvider:
 
     def __init__(self) -> None:
         self._storage: dict[str, bytes] = {}
+        self._content_types: dict[str, str | None] = {}
 
     async def upload(
         self,
@@ -17,6 +21,7 @@ class MockStorageProvider:
     ) -> None:
         """Store bytes in memory."""
         self._storage[key] = data
+        self._content_types[key] = content_type
 
     async def download(self, key: str) -> bytes:
         """Retrieve bytes from memory."""
@@ -36,7 +41,17 @@ class MockStorageProvider:
     async def delete(self, key: str) -> None:
         """Remove file from in-memory storage."""
         self._storage.pop(key, None)
+        self._content_types.pop(key, None)
 
     async def exists(self, key: str) -> bool:
         """Check if file exists in memory."""
         return key in self._storage
+
+    async def get_metadata(self, key: str) -> StorageMetadata | None:
+        """Retrieve object metadata from in-memory storage."""
+        if key not in self._storage:
+            return None
+        return StorageMetadata(
+            size_bytes=len(self._storage[key]),
+            content_type=self._content_types.get(key),
+        )
