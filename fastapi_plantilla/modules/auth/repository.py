@@ -417,13 +417,13 @@ class AuthRepository:
         if user_id is not None:
             conditions.append(Session.user_id == user_id)
 
-        if is_valid is None:
+        if is_valid is True:
             conditions.append(Session.is_valid.is_(True))
             conditions.append(Session.expires_at > func.now())
-        elif is_valid is True:
-            conditions.append(Session.is_valid.is_(True))
-        else:
-            conditions.append(Session.is_valid.is_(False))
+        elif is_valid is False:
+            conditions.append(
+                or_(Session.is_valid.is_(False), Session.expires_at <= func.now())
+            )
 
         if created_at_from is not None:
             conditions.append(

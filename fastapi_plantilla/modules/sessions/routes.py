@@ -44,6 +44,22 @@ async def list_sessions(
     )
 
 
+@router.get("/{session_id}", response_model=SessionAdminResponse)
+async def get_session(
+    session_id: uuid.UUID,
+    service: SessionAdminService = Depends(get_session_admin_service),
+    scope: ScopeContext = Depends(require_permission("sessions", RbacActions.READ)),
+    current_session: AuthResponse = Depends(get_current_session),
+) -> SessionAdminResponse:
+    """Fetch session details by ID with scope enforcement."""
+    current_token = current_session.session.token if current_session.session else None
+    return await service.get_session(
+        session_id=session_id,
+        scope=scope,
+        current_token=current_token,
+    )
+
+
 @router.delete("/{session_id}", response_model=MessageResponse)
 async def revoke_session(
     session_id: uuid.UUID,

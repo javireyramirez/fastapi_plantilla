@@ -230,7 +230,6 @@ async def test_list_sessions_paginated_and_filters(
     sessions_auth_context.user = _user_to_response(admin_user)
     sessions_auth_context.session_token = signed_token_admin
 
-    # 1. Default list: only active, non-expired sessions
     res = await sessions_client.get("/api/sessions?page=1&limit=10")
     assert res.status_code == status.HTTP_200_OK
     body = res.json()
@@ -238,9 +237,7 @@ async def test_list_sessions_paginated_and_filters(
     assert "meta" in body
     assert body["meta"]["page"] == 1
     assert body["meta"]["limit"] == 10
-    assert (
-        body["meta"]["total"] == 2
-    )  # s_admin and s_jane_active (revoked is excluded by default)
+    assert body["meta"]["total"] == 3  # all 3 sessions returned
 
     # Check is_current flag
     items = body["data"]
@@ -249,24 +246,106 @@ async def test_list_sessions_paginated_and_filters(
     assert admin_item["is_current"] is True
     assert jane_item["is_current"] is False
 
-    # 2. Filter is_valid=false: should return the revoked session
+    # 2. Filter is_valid=true: should return only active, non-expired sessions
+    res_act = await sessions_client.get("/api/sessions?is_valid=true")
+    assert res_act.status_code == status.HTTP_200_OK
+    body_act = res_act.json()
+    assert body_act["meta"]["total"] == 2
+
+    # 3. Filter is_valid=false: should return the revoked session
     res_rev = await sessions_client.get("/api/sessions?is_valid=false")
     assert res_rev.status_code == status.HTTP_200_OK
     body_rev = res_rev.json()
     assert body_rev["meta"]["total"] == 1
     assert body_rev["data"][0]["id"] == str(s_jane_revoked.id)
 
-    # 3. Filter user_id
-    res_user = await sessions_client.get(f"/api/sessions?user_id={regular_user.id}")
+    # 4. Filter user_id with is_valid=true
+    res_user = await sessions_client.get(
+        f"/api/sessions?user_id={regular_user.id}&is_valid=true"
+    )
     assert res_user.status_code == status.HTTP_200_OK
     assert res_user.json()["meta"]["total"] == 1
     assert res_user.json()["data"][0]["id"] == str(s_jane_active.id)
 
-    # 4. Filter search
+    # 5. Filter search
     res_search = await sessions_client.get("/api/sessions?search=AdminBrowser")
     assert res_search.status_code == status.HTTP_200_OK
     assert res_search.json()["meta"]["total"] == 1
     assert res_search.json()["data"][0]["id"] == str(s_admin.id)
+
+
+@pytest.mark.anyio
+async def test_get_session_by_id_and_not_found(
+    dbsession: AsyncSession,
+    sessions_client: AsyncClient,
+    sessions_auth_context: SessionsTestAuthContext,
+) -> None:
+    """Test single session detail and not found behavior."""
+    await sync_system_modules(dbsession)
+
+    user_repo = BaseRepository(User, dbsession)
+    admin_user = await user_repo.create(
+        {
+            "id": generate_uuid7(),
+            "name": "Super Admin",
+            "email": f"admin_{uuid.uuid4().hex[:6]}@example.com",
+            "is_super_admin": True,
+            "is_active": True,
+        }
+    )
+    regular_user = await user_repo.create(
+        {
+            "id": generate_uuid7(),
+            "name": "Regular Jane",
+            "email": f"jane_{uuid.uuid4().hex[:6]}@example.com",
+            "is_super_admin": False,
+            "is_active": True,
+        }
+    )
+
+    raw_token_admin = f"raw_admin_{uuid.uuid4().hex}"
+    session_repo = BaseRepository(AuthSession, dbsession)
+    s_admin = await session_repo.create(
+        {
+            "id": generate_uuid7(),
+            "user_id": admin_user.id,
+            "token": raw_token_admin,
+            "ip_address": "192.168.1.100",
+            "user_agent": "Mozilla/5.0 AdminBrowser",
+            "expires_at": datetime.now(UTC) + timedelta(days=2),
+            "is_valid": True,
+        }
+    )
+    s_jane_active = await session_repo.create(
+        {
+            "id": generate_uuid7(),
+            "user_id": regular_user.id,
+            "token": f"token_jane_{uuid.uuid4().hex}",
+            "ip_address": "10.0.0.50",
+            "user_agent": "Mobile Safari",
+            "expires_at": datetime.now(UTC) + timedelta(days=5),
+            "is_valid": True,
+        }
+    )
+
+    sessions_auth_context.user = _user_to_response(admin_user)
+    sessions_auth_context.session_token = sign_token(
+        raw_token_admin, settings.auth_secret
+    )
+
+    res_single = await sessions_client.get(f"/api/sessions/{s_admin.id}")
+    assert res_single.status_code == status.HTTP_200_OK
+    single_data = res_single.json()
+    assert single_data["id"] == str(s_admin.id)
+    assert single_data["is_current"] is True
+    assert single_data["user_email"] == admin_user.email
+
+    res_single_jane = await sessions_client.get(f"/api/sessions/{s_jane_active.id}")
+    assert res_single_jane.status_code == status.HTTP_200_OK
+    assert res_single_jane.json()["is_current"] is False
+
+    res_not_found = await sessions_client.get(f"/api/sessions/{uuid.uuid4()}")
+    assert res_not_found.status_code == status.HTTP_404_NOT_FOUND
 
 
 @pytest.mark.anyio

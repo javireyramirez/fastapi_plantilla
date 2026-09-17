@@ -108,6 +108,46 @@ class SessionAdminService:
         meta = PaginationMeta.create(page=params.page, limit=params.limit, total=total)
         return PaginatedResponse(data=items, meta=meta)
 
+    async def get_session(
+        self,
+        session_id: uuid.UUID,
+        scope: ScopeContext,
+        current_token: str | None = None,
+    ) -> SessionAdminResponse:
+        """Fetch session detail by ID with RBAC scope validation."""
+        session = await self.auth_repo.get_session_by_id_with_user(session_id)
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Sesión no encontrada",
+            )
+
+        allowed_user_ids = self._resolve_allowed_user_ids(scope)
+        if allowed_user_ids is not None and session.user_id not in allowed_user_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para acceder a sesiones fuera de tu ámbito",
+            )
+
+        raw_token: str | None = None
+        if current_token:
+            raw_token = unsign_token(current_token, settings.auth_secret)
+
+        return SessionAdminResponse(
+            id=session.id,
+            user_id=session.user_id,
+            user_name=session.user.name if session.user else "Desconocido",
+            user_email=session.user.email if session.user else "",
+            ip_address=session.ip_address,
+            user_agent=session.user_agent,
+            is_valid=session.is_valid,
+            impersonated_by=session.impersonated_by,
+            is_impersonated=session.impersonated_by is not None,
+            created_at=session.created_at,
+            expires_at=session.expires_at,
+            is_current=(raw_token is not None and session.token == raw_token),
+        )
+
     async def revoke_session(
         self,
         session_id: uuid.UUID,
