@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from fastapi_plantilla.app import get_app
 from fastapi_plantilla.core.crud.repository import BaseRepository
+from fastapi_plantilla.core.crud.service_base import APP_TIMEZONE
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import generate_uuid7
 from fastapi_plantilla.modules.auth.dependencies import (
@@ -450,7 +451,6 @@ async def test_jobs_status_and_date_filters(
     """Test multi-status and date filtering for jobs."""
     admin, _ = job_users
     repo = JobRepository(dbsession)
-    now = datetime.now(UTC)
 
     await repo.create(
         name="reports.generate_pdf",
@@ -506,7 +506,7 @@ async def test_jobs_status_and_date_filters(
         assert "audit.export_logs" not in names_comma
 
         # Date filter (created_at_from and created_at_to)
-        today_str = now.strftime("%Y-%m-%d")
+        today_str = datetime.now(APP_TIMEZONE).strftime("%Y-%m-%d")
         res_date = await client.get(
             f"/api/jobs?created_at_from={today_str}&created_at_to={today_str}"
         )

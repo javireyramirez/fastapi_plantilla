@@ -33,7 +33,7 @@ flowchart TD
     F1 --> F2["Fase 2: Motor Base CRUD, Paginación & Router Factory (✅ Completado)"]
     F2 --> F3["Fase 3: RBAC, Teams, User Admin & Impersonation (✅ Completado)"]
     F3 --> F4["Fase 4: Almacenamiento Multi-Cloud & Papelera (✅ Completado)"]
-    F4 --> F5["Fase 5: Background Jobs en BD, Ingesta & Exportación (🟡 5.1 y 5.2 Completados)"]
+    F4 --> F5["Fase 5: Background Jobs en BD, Ingesta & Exportación (🟢 5.1, 5.2 y 5.3 Completados)"]
     F5 --> F6["Fase 6: Módulo de Ejemplo 'Companies' (✅ Completado)"]
     F6 --> F7["Fase 7: Auditoría, Settings, Notificaciones & Métricas (🟢 7.1, 7.2 y 7.3 Completados)"]
     F7 --> F8["Fase 8: Rate Limiting & Auth Avanzado (⚪ Pendiente)"]
@@ -119,16 +119,21 @@ flowchart TD
 
 ---
 
-### 🟡 FASE 5: Background Jobs en PostgreSQL, Ingesta & Exportación Masiva (CSV & Excel) *(🟡 5.1 y 5.2 COMPLETADOS)*
+### 🟢 FASE 5: Background Jobs en PostgreSQL, Ingesta & Exportación Masiva (CSV & Excel) *(🟢 5.1, 5.2 y 5.3 COMPLETADOS)*
 * **5.1 Motor de Tareas en Segundo Plano (`sys_jobs` con `SKIP LOCKED`):** *(✅ COMPLETADO)*
   * *Descripción:* Cola de trabajos asíncronos nativa en PostgreSQL sin dependencias pesadas (cero Redis, cero Celery). Consumo atómico con `FOR UPDATE SKIP LOCKED` e incremento de `lease_token` (fencing token contra ejecuciones zombies concurrentes), recuperación automática de leases expirados, pool de workers concurrente en lifespan gobernado por `asyncio.Semaphore`, cancelación cooperativa con `JobCancelledError`, reintentos con backoff exponencial y jitter seguro (`secrets`), soporte polimórfico (`entity_type`, `entity_id`), deduplicación por `idempotency_key` y endpoints REST de gestión `/api/jobs` (`enqueue`, `get`, `list`, `cancel`, `retry`).
   * *Problema que soluciona:* Evita caídas por `HTTP 504 Gateway Timeout` al procesar archivos masivos, generar ZIPs de storage o ejecutar exportaciones pesadas sin bloquear el hilo de la API, proporcionando a su vez el sustrato asíncrono para la futura ingesta de documentos y embeddings en IA.
 * **5.2 Motor de Exportación Avanzada (Strategy Pattern Multi-Provider):** *(✅ COMPLETADO a nivel de Router & Servicio)*
   * *Descripción:* Patrón de registro desacoplado `EXPORT_STRATEGIES` (`ExportStrategy`) con conversor multi-formato a `CSV`, `TSV`, `GOOGLE_SHEETS` (TSV con marca de orden de bytes UTF-8 BOM `\ufeff` que permite a Google Sheets y Drive auto-detectar columnas y caracteres especiales sin advertencias de codificación), `JSON` formateado y `EXCEL` (`.xlsx` nativo mediante OpenPyXL). Helper puro `format_export` integrado de forma nativa en `create_crud_router` (`POST /export`) y `BaseAuditService.export_data` para consumo inmediato en cualquier módulo derivado de CRUD en una sola línea.
   * *Problema que soluciona:* Permite descargar cualquier tabla filtrada en tiempo real en los formatos corporativos más demandados sin librerías frontend pesadas, desacoplando completamente los servicios de los detalles de serialización y tipos MIME (filosofías SRP y SSOT).
-* **5.3 Importador Masivo con Validación Fila por Fila (`imports.validate`):** *(⏳ PENDIENTE)*
-  * *Descripción:* `GET /{resource}/import-template` (descarga de plantilla Excel con tipos esperados) y `POST /{resource}/import` (encolado en `sys_jobs` bajo el handler `imports.validate` para validación fila por fila contra esquemas Pydantic con reporte detallado de errores y transaccionalidad atómica o parcial).
-  * *Problema que soluciona:* Ingesta masiva segura de datos para clientes, devolviendo reportes de errores claros (*"Fila 12: NIF inválido"*).
+* **5.3 Importador Masivo con Validación Fila por Fila (`imports.validate`):** *(✅ COMPLETADO)*
+  * *Descripción:* Motor simétrico al exportador integrado de forma nativa en `create_crud_router` (`GET /{resource}/import-template` y `POST /{resource}/import`) y el catálogo de jobs (`imports.validate`). Incluye:
+    - *Generador de Plantillas Universales:* Deducción dinámica de cabeceras, tipos esperados y campos obligatorios a partir del esquema de creación Pydantic (`schema_create` / `schema_import`), excluyendo campos automáticos del sistema (`SYSTEM_IMPORT_EXCLUDE_FIELDS`). Soporte descargable para Excel (`.xlsx`) y CSV con UTF-8 BOM.
+    - *Staging y Limpieza Multi-Cloud:* Almacenamiento temporal en `StorageProvider` (`imports/{job_id}_{filename}`) y borrado seguro garantizado en el bloque `finally` del worker.
+    - *Semántica Transaccional Estricta:* Soporte dual para modo `ATOMIC` (todo o nada, con rollback completo si cualquier fila falla en validación Pydantic o en BD por unicidad/claves) y modo `PARTIAL` (inserción resiliente aislada con savepoints `begin_nested()` para persistir válidos y reportar inválidos), junto con flag `dry_run` de simulación.
+    - *Protección Anti-Saturación & Throttle:* Truncado automático a los primeros 100 errores en `job.result` y almacenamiento del reporte íntegro en Storage si excede el límite (`errors_file_key`), con emisión de progreso throttled (cada 5% o 100 filas) compatible con streaming SSE en tiempo real y notificaciones en campanita.
+    - *Registro SSOT:* Catálogo centralizado `RESOURCE_IMPORT_REGISTRY` enlazado con la sesión del worker para transaccionalidad real sin acoplamiento.
+  * *Problema que soluciona:* Ingesta masiva segura de datos para clientes sin bloquear el ciclo HTTP ni arriesgar corrupción de datos, devolviendo reportes de errores claros y estructurados (*"Fila 12: NIF inválido"*).
 * **5.4 Catálogo Canónico de Background Jobs (`JobRegistry`):** *(🟡 Parcial / ⏳ En Expansión)*
   * *Descripción:* Ecosistema de handlers tipados registrados en `job_registry` con esquemas Pydantic para payload/result, garantizando ejecución asíncrona no bloqueante, reintentos con backoff exponencial, deduplicación y observabilidad centralizada:
     1. **`emails.send`**: Desacopla el envío de emails (`EmailService.send()`, actualmente `await transport.send()` en el ciclo del request HTTP en `modules/email/service.py:22`, donde SMTP/Resend bloquea y falla sin reintento). Payload `{to, subject, template, vars}`, result `{message_id}`, con backoff exponencial + auditoría en `sys_email_logs` (Fase 8.4).
@@ -301,7 +306,7 @@ flowchart TD
 | **Fase 2: Motor CRUD & Router Factory** | 🟢 Completado | 100% Passing | ✅ Verificado |
 | **Fase 3: RBAC, Teams, Users & Impersonate** | 🟢 Completado | 100% Passing | ✅ Verificado (`users/routes.py`: 180 líneas) |
 | **Fase 4: Storage Multi-Cloud & Papelera** | 🟢 Completado | 100% Passing | ✅ Verificado |
-| **Fase 5: Background Jobs & Exportación** | 🟡 5.1 y 5.2 Completados (5.3 y 5.4 pendientes / en expansión) | 100% Passing (9 tests dedicados) | ✅ Verificado (`jobs/routes.py`: 124 líneas) |
+| **Fase 5: Background Jobs, Ingesta & Exportación** | 🟢 5.1, 5.2 y 5.3 Completados (5.4 en expansión) | 100% Passing (24 tests dedicados) | ✅ Verificado (`importer.py` & `jobs/routes.py` < 250 líneas) |
 | **Fase 6: Módulo de Ejemplo 'Companies'** | 🟢 Completado | 100% Passing (13 tests) | ✅ Verificado (`companies/routes.py`: 115 líneas) |
 | **Fase 7: Auditoría, Settings & Notificaciones SSE (7.1, 7.2 & 7.3)** | 🟢 7.1, 7.2 y 7.3 Completados (7.4 pendiente) | 100% Passing (28 tests dedicados en 7.1, 7.2 y 7.3) | ✅ Verificado (todos los archivos < 185 líneas) |
 | **Fase 8: Seguridad Global & Auth Avanzado** | ⚪ Pendiente | — | ⏳ Planificado |
@@ -312,7 +317,7 @@ flowchart TD
 | **Fase 13: Hardening OWASP & Batería Intrusión** | ⚪ Pendiente | — | ⏳ Planificado |
 
 ### Métricas de Calidad Global:
-* **Pytest**: **276/276 tests pasando al 100%**.
+* **Pytest**: **292/292 tests pasando al 100%**.
 * **Ruff**: Formato consistente y linter verificado en el 100% del código nuevo.
-* **Mypy**: **0 errores** de tipado estricto en los 150 archivos fuente.
+* **Mypy**: **0 errores** de tipado estricto en los 178 archivos fuente.
 

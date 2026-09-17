@@ -77,6 +77,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
             RbacActions.DELETE,
             RbacActions.RESTORE,
             RbacActions.EXPORT,
+            RbacActions.IMPORT,
         ],
         "show_in_nav": True,
     },

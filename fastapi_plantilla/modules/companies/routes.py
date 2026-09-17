@@ -7,7 +7,10 @@ from fastapi_plantilla.core.crud.router import create_crud_router
 from fastapi_plantilla.core.crud.schema import ScopeContext
 from fastapi_plantilla.modules.auth.dependencies import get_current_user
 from fastapi_plantilla.modules.auth.schema import UserResponse
-from fastapi_plantilla.modules.companies.dependencies import get_company_service
+from fastapi_plantilla.modules.companies.dependencies import (
+    create_company_service,
+    get_company_service,
+)
 from fastapi_plantilla.modules.companies.schema import (
     CompaniesPaginationParams,
     CompanyCreate,
@@ -35,6 +38,7 @@ router = create_crud_router(
     tags=["Companies"],
     resource_name="companies",
     pagination_params=CompaniesPaginationParams,
+    service_factory=create_company_service,
 )
 
 

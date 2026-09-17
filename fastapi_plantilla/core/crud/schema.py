@@ -19,12 +19,17 @@ __all__ = [
     "BulkResponse",
     "ExportFormat",
     "ExportRequest",
+    "ImportFormat",
+    "ImportJobPayload",
+    "ImportMode",
+    "ImportResult",
     "ListItemResponse",
     "ListQueryParams",
     "MessageResponse",
     "PaginatedResponse",
     "PaginationMeta",
     "PaginationParams",
+    "RowError",
     "ScopeContext",
     "ScopeType",
     "SortOrder",
@@ -234,3 +239,53 @@ class AuditEntry(BaseModel):
     user_agent: str | None = None
     changes: dict[str, Any] | None = None
     details: str | None = None
+
+
+class ImportFormat(enum.StrEnum):
+    """Supported file formats for data import templates and uploads."""
+
+    EXCEL = "excel"
+    CSV = "csv"
+
+
+class ImportMode(enum.StrEnum):
+    """Transactional behavior when encountering invalid rows during import."""
+
+    ATOMIC = "atomic"  # All or nothing: any error causes complete rollback
+    PARTIAL = "partial"  # Resilient: insert valid rows, report failed ones
+
+
+class RowError(BaseModel):
+    """Structured error information for a single row during validation or insert."""
+
+    row: int
+    field: str
+    message: str
+    value: Any = None
+
+
+class ImportResult(BaseModel):
+    """Execution summary and row-by-row error report of an import job."""
+
+    total_rows: int
+    imported_rows: int
+    failed_rows: int
+    errors: list[RowError] = Field(default_factory=list)
+    total_errors: int
+    truncated: bool = False
+    errors_file_key: str | None = None
+    mode: ImportMode
+    dry_run: bool
+
+
+class ImportJobPayload(BaseModel):
+    """Runtime payload passed to the 'imports.validate' background job handler."""
+
+    resource_name: str
+    storage_key: str
+    filename: str
+    format: ImportFormat
+    mode: ImportMode = ImportMode.ATOMIC
+    dry_run: bool = False
+    user_id: uuid.UUID | None = None
+    scope: dict[str, Any] | None = None

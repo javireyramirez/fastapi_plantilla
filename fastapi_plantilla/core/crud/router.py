@@ -1,28 +1,44 @@
+import re
 import uuid
 from collections.abc import Callable, Sequence
 from enum import Enum
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import (
     APIRouter,
     Body,
     Depends,
+    File,
+    Form,
     Header,
+    HTTPException,
     Query,
     Request,
     Response,
+    UploadFile,
     status,
 )
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.dependencies import (
     build_write_options,
     get_scope_context,
 )
+from fastapi_plantilla.core.crud.importer import (
+    DEFAULT_MAX_IMPORT_FILE_BYTES,
+    IMPORT_STORAGE_PREFIX,
+    generate_import_template,
+    register_import_resource,
+)
 from fastapi_plantilla.core.crud.schema import (
     BulkIdsRequest,
     BulkResponse,
     ExportRequest,
+    ImportFormat,
+    ImportJobPayload,
+    ImportMode,
     ListItemResponse,
     ListQueryParams,
     PaginatedResponse,
@@ -67,6 +83,7 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
     pagination_params: type[PaginationParams] = PaginationParams,
     max_bulk_limit: int = BaseCRUDService.MAX_BULK_LIMIT,
     schema_export: type[BaseModel] | None = None,
+    schema_import: type[BaseModel] | None = None,
     current_user_getter: Callable[..., Any] = get_current_user,
     scope_getter: Callable[..., Any] = get_scope_context,
     permission_factory: Callable[[str, RbacActions], Any] | None = None,
@@ -77,11 +94,14 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
     include_trash: bool = True,
     include_bulk: bool = True,
     include_export: bool = True,
+    include_import: bool = True,
     supported_actions: Sequence[RbacActions | str] | None = None,
+    service_factory: Callable[[AsyncSession], Any] | None = None,
 ) -> APIRouter:
     """Dynamically generate standard CRUD endpoints for a domain resource."""
     router = APIRouter(prefix=prefix, tags=tags)
     effective_export_schema = schema_export or schema_out
+    effective_import_schema = schema_import or schema_create
 
     # Resolve supported actions from catalog if not explicitly given
     actions_set: set[str] | None = None
@@ -124,6 +144,16 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
     can_export = include_export and (
         actions_set is None or RbacActions.EXPORT.value in actions_set
     )
+    can_import = include_import and (
+        actions_set is None or RbacActions.IMPORT.value in actions_set
+    )
+
+    if service_factory is not None and resource_name is not None:
+        register_import_resource(
+            resource_name=resource_name,
+            schema_create=effective_import_schema,
+            service_factory=service_factory,
+        )
 
     def _scope_dep(action: RbacActions) -> Any:
         if permission_factory is not None and resource_name is not None:
@@ -202,6 +232,131 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
                 media_type=media_type,
                 headers=headers,
             )
+
+    if can_import:
+        from fastapi_plantilla.modules.jobs.dependencies import (  # noqa: PLC0415
+            get_job_service,
+        )
+        from fastapi_plantilla.modules.jobs.schema import (  # noqa: PLC0415
+            JobCreateRequest,
+            JobResponse,
+        )
+        from fastapi_plantilla.modules.storage.dependencies import (  # noqa: PLC0415
+            get_storage_provider,
+        )
+        from fastapi_plantilla.modules.storage.providers.base import (  # noqa: PLC0415
+            StorageProvider,
+        )
+
+        @router.get(
+            "/import-template",
+            response_class=Response,
+            summary=f"Download import template for {effective_import_schema.__name__}",
+        )
+        async def download_import_template(
+            format: ImportFormat = Query(
+                ImportFormat.EXCEL, description="Template format (excel/csv)"
+            ),
+            scope: ScopeContext = Depends(_scope_dep(RbacActions.IMPORT)),
+        ) -> Response:
+            content, media_type, filename = generate_import_template(
+                schema=effective_import_schema,
+                fmt=format,
+                resource_name=resource_name or effective_import_schema.__name__,
+            )
+            return Response(
+                content=content,
+                media_type=media_type,
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+
+        @router.post(
+            "/import",
+            response_model=JobResponse,
+            status_code=status.HTTP_202_ACCEPTED,
+            summary=f"Import {effective_import_schema.__name__} records from file",
+        )
+        async def import_data(
+            file: UploadFile = File(
+                ..., description="Excel (.xlsx) or CSV file to import"
+            ),
+            mode: ImportMode = Form(
+                ImportMode.ATOMIC, description="Transactional behavior"
+            ),
+            dry_run: bool = Form(
+                False, description="Simulate validation without committing to DB"
+            ),
+            current_user: Any = Depends(current_user_getter),
+            scope: ScopeContext = Depends(_scope_dep(RbacActions.IMPORT)),
+            job_service: Any = Depends(get_job_service),
+            storage_provider: StorageProvider = Depends(get_storage_provider),
+        ) -> JobResponse:
+            raw_fn = file.filename or "import.csv"
+            safe_fn = re.sub(r"[^a-zA-Z0-9_.-]", "_", Path(raw_fn).name)
+            lower_fn = safe_fn.lower()
+            if not lower_fn.endswith((".csv", ".xlsx")):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "Invalid file format. Only .csv and .xlsx files are supported."
+                    ),
+                )
+
+            file_bytes = await file.read()
+            if len(file_bytes) > DEFAULT_MAX_IMPORT_FILE_BYTES:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=(
+                        f"File exceeds maximum allowed size of "
+                        f"{DEFAULT_MAX_IMPORT_FILE_BYTES // (1024 * 1024)}MB."
+                    ),
+                )
+
+            fmt = ImportFormat.CSV if lower_fn.endswith(".csv") else ImportFormat.EXCEL
+            job_id = uuid.uuid4()
+            storage_key = f"{IMPORT_STORAGE_PREFIX}/{job_id}_{safe_fn}"
+            content_type = file.content_type or (
+                "text/csv"
+                if fmt == ImportFormat.CSV
+                else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            await storage_provider.upload(
+                storage_key, file_bytes, content_type=content_type
+            )
+
+            user_id = getattr(current_user, "id", None)
+            scope_dict = (
+                {
+                    "scope": (
+                        scope.scope.value
+                        if hasattr(scope.scope, "value")
+                        else str(scope.scope)
+                    ),
+                    "user_id": str(scope.user_id) if scope.user_id else None,
+                    "team_ids": [str(t) for t in (scope.team_ids or [])],
+                    "teammate_ids": [str(t) for t in (scope.teammate_ids or [])],
+                    "is_super_admin": scope.is_super_admin,
+                }
+                if scope
+                else None
+            )
+
+            job_req = JobCreateRequest(
+                name="imports.validate",
+                payload=ImportJobPayload(
+                    resource_name=resource_name
+                    or effective_import_schema.__name__.lower(),
+                    storage_key=storage_key,
+                    filename=safe_fn,
+                    format=fmt,
+                    mode=mode,
+                    dry_run=dry_run,
+                    user_id=user_id,
+                    scope=scope_dict,
+                ).model_dump(mode="json"),
+                entity_type=resource_name,
+            )
+            return await job_service.enqueue(job_req, created_by_id=user_id)
 
     # ==========================================
     # 2. CREATE OPERATIONS

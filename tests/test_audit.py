@@ -642,9 +642,11 @@ async def test_audit_entity_name_population_and_endpoints(
         assert data[0]["entity_name"] == "Audit Trail Team"
 
         # Check list endpoint with date filter (today YYYY-MM-DD)
-        from datetime import UTC, datetime
+        from datetime import datetime
 
-        today_str = datetime.now(UTC).strftime("%Y-%m-%d")
+        from fastapi_plantilla.core.crud.service_base import APP_TIMEZONE
+
+        today_str = datetime.now(APP_TIMEZONE).strftime("%Y-%m-%d")
         date_res = await client.get(
             f"/api/audit?entity_id={team.id}&created_at_from={today_str}&created_at_to={today_str}"
         )
