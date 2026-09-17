@@ -40,6 +40,7 @@ async def seed_modules(session: AsyncSession) -> dict[str, uuid.UUID]:
         sort_order = mod_def.get("sort_order", 0)
         is_active = mod_def.get("is_active", True)
         requires_super_admin = bool(mod_def.get("requires_super_admin", False))
+        show_in_nav = bool(mod_def.get("show_in_nav", True))
         raw_actions = mod_def.get("supported_actions", [])
         actions_val = [a.value if hasattr(a, "value") else str(a) for a in raw_actions]
 
@@ -58,6 +59,7 @@ async def seed_modules(session: AsyncSession) -> dict[str, uuid.UUID]:
                 is_active=is_active,
                 supported_actions=actions_val,
                 requires_super_admin=requires_super_admin,
+                show_in_nav=show_in_nav,
             )
             session.add(record)
             await session.flush()
@@ -73,6 +75,7 @@ async def seed_modules(session: AsyncSession) -> dict[str, uuid.UUID]:
             record.is_active = is_active
             record.supported_actions = actions_val
             record.requires_super_admin = requires_super_admin
+            record.show_in_nav = show_in_nav
             await session.flush()
 
         module_map[mod_def["code"]] = record.id

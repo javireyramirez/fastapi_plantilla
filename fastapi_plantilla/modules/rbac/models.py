@@ -64,6 +64,9 @@ class SystemModule(UUID7PrimaryKeyMixin, TimestampMixin, Base):
     requires_super_admin: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false"), nullable=False
     )
+    show_in_nav: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
 
     permissions: Mapped[list["RolePermission"]] = relationship(
         back_populates="module", cascade="all, delete-orphan"

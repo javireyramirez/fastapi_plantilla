@@ -41,6 +41,7 @@ async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:  # no
         "trash",
         "settings",
         "jobs",
+        "notifications",
     }
     assert expected_codes.issubset(mod_codes)
 
@@ -52,8 +53,13 @@ async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:  # no
     assert users_mod.category_order == 3
     assert users_mod.icon == "users"
     assert users_mod.sort_order == 0
+    assert users_mod.show_in_nav is True
     assert "RESTORE" in users_mod.supported_actions
     assert "EXPORT" in users_mod.supported_actions
+
+    notif_mod = next(m for m in modules if m.code == "notifications")
+    assert notif_mod.show_in_nav is False
+    assert notif_mod.supported_actions == []
 
     comp_mod = next(m for m in modules if m.code == "companies")
     assert comp_mod.name == "Compañías"
@@ -97,6 +103,8 @@ async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:  # no
     admin_perms = perm_res.scalars().all()
     assert len(admin_perms) >= 8 * 8  # 8 modules x 8 actions
     assert all(p.scope == ScopeType.GLOBAL for p in admin_perms)
+    notif_perms = [p for p in admin_perms if p.module_id == notif_mod.id]
+    assert len(notif_perms) == 0
 
     # 3. Verify superadmin user
     sa_res = await dbsession.execute(select(User).where(User.is_super_admin.is_(True)))

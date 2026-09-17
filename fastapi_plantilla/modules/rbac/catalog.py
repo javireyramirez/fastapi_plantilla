@@ -55,6 +55,7 @@ class SystemModuleDefinition(TypedDict, total=False):
     is_active: bool
     supported_actions: list[RbacActions]
     requires_super_admin: bool
+    show_in_nav: bool
 
 
 CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
@@ -77,6 +78,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
             RbacActions.RESTORE,
             RbacActions.EXPORT,
         ],
+        "show_in_nav": True,
     },
     {
         "code": "storage",
@@ -97,6 +99,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
             RbacActions.RESTORE,
             RbacActions.EXPORT,
         ],
+        "show_in_nav": True,
     },
     {
         "code": "users",
@@ -117,6 +120,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
             RbacActions.RESTORE,
             RbacActions.EXPORT,
         ],
+        "show_in_nav": True,
     },
     {
         "code": "teams",
@@ -137,6 +141,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
             RbacActions.RESTORE,
             RbacActions.SETTINGS,
         ],
+        "show_in_nav": True,
     },
     {
         "code": "roles",
@@ -156,6 +161,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
             RbacActions.DELETE,
             RbacActions.RESTORE,
         ],
+        "show_in_nav": True,
     },
     {
         "code": "sessions",
@@ -173,6 +179,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
             RbacActions.DELETE,
             RbacActions.EXPORT,
         ],
+        "show_in_nav": True,
     },
     {
         "code": "audit",
@@ -189,6 +196,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
             RbacActions.READ,
             RbacActions.EXPORT,
         ],
+        "show_in_nav": True,
     },
     {
         "code": "trash",
@@ -206,6 +214,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
             RbacActions.DELETE,
             RbacActions.RESTORE,
         ],
+        "show_in_nav": True,
     },
     {
         "code": "settings",
@@ -223,6 +232,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
             RbacActions.UPDATE,
         ],
         "requires_super_admin": True,
+        "show_in_nav": True,
     },
     {
         "code": "jobs",
@@ -240,6 +250,7 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
             RbacActions.READ,
             RbacActions.UPDATE,
         ],
+        "show_in_nav": True,
     },
     {
         "code": "notifications",
@@ -252,12 +263,8 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
         "icon": "bell",
         "sort_order": 9,
         "is_active": True,
-        "supported_actions": [
-            RbacActions.CREATE,
-            RbacActions.READ,
-            RbacActions.UPDATE,
-            RbacActions.DELETE,
-        ],
+        "supported_actions": [],
+        "show_in_nav": False,
     },
 ]
 
@@ -271,7 +278,7 @@ async def sync_system_modules(
     Ensures that all core system modules exist in `sys_modules`. If a module
     already exists by code, updates its human-readable name, description,
     category, category_name, category_icon, category_order, icon, sort_order,
-    is_active and supported_actions.
+    is_active, supported_actions, requires_super_admin and show_in_nav.
     """
     target_modules = modules or CORE_SYSTEM_MODULES
     synced: list[SystemModule] = []
@@ -293,6 +300,7 @@ async def sync_system_modules(
         sort_val = int(item.get("sort_order", 0))
         is_active_val = bool(item.get("is_active", True))
         requires_super_admin_val = bool(item.get("requires_super_admin", False))
+        show_in_nav_val = bool(item.get("show_in_nav", True))
         raw_actions = item.get("supported_actions", [])
         actions_val = [a.value if hasattr(a, "value") else str(a) for a in raw_actions]
 
@@ -312,6 +320,7 @@ async def sync_system_modules(
                 is_active=is_active_val,
                 supported_actions=actions_val,
                 requires_super_admin=requires_super_admin_val,
+                show_in_nav=show_in_nav_val,
             )
             session.add(new_mod)
             synced.append(new_mod)
@@ -329,6 +338,7 @@ async def sync_system_modules(
             existing.is_active = is_active_val
             existing.supported_actions = actions_val
             existing.requires_super_admin = requires_super_admin_val
+            existing.show_in_nav = show_in_nav_val
             synced.append(existing)
 
     await session.flush()

@@ -104,6 +104,7 @@ class RbacService(BaseAuditService[Role]):
                 for a in data.supported_actions
             ],
             requires_super_admin=data.requires_super_admin,
+            show_in_nav=data.show_in_nav,
         )
         await self._emit_audit(
             item=module,

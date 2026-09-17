@@ -56,6 +56,7 @@ class ModuleCreate(BaseModel):
     is_active: bool = True
     supported_actions: list[RbacActions] = Field(default_factory=list)
     requires_super_admin: bool = False
+    show_in_nav: bool = True
 
 
 class ModuleResponse(BaseModel):
@@ -76,6 +77,7 @@ class ModuleResponse(BaseModel):
     is_active: bool
     supported_actions: list[RbacActions] = Field(default_factory=list)
     requires_super_admin: bool = False
+    show_in_nav: bool = True
 
 
 class RolePermissionItem(BaseModel):

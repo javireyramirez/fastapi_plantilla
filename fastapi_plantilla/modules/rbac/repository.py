@@ -80,6 +80,7 @@ class RbacRepository(BaseRepository[Role]):
         is_active: bool = True,
         supported_actions: list[str] | None = None,
         requires_super_admin: bool = False,
+        show_in_nav: bool = True,
     ) -> SystemModule:
         """Create and persist a new system module."""
         module = SystemModule(
@@ -95,6 +96,7 @@ class RbacRepository(BaseRepository[Role]):
             is_active=is_active,
             supported_actions=supported_actions or [],
             requires_super_admin=requires_super_admin,
+            show_in_nav=show_in_nav,
         )
         self.session.add(module)
         await self.session.flush()

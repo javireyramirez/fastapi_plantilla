@@ -3,12 +3,12 @@
 import uuid
 from typing import Final, TypedDict
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.schema import ScopeType
 from fastapi_plantilla.core.mixins import generate_uuid7
-from fastapi_plantilla.modules.rbac.models import Role, RolePermission
+from fastapi_plantilla.modules.rbac.models import Role, RolePermission, SystemModule
 from fastapi_plantilla.modules.rbac.schema import RbacActions
 
 __all__ = ["ROLES_DEF", "RoleDef", "seed_roles"]
@@ -104,6 +104,20 @@ async def seed_roles(
     """
     role_map: dict[str, uuid.UUID] = {}
 
+    # Identify modules that support RBAC actions vs those without actions
+    mod_stmt = select(SystemModule).where(SystemModule.id.in_(module_map.values()))
+    mod_records = (await session.execute(mod_stmt)).scalars().all()
+    active_module_ids = {m.id for m in mod_records if m.supported_actions}
+    empty_module_ids = {m.id for m in mod_records if not m.supported_actions}
+
+    # Clean up any role permissions for modules without actions (e.g. notifications)
+    if empty_module_ids:
+        del_stmt = delete(RolePermission).where(
+            RolePermission.module_id.in_(empty_module_ids)
+        )
+        await session.execute(del_stmt)
+        await session.flush()
+
     for role_def in ROLES_DEF:
         stmt = select(Role).where(Role.slug == role_def["slug"])
         result = await session.execute(stmt)
@@ -131,8 +145,8 @@ async def seed_roles(
 
         role_map[role_def["slug"]] = role.id
 
-        # Seed role permissions across all known modules
-        for module_id in module_map.values():
+        # Seed role permissions across modules that support RBAC actions
+        for module_id in active_module_ids:
             for action in role_def["permissions"]["actions"]:
                 perm_stmt = select(RolePermission).where(
                     RolePermission.role_id == role.id,

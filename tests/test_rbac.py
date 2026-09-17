@@ -1006,3 +1006,31 @@ async def test_assignments_endpoints_privacy_superuser_only(
     res = await rbac_client.get("/api/rbac/assignments")
     assert res.status_code == status.HTTP_403_FORBIDDEN
     assert "SuperAdmin required" in res.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_modules_show_in_nav(
+    rbac_client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify show_in_nav column in module creation, listing, and seed sync."""
+    await sync_system_modules(dbsession)
+    await dbsession.commit()
+
+    # 1. GET /api/rbac/modules includes show_in_nav
+    res = await rbac_client.get("/api/rbac/modules")
+    assert res.status_code == status.HTTP_200_OK
+    modules = res.json()
+    notif_mod = next(m for m in modules if m["code"] == "notifications")
+    assert notif_mod["show_in_nav"] is False
+    companies_mod = next(m for m in modules if m["code"] == "companies")
+    assert companies_mod["show_in_nav"] is True
+
+    # 2. POST /api/rbac/modules with explicit show_in_nav=False
+    code = f"mod_hidden_{uuid.uuid4().hex[:6]}"
+    create_res = await rbac_client.post(
+        "/api/rbac/modules",
+        json={"code": code, "name": "Hidden Module", "show_in_nav": False},
+    )
+    assert create_res.status_code == status.HTTP_201_CREATED
+    assert create_res.json()["show_in_nav"] is False
