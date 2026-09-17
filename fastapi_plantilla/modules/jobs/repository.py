@@ -12,6 +12,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.core.crud.repository import build_scope_filter
 from fastapi_plantilla.core.crud.schema import ScopeContext, SortOrder
 from fastapi_plantilla.core.crud.service_base import normalize_filter_date
@@ -20,6 +21,10 @@ from fastapi_plantilla.modules.common.resolvers import (
     ENTITY_TO_CODE,
     normalize_entity_types,
 )
+from fastapi_plantilla.modules.jobs.constants import (
+    DEFAULT_LEASE_DURATION_SECONDS,
+    DEFAULT_MAX_RETRIES,
+)
 from fastapi_plantilla.modules.jobs.exceptions import (
     JobCancelledError,
     JobLeaseLostError,
@@ -27,6 +32,22 @@ from fastapi_plantilla.modules.jobs.exceptions import (
 from fastapi_plantilla.modules.jobs.models import Job, JobStatus
 
 __all__ = ["JobRepository"]
+
+
+def _claim_eligibility_criteria(now: datetime) -> Any:
+    """SQLAlchemy criteria for claiming pending or expired-lease jobs."""
+    return or_(
+        and_(
+            Job.status == JobStatus.PENDING,
+            Job.scheduled_at <= now,
+        ),
+        and_(
+            Job.status == JobStatus.RUNNING,
+            Job.lease_expires_at.is_not(None),
+            Job.lease_expires_at <= now,
+            Job.attempts < Job.max_retries,
+        ),
+    )
 
 
 class JobRepository:
@@ -58,8 +79,8 @@ class JobRepository:
         payload: dict[str, Any],
         entity_type: str | None = None,
         entity_id: uuid.UUID | None = None,
-        max_retries: int = 3,
-        lease_duration_seconds: int = 300,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        lease_duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
         scheduled_at: datetime | None = None,
         idempotency_key: str | None = None,
         created_by_id: uuid.UUID | None = None,
@@ -82,74 +103,42 @@ class JobRepository:
         await self.session.flush()
         return job
 
-    async def claim_next_job(self) -> Job | None:
-        """Atomically claim the next eligible job using SKIP LOCKED.
+    async def _claim_next_postgres(self, now: datetime) -> Job | None:
+        """Production atomic claim using PostgreSQL FOR UPDATE SKIP LOCKED."""
+        candidate_subquery = (
+            select(Job.id)
+            .where(_claim_eligibility_criteria(now))
+            .order_by(Job.scheduled_at.asc(), Job.created_at.asc())
+            .limit(1)
+            .with_for_update(skip_locked=True)
+            .scalar_subquery()
+        )
 
-        Advances lease_token. Covers:
-        1) PENDING jobs whose scheduled_at <= now()
-        2) RUNNING jobs whose lease has expired and attempts < max_retries
+        stmt = (
+            update(Job)
+            .where(Job.id == candidate_subquery)
+            .values(
+                status=JobStatus.RUNNING,
+                started_at=now,
+                attempts=Job.attempts + 1,
+                lease_token=Job.lease_token + 1,
+                lease_expires_at=now
+                + func.make_interval(0, 0, 0, 0, 0, 0, Job.lease_duration_seconds),
+            )
+            .returning(Job)
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def _claim_next_sqlite_fallback(self, now: datetime) -> Job | None:
+        """Fallback claim strictly for in-memory SQLite unit tests (non-concurrent).
+
+        SQLite does not support FOR UPDATE SKIP LOCKED. Emulates optimistic
+        concurrency token fencing in two discrete statements.
         """
-        now = datetime.now(UTC)
-        bind = self.session.bind
-        dialect_name = bind.dialect.name if bind else "postgresql"
-
-        if dialect_name == "postgresql":
-            # PostgreSQL single-statement atomic claim with FOR UPDATE SKIP LOCKED
-            candidate_subquery = (
-                select(Job.id)
-                .where(
-                    or_(
-                        and_(
-                            Job.status == JobStatus.PENDING,
-                            Job.scheduled_at <= now,
-                        ),
-                        and_(
-                            Job.status == JobStatus.RUNNING,
-                            Job.lease_expires_at.is_not(None),
-                            Job.lease_expires_at <= now,
-                            Job.attempts < Job.max_retries,
-                        ),
-                    )
-                )
-                .order_by(Job.scheduled_at.asc(), Job.created_at.asc())
-                .limit(1)
-                .with_for_update(skip_locked=True)
-                .scalar_subquery()
-            )
-
-            stmt = (
-                update(Job)
-                .where(Job.id == candidate_subquery)
-                .values(
-                    status=JobStatus.RUNNING,
-                    started_at=now,
-                    attempts=Job.attempts + 1,
-                    lease_token=Job.lease_token + 1,
-                    lease_expires_at=now
-                    + func.make_interval(0, 0, 0, 0, 0, 0, Job.lease_duration_seconds),
-                )
-                .returning(Job)
-            )
-            res = await self.session.execute(stmt)
-            return res.scalar_one_or_none()
-
-        # SQLite fallback (strictly for unit tests, non-concurrent)
         candidate_stmt = (
             select(Job)
-            .where(
-                or_(
-                    and_(
-                        Job.status == JobStatus.PENDING,
-                        Job.scheduled_at <= now,
-                    ),
-                    and_(
-                        Job.status == JobStatus.RUNNING,
-                        Job.lease_expires_at.is_not(None),
-                        Job.lease_expires_at <= now,
-                        Job.attempts < Job.max_retries,
-                    ),
-                )
-            )
+            .where(_claim_eligibility_criteria(now))
             .order_by(Job.scheduled_at.asc(), Job.created_at.asc())
             .limit(1)
         )
@@ -158,7 +147,6 @@ class JobRepository:
         if not candidate:
             return None
 
-        # Lock and increment token
         target_token = candidate.lease_token
         new_token = target_token + 1
         new_lease_expiry = now + timedelta(seconds=candidate.lease_duration_seconds)
@@ -177,6 +165,21 @@ class JobRepository:
         )
         res_upd = await self.session.execute(update_stmt)
         return res_upd.scalar_one_or_none()
+
+    async def claim_next_job(self) -> Job | None:
+        """Atomically claim the next eligible job.
+
+        Advances lease_token. Covers:
+        1) PENDING jobs whose scheduled_at <= now()
+        2) RUNNING jobs whose lease has expired and attempts < max_retries
+        """
+        now = datetime.now(UTC)
+        bind = self.session.bind
+        dialect_name = bind.dialect.name if bind else "postgresql"
+
+        if dialect_name == "postgresql":
+            return await self._claim_next_postgres(now)
+        return await self._claim_next_sqlite_fallback(now)
 
     async def update_progress_with_fencing(
         self,
@@ -354,9 +357,14 @@ class JobRepository:
         res = await self.session.execute(stmt)
         return int(getattr(res, "rowcount", 0))
 
-    async def purge_old_jobs(self, retention_days: int = 30) -> int:
+    async def purge_old_jobs(self, retention_days: int | None = None) -> int:
         """Delete finished jobs older than retention period."""
-        threshold = datetime.now(UTC) - timedelta(days=retention_days)
+        days = (
+            retention_days
+            if retention_days is not None
+            else settings.jobs_retention_days
+        )
+        threshold = datetime.now(UTC) - timedelta(days=days)
         stmt = delete(Job).where(
             Job.status.in_(
                 [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED]

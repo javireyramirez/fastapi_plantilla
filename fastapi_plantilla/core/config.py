@@ -144,6 +144,7 @@ class Settings(BaseSettings):
     jobs_max_concurrency: int = 2
     jobs_poll_interval_seconds: float = 2.0
     jobs_shutdown_timeout_seconds: float = 15.0
+    jobs_reaper_interval_seconds: float = 60.0
     jobs_retention_days: int = 30
 
     @property

@@ -7,7 +7,12 @@ from typing import Any
 from loguru import logger
 from pydantic import ValidationError
 
+from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.core.crud.schema import ScopeContext, ScopeType
+from fastapi_plantilla.modules.jobs.constants import (
+    DEFAULT_BACKOFF_BASE_SECONDS,
+    DEFAULT_BACKOFF_MAX_SECONDS,
+)
 from fastapi_plantilla.modules.jobs.exceptions import (
     JobCancelledError,
     JobError,
@@ -32,12 +37,13 @@ __all__ = ["JobService"]
 def calculate_backoff_delay(attempts: int) -> timedelta:
     """Calculate exponential backoff with random jitter.
 
-    Formula: min(5 * 2^(attempts-1) + jitter, 300) seconds.
+    Formula: min(base_delay * 2^(attempts-1) + jitter, max_delay) seconds.
     """
-    base_delay = 5.0
-    max_delay = 300.0
     jitter = secrets.SystemRandom().uniform(0.0, 1.0)
-    delay_seconds = min(base_delay * (2 ** max(0, attempts - 1)) + jitter, max_delay)
+    delay_seconds = min(
+        DEFAULT_BACKOFF_BASE_SECONDS * (2 ** max(0, attempts - 1)) + jitter,
+        DEFAULT_BACKOFF_MAX_SECONDS,
+    )
     return timedelta(seconds=delay_seconds)
 
 
@@ -79,6 +85,21 @@ class JobService:
         )
         return JobResponse.model_validate(job)
 
+    def _verify_scope(self, job: Job, scope: ScopeContext | None) -> None:
+        """Verify user has permission to access the specified job under RBAC scope."""
+        if not scope or scope.is_super_admin:
+            return
+
+        if scope.scope == ScopeType.OWN and job.created_by_id != scope.user_id:
+            raise JobNotFoundError(f"Job {job.id} not found.")
+
+        if scope.scope == ScopeType.TEAM:
+            allowed = set(scope.teammate_ids or [])
+            if scope.user_id:
+                allowed.add(scope.user_id)
+            if job.created_by_id not in allowed:
+                raise JobNotFoundError(f"Job {job.id} not found.")
+
     async def get_job(
         self, job_id: uuid.UUID, scope: ScopeContext | None = None
     ) -> JobResponse:
@@ -87,16 +108,7 @@ class JobService:
         if not job:
             raise JobNotFoundError(f"Job {job_id} not found.")
 
-        if scope and not scope.is_super_admin:
-            if scope.scope == ScopeType.OWN and job.created_by_id != scope.user_id:
-                raise JobNotFoundError(f"Job {job_id} not found.")
-            if scope.scope == ScopeType.TEAM:
-                allowed = set(scope.teammate_ids or [])
-                if scope.user_id:
-                    allowed.add(scope.user_id)
-                if job.created_by_id not in allowed:
-                    raise JobNotFoundError(f"Job {job_id} not found.")
-
+        self._verify_scope(job, scope)
         return JobResponse.model_validate(job)
 
     async def list_jobs(
@@ -127,16 +139,7 @@ class JobService:
         if not existing:
             raise JobNotFoundError(f"Job {job_id} not found.")
 
-        if scope and not scope.is_super_admin:
-            if scope.scope == ScopeType.OWN and existing.created_by_id != scope.user_id:
-                raise JobNotFoundError(f"Job {job_id} not found.")
-            if scope.scope == ScopeType.TEAM:
-                allowed = set(scope.teammate_ids or [])
-                if scope.user_id:
-                    allowed.add(scope.user_id)
-                if existing.created_by_id not in allowed:
-                    raise JobNotFoundError(f"Job {job_id} not found.")
-
+        self._verify_scope(existing, scope)
         job = await self.repo.cancel_job(job_id)
         if not job:
             return JobCancelResponse(
@@ -161,16 +164,7 @@ class JobService:
         if not existing:
             raise JobNotFoundError(f"Job {job_id} not found.")
 
-        if scope and not scope.is_super_admin:
-            if scope.scope == ScopeType.OWN and existing.created_by_id != scope.user_id:
-                raise JobNotFoundError(f"Job {job_id} not found.")
-            if scope.scope == ScopeType.TEAM:
-                allowed = set(scope.teammate_ids or [])
-                if scope.user_id:
-                    allowed.add(scope.user_id)
-                if existing.created_by_id not in allowed:
-                    raise JobNotFoundError(f"Job {job_id} not found.")
-
+        self._verify_scope(existing, scope)
         job = await self.repo.retry_failed_job(job_id)
         if not job:
             return JobRetryResponse(
@@ -183,6 +177,15 @@ class JobService:
             status=job.status,
             message="Job rescheduled for retry successfully.",
         )
+
+    async def purge_old_jobs(self, retention_days: int | None = None) -> int:
+        """Purge finished jobs older than retention period."""
+        days = (
+            retention_days
+            if retention_days is not None
+            else settings.jobs_retention_days
+        )
+        return await self.repo.purge_old_jobs(retention_days=days)
 
     async def execute_claimed_job(self, job: Job) -> None:
         """Execute a claimed job with fencing, validation, and error recovery."""

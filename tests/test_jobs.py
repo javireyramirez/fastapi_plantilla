@@ -275,8 +275,10 @@ async def test_job_idempotency_and_purge(
     job_u2 = await service.enqueue(req_scoped, created_by_id=user2.id)
     assert job_u2.id != job_u1.id  # Completely isolated across users
 
-    # Test purge
-    purged = await repo.purge_old_jobs(retention_days=30)
+    # Test purge via service and repository
+    purged_svc = await service.purge_old_jobs()
+    assert purged_svc == 0
+    purged = await repo.purge_old_jobs()
     assert purged == 0
 
 

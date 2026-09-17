@@ -239,7 +239,6 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
             RbacActions.CREATE,
             RbacActions.READ,
             RbacActions.UPDATE,
-            RbacActions.SETTINGS,
         ],
     },
 ]

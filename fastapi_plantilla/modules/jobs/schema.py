@@ -9,9 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.schema import PaginationParams
+from fastapi_plantilla.modules.jobs.constants import (
+    DEFAULT_LEASE_DURATION_SECONDS,
+    DEFAULT_MAX_RETRIES,
+)
 from fastapi_plantilla.modules.jobs.models import JobStatus
 
 __all__ = [
+    "JobActionResponse",
     "JobCancelResponse",
     "JobContext",
     "JobCreateRequest",
@@ -53,8 +58,10 @@ class JobCreateRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     entity_type: str | None = Field(default=None, max_length=50)
     entity_id: uuid.UUID | None = None
-    max_retries: int = Field(default=3, ge=0, le=10)
-    lease_duration_seconds: int = Field(default=300, ge=10, le=3600)
+    max_retries: int = Field(default=DEFAULT_MAX_RETRIES, ge=0, le=10)
+    lease_duration_seconds: int = Field(
+        default=DEFAULT_LEASE_DURATION_SECONDS, ge=10, le=3600
+    )
     scheduled_at: datetime | None = None
     idempotency_key: str | None = Field(default=None, max_length=100)
 
@@ -101,25 +108,27 @@ class JobFilterParams(PaginationParams):
         return tokens or None
 
 
-class JobCancelResponse(BaseModel):
-    """Response returned when a job is cancelled."""
+class JobActionResponse(BaseModel):
+    """Standard response model for single-job state transition actions."""
 
     id: uuid.UUID
     status: JobStatus
     message: str
 
 
-class JobRetryResponse(BaseModel):
-    """Response returned when a failed job is rescheduled."""
-
-    id: uuid.UUID
-    status: JobStatus
-    message: str
+# Aliases preserved for backward compatibility and semantic clarity
+JobCancelResponse = JobActionResponse
+JobRetryResponse = JobActionResponse
 
 
 @dataclass
 class JobContext[P: BaseModel | dict[str, Any]]:
-    """Runtime execution context provided to a job handler."""
+    """Runtime execution context provided to a job handler.
+
+    The `session` is the scoped SQLAlchemy AsyncSession managed by the worker
+    for this execution lifecycle, allowing handlers to perform database mutations
+    within the job's transaction boundary without premature abstraction layers.
+    """
 
     job_id: uuid.UUID
     name: str

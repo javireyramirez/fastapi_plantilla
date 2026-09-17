@@ -114,10 +114,10 @@ async def retry_job(
     job_id: uuid.UUID,
     service: Annotated[JobService, Depends(get_job_service)],
     scope: Annotated[
-        ScopeContext, Depends(require_permission("jobs", RbacActions.SETTINGS))
+        ScopeContext, Depends(require_permission("jobs", RbacActions.UPDATE))
     ],
 ) -> JobRetryResponse:
-    """Reschedule an uncompleted job back to PENDING (SETTINGS permission required)."""
+    """Reschedule an uncompleted job back to PENDING (UPDATE permission required)."""
     try:
         return await service.retry_job(job_id, scope=scope)
     except JobNotFoundError as exc:

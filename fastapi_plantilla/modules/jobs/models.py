@@ -22,6 +22,10 @@ from sqlalchemy.types import JSON
 
 from fastapi_plantilla.core.database import Base
 from fastapi_plantilla.core.mixins import TimestampMixin, UUID7PrimaryKeyMixin
+from fastapi_plantilla.modules.jobs.constants import (
+    DEFAULT_LEASE_DURATION_SECONDS,
+    DEFAULT_MAX_RETRIES,
+)
 
 __all__ = ["Job", "JobStatus"]
 
@@ -69,12 +73,14 @@ class Job(UUID7PrimaryKeyMixin, TimestampMixin, Base):
 
     # Execution attempts & retries
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    max_retries: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    max_retries: Mapped[int] = mapped_column(
+        Integer, default=DEFAULT_MAX_RETRIES, nullable=False
+    )
 
     # Fencing and lease recovery
     lease_token: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     lease_duration_seconds: Mapped[int] = mapped_column(
-        Integer, default=300, nullable=False
+        Integer, default=DEFAULT_LEASE_DURATION_SECONDS, nullable=False
     )
     lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

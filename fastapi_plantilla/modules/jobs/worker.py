@@ -1,6 +1,6 @@
 import asyncio
+import uuid
 from contextlib import suppress
-from typing import Any
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -21,6 +21,7 @@ class BackgroundJobWorker:
         max_concurrency: int | None = None,
         poll_interval: float | None = None,
         shutdown_timeout: float | None = None,
+        reaper_interval: float | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.max_concurrency = max_concurrency or settings.jobs_max_concurrency
@@ -28,13 +29,24 @@ class BackgroundJobWorker:
         self.shutdown_timeout = (
             shutdown_timeout or settings.jobs_shutdown_timeout_seconds
         )
+        self.reaper_interval = (
+            reaper_interval
+            if reaper_interval is not None
+            else settings.jobs_reaper_interval_seconds
+        )
+        self._last_reaper_run: float = 0.0
         self.semaphore = asyncio.Semaphore(self.max_concurrency)
         self.in_flight_tasks: set[asyncio.Task[None]] = set()
         self._running = False
         self._main_loop_task: asyncio.Task[None] | None = None
 
-    async def _process_job(self, job_id: Any) -> None:
-        """Process a claimed job under the concurrency semaphore."""
+    async def _process_job(self, job_id: uuid.UUID) -> None:
+        """Process a claimed job under the concurrency semaphore.
+
+        Instantiates JobRepository and JobService directly within the scoped
+        database session (Ponytail: avoids unnecessary factory abstractions for
+        a single worker-to-service pipeline).
+        """
         async with (
             self.semaphore,
             self.session_factory() as session,
@@ -55,10 +67,13 @@ class BackgroundJobWorker:
         """Attempt to claim and dispatch one job. Returns True if a job was claimed."""
         async with self.session_factory() as session, session.begin():
             repo = JobRepository(session)
-            # 1. Periodic reaper check on each poll
-            reaped = await repo.reap_zombies()
-            if reaped > 0:
-                logger.warning(f"Reaped {reaped} zombie jobs with expired leases.")
+            # 1. Periodic reaper check throttled by reaper_interval
+            loop_time = asyncio.get_running_loop().time()
+            if loop_time - self._last_reaper_run >= self.reaper_interval:
+                self._last_reaper_run = loop_time
+                reaped = await repo.reap_zombies()
+                if reaped > 0:
+                    logger.warning(f"Reaped {reaped} zombie jobs with expired leases.")
 
             # 2. Claim next available job
             claimed_job = await repo.claim_next_job()
