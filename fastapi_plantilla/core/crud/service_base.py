@@ -3,8 +3,9 @@ from __future__ import annotations
 import re
 import uuid
 from collections.abc import Sequence
-from datetime import datetime, time
-from typing import Any, ClassVar, NoReturn, Self
+from datetime import UTC, datetime, time
+from typing import Any, ClassVar, Final, NoReturn, Self
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel
@@ -30,9 +31,17 @@ from fastapi_plantilla.core.crud.schema import (
 )
 from fastapi_plantilla.core.database import Base
 
-__all__ = ["BaseCRUDService", "ExportResult", "adjust_end_of_day", "to_uuid"]
+__all__ = [
+    "APP_TIMEZONE",
+    "BaseCRUDService",
+    "ExportResult",
+    "adjust_end_of_day",
+    "normalize_filter_date",
+    "to_uuid",
+]
 
 _MODEL_COLUMN_CACHE: dict[type[Any], frozenset[str]] = {}
+APP_TIMEZONE: Final[ZoneInfo] = ZoneInfo("Europe/Madrid")
 
 
 class ExportResult(tuple[Any, ...]):
@@ -60,6 +69,28 @@ class ExportResult(tuple[Any, ...]):
         instance.total_count = total_count
         instance.is_truncated = is_truncated
         return instance
+
+
+def normalize_filter_date(
+    dt: datetime | None,
+    is_end_of_day: bool = False,
+    default_tz: ZoneInfo = APP_TIMEZONE,
+) -> datetime | None:
+    """Normalize date parameter for DB filtering.
+
+    If datetime is naive (no tzinfo), it is localized to default_tz (Europe/Madrid)
+    and then converted to UTC.
+    If is_end_of_day is True and time is midnight, adjusts to 23:59:59.999999
+    in local tz before converting to UTC.
+    """
+    if dt is None:
+        return None
+    res = dt
+    if is_end_of_day and res.time() == time.min:
+        res = res.replace(hour=23, minute=59, second=59, microsecond=999999)
+    if res.tzinfo is None:
+        res = res.replace(tzinfo=default_tz)
+    return res.astimezone(UTC)
 
 
 def adjust_end_of_day(dt: datetime | None) -> datetime | None:
@@ -226,9 +257,9 @@ class BaseCRUDService[ModelT: Base]:
             return []
         clauses: list[Any] = []
         if from_date is not None:
-            clauses.append(col >= from_date)
+            clauses.append(col >= normalize_filter_date(from_date, is_end_of_day=False))
         if to_date is not None:
-            clauses.append(col <= adjust_end_of_day(to_date))
+            clauses.append(col <= normalize_filter_date(to_date, is_end_of_day=True))
         return clauses
 
     def build_number_range_filter(

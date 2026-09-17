@@ -39,7 +39,7 @@ flowchart TD
     F7 --> F8["Fase 8: Rate Limiting & Auth Avanzado (⚪ Pendiente)"]
     F8 --> F9["Fase 9: Motor de Prompts IA Git-like en DB (⚪ Pendiente)"]
     F9 --> F10["Fase 10: LLM Gateway, FinOps & Pipeline RAG Vectorial (⚪ Pendiente)"]
-    F10 --> F11["Fase 11: Panel de Administración Web SQLAdmin Ops (⚪ Pendiente)"]
+    F10 --> F11["Fase 11: Panel SQLAdmin Ops (⚪ Pendiente de Evaluar / Opcional)"]
     F11 --> F12["Fase 12: Generador de Proyectos CLI & Scaffolding Modular (⚪ Pendiente)"]
     F12 --> F13["Fase 13: Auditoría de Seguridad & Blindaje contra Ataques Externos (⚪ Pendiente)"]
 ```
@@ -224,7 +224,10 @@ flowchart TD
 
 ---
 
-### ⚪ FASE 11: Panel de Administración Web Interno (SQLAdmin Ops Nativo) *(⏳ PENDIENTE)*
+### ⚪ FASE 11: Panel de Administración Web Interno (SQLAdmin Ops Nativo) *(⏳ PENDIENTE DE EVALUAR NECESIDAD / OPCIONAL)*
+
+> **Nota de Arquitectura (YAGNI / Filosofía Ponytail):** 
+> Esta fase queda marcada como **pendiente de evaluar su necesidad**. Si el proyecto ya cuenta con una aplicación frontend / backoffice de cliente que gestiona almacenamiento, usuarios, equipos, roles, sesiones, auditoría, papelera, configuración y jobs a través de los endpoints REST del backend, montar `sqladmin` y sus dependencias (`wtforms`, `jinja2`, etc.) en el proceso FastAPI puede resultar redundante y aportar sobrepeso innecesario. Se evaluará su implementación únicamente si se requiere un panel de rescate de bajo nivel (*break-glass*) exclusivo para SuperAdmins que opere directamente contra la BD sin pasar por la capa de cliente, o para proyectos *headless* sin frontend.
 * **11.1 Integración Nativa con SQLAdmin (`sqladmin`):** *(⏳ PENDIENTE)*
   * *Descripción:* Montaje de `Admin(app, engine, authentication_backend=...)` directamente en la aplicación FastAPI en el mismo proceso ASGI. Reutilización directa del 100% de los modelos existentes de SQLAlchemy 2.0 (`User`, `Account`, `Session`, `Document`, `PromptTemplate`, `AuditLog`, etc.) con interfaz moderna responsiva (Tabler UI) y cero duplicación de modelos.
   * *Problema que soluciona:* Otorga un panel de control y observabilidad completo, visual y seguro para el equipo de desarrollo directamente sobre los modelos SQLAlchemy y la base de datos existente, eliminando la necesidad de construir un frontend administrativo desde cero o añadir capas intermedias innecesarias (filosofía Ponytail).
@@ -298,7 +301,7 @@ flowchart TD
 | **Fase 8: Seguridad Global & Auth Avanzado** | ⚪ Pendiente | — | ⏳ Planificado |
 | **Fase 9: Motor Prompts IA Git-like en DB** | ⚪ Pendiente | — | ⏳ Planificado |
 | **Fase 10: LLM Gateway, FinOps & RAG** | ⚪ Pendiente | — | ⏳ Planificado |
-| **Fase 11: SQLAdmin Ops Web Nativo** | ⚪ Pendiente | — | ⏳ Planificado |
+| **Fase 11: SQLAdmin Ops Web Nativo** | ⚪ Pendiente de evaluar necesidad | — | ⏳ Opcional (YAGNI si hay Frontend) |
 | **Fase 12: Generador CLI & Scaffolding** | ⚪ Pendiente | — | ⏳ Planificado |
 | **Fase 13: Hardening OWASP & Batería Intrusión** | ⚪ Pendiente | — | ⏳ Planificado |
 

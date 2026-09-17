@@ -109,6 +109,8 @@ class JobService:
             entity_type=params.entity_type,
             entity_id=params.entity_id,
             search=params.search,
+            created_at_from=params.created_at_from,
+            created_at_to=params.created_at_to,
             sort_by=params.sort_by,
             sort_order=params.sort_order,
             page=params.page,

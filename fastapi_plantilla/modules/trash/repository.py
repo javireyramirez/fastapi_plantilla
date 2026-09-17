@@ -14,7 +14,7 @@ from fastapi_plantilla.core.crud.schema import (
     ScopeContext,
     SortOrder,
 )
-from fastapi_plantilla.core.crud.service_base import adjust_end_of_day
+from fastapi_plantilla.core.crud.service_base import normalize_filter_date
 from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.common.schema import EntityType
 from fastapi_plantilla.modules.rbac.catalog import CORE_SYSTEM_MODULES
@@ -68,13 +68,25 @@ def _build_date_filters(params: TrashFilterParams) -> list[Any]:
         clauses.append(TrashItem.expires_at > now)
 
     if params.deleted_at_from:
-        clauses.append(TrashItem.deleted_at >= params.deleted_at_from)
+        clauses.append(
+            TrashItem.deleted_at
+            >= normalize_filter_date(params.deleted_at_from, is_end_of_day=False)
+        )
     if params.deleted_at_to:
-        clauses.append(TrashItem.deleted_at <= adjust_end_of_day(params.deleted_at_to))
+        clauses.append(
+            TrashItem.deleted_at
+            <= normalize_filter_date(params.deleted_at_to, is_end_of_day=True)
+        )
     if params.expires_at_from:
-        clauses.append(TrashItem.expires_at >= params.expires_at_from)
+        clauses.append(
+            TrashItem.expires_at
+            >= normalize_filter_date(params.expires_at_from, is_end_of_day=False)
+        )
     if params.expires_at_to:
-        clauses.append(TrashItem.expires_at <= adjust_end_of_day(params.expires_at_to))
+        clauses.append(
+            TrashItem.expires_at
+            <= normalize_filter_date(params.expires_at_to, is_end_of_day=True)
+        )
     return clauses
 
 

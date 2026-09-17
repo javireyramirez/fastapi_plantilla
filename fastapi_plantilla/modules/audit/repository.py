@@ -1,6 +1,6 @@
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import asc, delete, desc, select
@@ -11,7 +11,7 @@ from fastapi_plantilla.core.crud.repository import (
     build_scope_filter,
 )
 from fastapi_plantilla.core.crud.schema import AuditEntry, ScopeContext
-from fastapi_plantilla.core.crud.service_base import adjust_end_of_day
+from fastapi_plantilla.core.crud.service_base import normalize_filter_date
 from fastapi_plantilla.modules.audit.models import AuditLog
 from fastapi_plantilla.modules.audit.schema import (
     DEFAULT_AUDIT_PURGE_LIMIT,
@@ -58,15 +58,15 @@ def _resolve_date_conditions(params: AuditFilterParams) -> list[Any]:
     """Build date range comparison conditions with timezone normalization."""
     conditions: list[Any] = []
     if params.created_at_from:
-        effective_from = params.created_at_from
-        if effective_from.tzinfo is None:
-            effective_from = effective_from.replace(tzinfo=UTC)
-        conditions.append(AuditLog.created_at >= effective_from)
+        conditions.append(
+            AuditLog.created_at
+            >= normalize_filter_date(params.created_at_from, is_end_of_day=False)
+        )
     if params.created_at_to:
-        effective_to = params.created_at_to
-        if effective_to.tzinfo is None:
-            effective_to = effective_to.replace(tzinfo=UTC)
-        conditions.append(AuditLog.created_at <= adjust_end_of_day(effective_to))
+        conditions.append(
+            AuditLog.created_at
+            <= normalize_filter_date(params.created_at_to, is_end_of_day=True)
+        )
     return conditions
 
 

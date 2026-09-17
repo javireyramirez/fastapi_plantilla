@@ -22,7 +22,7 @@ from fastapi_plantilla.modules.jobs.exceptions import (
     JobCancelledError,
     JobLeaseLostError,
 )
-from fastapi_plantilla.modules.jobs.models import JobStatus
+from fastapi_plantilla.modules.jobs.models import Job, JobStatus
 from fastapi_plantilla.modules.jobs.registry import (
     job_registry,
     register_job,
@@ -438,3 +438,233 @@ async def test_job_worker_lifecycle(dbsession: AsyncSession) -> None:
 
     await worker.stop()
     assert executed is True
+
+
+@pytest.mark.anyio
+async def test_jobs_status_and_date_filters(
+    dbsession: AsyncSession,
+    job_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Test multi-status and date filtering for jobs."""
+    admin, _ = job_users
+    repo = JobRepository(dbsession)
+    now = datetime.now(UTC)
+
+    await repo.create(
+        name="reports.generate_pdf",
+        payload={},
+        entity_type="company",
+        created_by_id=admin.id,
+    )
+    job_running = await repo.create(
+        name="audit.export_logs",
+        payload={},
+        entity_type="audit",
+        created_by_id=admin.id,
+    )
+    job_running.status = JobStatus.RUNNING
+    dbsession.add(job_running)
+
+    job_cancelled = await repo.create(
+        name="trash.purge_old",
+        payload={},
+        entity_type="trash",
+        created_by_id=admin.id,
+    )
+    job_cancelled.status = JobStatus.CANCELLED
+    dbsession.add(job_cancelled)
+
+    await dbsession.commit()
+
+    app = get_app()
+    app.dependency_overrides[get_db_session] = lambda: dbsession
+    app.dependency_overrides[get_current_user] = lambda: admin
+    app.dependency_overrides[get_current_active_superuser] = lambda: admin
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Multi-status filter via repeated query params
+        res = await client.get("/api/jobs?status=PENDING&status=RUNNING")
+        assert res.status_code == 200
+        statuses = {item["status"] for item in res.json()["data"]}
+        assert statuses.issubset({"PENDING", "RUNNING"})
+        names = {item["name"] for item in res.json()["data"]}
+        assert "reports.generate_pdf" in names
+        assert "audit.export_logs" in names
+        assert "trash.purge_old" not in names
+
+        # Multi-status filter via comma-separated param
+        res_comma = await client.get("/api/jobs?status=PENDING,CANCELLED")
+        assert res_comma.status_code == 200
+        statuses_comma = {item["status"] for item in res_comma.json()["data"]}
+        assert statuses_comma.issubset({"PENDING", "CANCELLED"})
+        names_comma = {item["name"] for item in res_comma.json()["data"]}
+        assert "reports.generate_pdf" in names_comma
+        assert "trash.purge_old" in names_comma
+        assert "audit.export_logs" not in names_comma
+
+        # Date filter (created_at_from and created_at_to)
+        today_str = now.strftime("%Y-%m-%d")
+        res_date = await client.get(
+            f"/api/jobs?created_at_from={today_str}&created_at_to={today_str}"
+        )
+        assert res_date.status_code == 200
+        assert len(res_date.json()["data"]) >= 3
+
+        # Date in future should return 0
+        res_future = await client.get("/api/jobs?created_at_from=2099-01-01")
+        assert res_future.status_code == 200
+        assert len(res_future.json()["data"]) == 0
+
+
+@pytest.mark.anyio
+async def test_jobs_entity_and_name_filters(
+    dbsession: AsyncSession,
+    job_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Test module entity filtering and partial name search for jobs."""
+    admin, _ = job_users
+    repo = JobRepository(dbsession)
+
+    await repo.create(
+        name="reports.generate_pdf",
+        payload={},
+        entity_type="company",
+        created_by_id=admin.id,
+    )
+    await repo.create(
+        name="audit.export_logs",
+        payload={},
+        entity_type="audit",
+        created_by_id=admin.id,
+    )
+    await repo.create(
+        name="trash.purge_old",
+        payload={},
+        entity_type="trash",
+        created_by_id=admin.id,
+    )
+    await repo.create(
+        name="storage.compress_images",
+        payload={},
+        entity_type="storage",
+        created_by_id=admin.id,
+    )
+    await dbsession.commit()
+
+    app = get_app()
+    app.dependency_overrides[get_db_session] = lambda: dbsession
+    app.dependency_overrides[get_current_user] = lambda: admin
+    app.dependency_overrides[get_current_active_superuser] = lambda: admin
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # "companies" module code matches "company" entity_type
+        res_mod = await client.get("/api/jobs?entity_type=companies")
+        assert res_mod.status_code == 200
+        data_mod = res_mod.json()["data"]
+        assert any(it["name"] == "reports.generate_pdf" for it in data_mod)
+        assert not any(it["name"] == "audit.export_logs" for it in data_mod)
+
+        # "audit" module filter
+        res_audit = await client.get("/api/jobs?entity_type=audit")
+        assert res_audit.status_code == 200
+        data_audit = res_audit.json()["data"]
+        assert any(it["name"] == "audit.export_logs" for it in data_audit)
+        assert not any(it["name"] == "reports.generate_pdf" for it in data_audit)
+
+        # "trash" module filter
+        res_trash = await client.get("/api/jobs?entity_type=trash")
+        assert res_trash.status_code == 200
+        data_trash = res_trash.json()["data"]
+        assert any(it["name"] == "trash.purge_old" for it in data_trash)
+
+        # Multiple entities comma-separated: audit,trash
+        res_multi = await client.get("/api/jobs?entity_type=audit,trash")
+        assert res_multi.status_code == 200
+        multi_names = {it["name"] for it in res_multi.json()["data"]}
+        assert "audit.export_logs" in multi_names
+        assert "trash.purge_old" in multi_names
+        assert "reports.generate_pdf" not in multi_names
+
+        # Partial "generate"
+        res_gen = await client.get("/api/jobs?name=generate")
+        assert res_gen.status_code == 200
+        data_gen = res_gen.json()["data"]
+        assert any(it["name"] == "reports.generate_pdf" for it in data_gen)
+        assert not any(it["name"] == "audit.export_logs" for it in data_gen)
+
+        # Case-insensitive "REPORTS"
+        res_case = await client.get("/api/jobs?name=REPORTS")
+        assert res_case.status_code == 200
+        data_case = res_case.json()["data"]
+        assert any(it["name"] == "reports.generate_pdf" for it in data_case)
+
+        # Search param
+        res_search = await client.get("/api/jobs?search=compress")
+        assert res_search.status_code == 200
+        data_search = res_search.json()["data"]
+        assert any(it["name"] == "storage.compress_images" for it in data_search)
+
+
+@pytest.mark.anyio
+async def test_jobs_date_filter_timezone_spain(
+    dbsession: AsyncSession,
+    job_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Test date filtering matches Spanish calendar days for UTC timestamps."""
+    admin, _ = job_users
+
+    # 2026-09-16 22:46:16 UTC is 2026-09-17 00:46:16 CEST (Spanish local time)
+    tz_job_early = Job(
+        name="tz.early_morning",
+        status=JobStatus.PENDING,
+        payload={},
+        created_at=datetime(2026, 9, 16, 22, 46, 16, tzinfo=UTC),
+        updated_at=datetime(2026, 9, 16, 22, 46, 16, tzinfo=UTC),
+        created_by_id=admin.id,
+    )
+    # 2026-09-17 21:30:00 UTC is 2026-09-17 23:30:00 CEST (late night same day)
+    tz_job_late = Job(
+        name="tz.late_night",
+        status=JobStatus.PENDING,
+        payload={},
+        created_at=datetime(2026, 9, 17, 21, 30, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 9, 17, 21, 30, 0, tzinfo=UTC),
+        created_by_id=admin.id,
+    )
+    dbsession.add(tz_job_early)
+    dbsession.add(tz_job_late)
+    await dbsession.commit()
+
+    app = get_app()
+    app.dependency_overrides[get_db_session] = lambda: dbsession
+    app.dependency_overrides[get_current_user] = lambda: admin
+    app.dependency_overrides[get_current_active_superuser] = lambda: admin
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Filtering for 2026-09-17 in Spain should match BOTH jobs
+        res = await client.get(
+            "/api/jobs?created_at_from=2026-09-17&created_at_to=2026-09-17"
+        )
+        assert res.status_code == 200
+        names = {item["name"] for item in res.json()["data"]}
+        assert "tz.early_morning" in names
+        assert "tz.late_night" in names
+
+        # Filtering up to 2026-09-16 in Spain should NOT match tz.early_morning
+        # because 22:46:16 UTC is already 2026-09-17 00:46:16 CEST
+        res_prev = await client.get("/api/jobs?created_at_to=2026-09-16")
+        assert res_prev.status_code == 200
+        prev_names = {item["name"] for item in res_prev.json()["data"]}
+        assert "tz.early_morning" not in prev_names
+        assert "tz.late_night" not in prev_names
+
+        # Filtering starting from 2026-09-18 in Spain should NOT match tz.late_night
+        res_next = await client.get("/api/jobs?created_at_from=2026-09-18")
+        assert res_next.status_code == 200
+        next_names = {item["name"] for item in res_next.json()["data"]}
+        assert "tz.early_morning" not in next_names
+        assert "tz.late_night" not in next_names

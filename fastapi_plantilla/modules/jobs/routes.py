@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from fastapi_plantilla.core.crud.schema import (
     PaginatedResponse,
@@ -49,7 +49,7 @@ async def enqueue_job(
     summary="List background jobs with filtering, pagination and RBAC scope",
 )
 async def list_jobs(
-    params: Annotated[JobFilterParams, Depends()],
+    params: Annotated[JobFilterParams, Query()],
     service: Annotated[JobService, Depends(get_job_service)],
     scope: Annotated[
         ScopeContext, Depends(require_permission("jobs", RbacActions.READ))

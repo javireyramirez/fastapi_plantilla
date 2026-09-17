@@ -12,7 +12,14 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi_plantilla.core.crud.schema import ScopeContext, ScopeType, SortOrder
+from fastapi_plantilla.core.crud.repository import build_scope_filter
+from fastapi_plantilla.core.crud.schema import ScopeContext, SortOrder
+from fastapi_plantilla.core.crud.service_base import normalize_filter_date
+from fastapi_plantilla.modules.common.resolvers import (
+    CODE_TO_ENTITY,
+    ENTITY_TO_CODE,
+    normalize_entity_types,
+)
 from fastapi_plantilla.modules.jobs.exceptions import (
     JobCancelledError,
     JobLeaseLostError,
@@ -361,11 +368,13 @@ class JobRepository:
 
     async def list_jobs(
         self,
-        status: JobStatus | None = None,
+        status: list[JobStatus] | JobStatus | None = None,
         name: str | None = None,
-        entity_type: str | None = None,
+        entity_type: list[str] | str | None = None,
         entity_id: uuid.UUID | None = None,
         search: str | None = None,
+        created_at_from: datetime | None = None,
+        created_at_to: datetime | None = None,
         sort_by: str = "created_at",
         sort_order: SortOrder = SortOrder.DESC,
         page: int = 1,
@@ -382,6 +391,8 @@ class JobRepository:
             entity_type=entity_type,
             entity_id=entity_id,
             search=search,
+            created_at_from=created_at_from,
+            created_at_to=created_at_to,
             scope=scope,
         )
 
@@ -413,33 +424,96 @@ class JobRepository:
         return items, total
 
 
+def _build_status_filter(
+    status: list[JobStatus] | JobStatus | None,
+) -> Any | None:
+    """Build status equality or IN clause for jobs."""
+    if not status:
+        return None
+    status_list = [status] if isinstance(status, (str, JobStatus)) else list(status)
+    if len(status_list) == 1:
+        return Job.status == status_list[0]
+    return Job.status.in_(status_list) if status_list else None
+
+
+def _build_name_filter(name: str | None, search: str | None) -> Any | None:
+    """Build partial name/search filter using icontains."""
+    if name and search and name.strip() != search.strip():
+        return or_(
+            Job.name.icontains(name.strip(), autoescape=True),
+            Job.name.icontains(search.strip(), autoescape=True),
+        )
+    search_term = (name or search or "").strip()
+    return Job.name.icontains(search_term, autoescape=True) if search_term else None
+
+
+def _build_entity_filter(
+    entity_type: list[str] | str | None,
+) -> Any | None:
+    """Build entity/module filter with canonical resolution."""
+    if not entity_type:
+        return None
+    types_list = [entity_type] if isinstance(entity_type, str) else list(entity_type)
+    all_targets: set[str] = set()
+    for t in types_list:
+        norm_list = normalize_entity_types(t)
+        for item in norm_list if norm_list else [t.strip().lower()]:
+            all_targets.add(item)
+            if item in CODE_TO_ENTITY:
+                all_targets.add(CODE_TO_ENTITY[item])
+            if item in ENTITY_TO_CODE:
+                all_targets.add(ENTITY_TO_CODE[item])
+    if len(all_targets) == 1:
+        return Job.entity_type == next(iter(all_targets))
+    return Job.entity_type.in_(all_targets) if all_targets else None
+
+
+def _build_date_filters(
+    created_at_from: datetime | None,
+    created_at_to: datetime | None,
+) -> list[Any]:
+    """Build date range filters with timezone normalization."""
+    filters: list[Any] = []
+    if created_at_from:
+        filters.append(
+            Job.created_at
+            >= normalize_filter_date(created_at_from, is_end_of_day=False)
+        )
+    if created_at_to:
+        filters.append(
+            Job.created_at <= normalize_filter_date(created_at_to, is_end_of_day=True)
+        )
+    return filters
+
+
 def _build_job_filters(
-    status: JobStatus | None = None,
+    status: list[JobStatus] | JobStatus | None = None,
     name: str | None = None,
-    entity_type: str | None = None,
+    entity_type: list[str] | str | None = None,
     entity_id: uuid.UUID | None = None,
     search: str | None = None,
+    created_at_from: datetime | None = None,
+    created_at_to: datetime | None = None,
     scope: ScopeContext | None = None,
 ) -> list[Any]:
     filters: list[Any] = []
-    if status:
-        filters.append(Job.status == status)
-    if name:
-        filters.append(Job.name == name)
-    if entity_type:
-        filters.append(Job.entity_type == entity_type)
+
+    scope_clause = build_scope_filter(Job.created_by_id, scope)
+    if scope_clause is not None:
+        filters.append(scope_clause)
+
+    if (st_filter := _build_status_filter(status)) is not None:
+        filters.append(st_filter)
+
+    if (name_filter := _build_name_filter(name, search)) is not None:
+        filters.append(name_filter)
+
+    if (ent_filter := _build_entity_filter(entity_type)) is not None:
+        filters.append(ent_filter)
+
     if entity_id:
         filters.append(Job.entity_id == entity_id)
-    if search:
-        filters.append(Job.name.ilike(f"%{search}%"))
 
-    if scope and not scope.is_super_admin:
-        if scope.scope == ScopeType.OWN:
-            filters.append(Job.created_by_id == scope.user_id)
-        elif scope.scope == ScopeType.TEAM:
-            allowed_actors = set(scope.teammate_ids or [])
-            if scope.user_id:
-                allowed_actors.add(scope.user_id)
-            filters.append(Job.created_by_id.in_(allowed_actors))
+    filters.extend(_build_date_filters(created_at_from, created_at_to))
 
     return filters

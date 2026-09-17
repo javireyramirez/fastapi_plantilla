@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from fastapi_plantilla.core.crud.repository import BaseRepository
-from fastapi_plantilla.core.crud.service_base import adjust_end_of_day
+from fastapi_plantilla.core.crud.service_base import normalize_filter_date
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.auth.models import User
@@ -282,10 +282,15 @@ class RbacRepository(BaseRepository[Role]):
                 == params.entity_type.strip().upper()
             )
         if params.assigned_from:
-            conditions.append(RoleAssignment.created_at >= params.assigned_from)
+            conditions.append(
+                RoleAssignment.created_at
+                >= normalize_filter_date(params.assigned_from, is_end_of_day=False)
+            )
         if params.assigned_to:
-            adjusted_to = adjust_end_of_day(params.assigned_to)
-            conditions.append(RoleAssignment.created_at <= adjusted_to)
+            conditions.append(
+                RoleAssignment.created_at
+                <= normalize_filter_date(params.assigned_to, is_end_of_day=True)
+            )
         return conditions
 
     def _resolve_assignment_sort(self, sort_by: str, sort_order: str) -> Any:

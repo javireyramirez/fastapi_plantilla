@@ -9,6 +9,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from fastapi_plantilla.core.crud.service_base import normalize_filter_date
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import RecordStatus
 from fastapi_plantilla.modules.auth.models import (
@@ -425,13 +426,25 @@ class AuthRepository:
             conditions.append(Session.is_valid.is_(False))
 
         if created_at_from is not None:
-            conditions.append(Session.created_at >= created_at_from)
+            conditions.append(
+                Session.created_at
+                >= normalize_filter_date(created_at_from, is_end_of_day=False)
+            )
         if created_at_to is not None:
-            conditions.append(Session.created_at <= created_at_to)
+            conditions.append(
+                Session.created_at
+                <= normalize_filter_date(created_at_to, is_end_of_day=True)
+            )
         if expires_at_from is not None:
-            conditions.append(Session.expires_at >= expires_at_from)
+            conditions.append(
+                Session.expires_at
+                >= normalize_filter_date(expires_at_from, is_end_of_day=False)
+            )
         if expires_at_to is not None:
-            conditions.append(Session.expires_at <= expires_at_to)
+            conditions.append(
+                Session.expires_at
+                <= normalize_filter_date(expires_at_to, is_end_of_day=True)
+            )
 
         if search and search.strip():
             term = f"%{search.strip()}%"

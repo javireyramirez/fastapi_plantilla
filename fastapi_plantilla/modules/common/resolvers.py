@@ -20,6 +20,11 @@ CODE_TO_ENTITY: dict[str, str] = {
     "roles": "role",
     "storage": "storage",
     "auth": "user",
+    "audit": "audit",
+    "trash": "trash",
+    "jobs": "job",
+    "settings": "setting",
+    "sessions": "session",
 }
 
 # Canonical reverse mapping from singular entity types to plural module codes
@@ -34,6 +39,14 @@ ENTITY_TO_CODE: dict[str, str] = {
     "role": "roles",
     "roles": "roles",
     "storage": "storage",
+    "audit": "audit",
+    "trash": "trash",
+    "job": "jobs",
+    "jobs": "jobs",
+    "setting": "settings",
+    "settings": "settings",
+    "session": "sessions",
+    "sessions": "sessions",
 }
 
 # Human-readable Spanish display names for system modules
@@ -48,6 +61,14 @@ MODULE_NAMES: dict[str, str] = {
     "roles": "Roles",
     "role": "Roles",
     "storage": "Almacenamiento",
+    "audit": "Auditoría",
+    "trash": "Papelera",
+    "jobs": "Tareas Asíncronas",
+    "job": "Tareas Asíncronas",
+    "settings": "Configuración",
+    "setting": "Configuración",
+    "sessions": "Sesiones",
+    "session": "Sesiones",
 }
 
 _ENTITY_REGISTRY: dict[str, type[Base]] = {}

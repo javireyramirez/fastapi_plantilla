@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.schema import PaginationParams
@@ -62,10 +62,43 @@ class JobCreateRequest(BaseModel):
 class JobFilterParams(PaginationParams):
     """Query filters for listing jobs."""
 
-    status: JobStatus | None = None
+    status: list[JobStatus] | None = None
     name: str | None = None
-    entity_type: str | None = None
+    entity_type: list[str] | None = None
     entity_id: uuid.UUID | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def parse_status(cls, v: Any) -> list[JobStatus] | None:
+        """Parse singular, comma-separated, or list of statuses."""
+        if not v:
+            return None
+        items = [v] if isinstance(v, (str, JobStatus)) else list(v)
+        tokens: list[JobStatus] = []
+        for it in items:
+            if isinstance(it, JobStatus):
+                tokens.append(it)
+            elif isinstance(it, str):
+                for raw_part in it.split(","):
+                    token = raw_part.strip()
+                    if token:
+                        tokens.append(JobStatus(token.upper()))
+        return tokens or None
+
+    @field_validator("entity_type", mode="before")
+    @classmethod
+    def parse_entity_type(cls, v: Any) -> list[str] | None:
+        """Parse singular, comma-separated, or list of entity/module types."""
+        if not v:
+            return None
+        items = [v] if isinstance(v, str) else list(v)
+        tokens: list[str] = []
+        for it in items:
+            for raw_part in str(it).split(","):
+                token = raw_part.strip()
+                if token:
+                    tokens.append(token.lower())
+        return tokens or None
 
 
 class JobCancelResponse(BaseModel):
