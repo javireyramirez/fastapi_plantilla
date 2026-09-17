@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from fastapi_plantilla.core.config import settings
 from scripts.seeds.modules import seed_modules
+from scripts.seeds.notifications import seed_notifications
 from scripts.seeds.roles import seed_roles
 from scripts.seeds.settings import seed_settings
 from scripts.seeds.superadmin import seed_superadmin
@@ -26,17 +27,17 @@ async def run_all_seeds(session: AsyncSession) -> None:
     logger.info("🌱 Iniciando seed del sistema...")
 
     # 1. Modules
-    logger.info("📦 [1/5] Creando/actualizando módulos del sistema...")
+    logger.info("📦 [1/6] Creando/actualizando módulos del sistema...")
     module_map = await seed_modules(session)
     logger.info(f"   ✔ Módulos sincronizados: {len(module_map)}")
 
     # 2. Roles & Permissions
-    logger.info("🛡️ [2/5] Creando/actualizando roles y permisos...")
+    logger.info("🛡️ [2/6] Creando/actualizando roles y permisos...")
     role_map = await seed_roles(session, module_map)
     logger.info(f"   ✔ Roles sincronizados: {len(role_map)}")
 
     # 3. SuperAdmin
-    logger.info("👑 [3/5] Creando/actualizando usuario superadmin inicial...")
+    logger.info("👑 [3/6] Creando/actualizando usuario superadmin inicial...")
     superadmin = await seed_superadmin(session)
     if superadmin:
         logger.info(f"   ✔ Superadmin verificado: {superadmin.email}")
@@ -44,14 +45,22 @@ async def run_all_seeds(session: AsyncSession) -> None:
         logger.warning("   ⚠ Superadmin no configurado en variables de entorno")
 
     # 4. Teams & Role assignments
-    logger.info("👥 [4/5] Creando/actualizando equipos globales y asignaciones...")
+    logger.info("👥 [4/6] Creando/actualizando equipos globales y asignaciones...")
     team_map = await seed_teams(session, role_map, superadmin)
     logger.info(f"   ✔ Equipos sincronizados: {len(team_map)}")
 
     # 5. System Settings
-    logger.info("⚙️ [5/5] Creando/actualizando settings dinámicos del sistema...")
+    logger.info("⚙️ [5/6] Creando/actualizando settings dinámicos del sistema...")
     settings_list = await seed_settings(session)
     logger.info(f"   ✔ Settings sincronizados: {len(settings_list)}")
+
+    # 6. Welcome Notification
+    logger.info("🔔 [6/6] Creando/verificando notificación de bienvenida...")
+    notification = await seed_notifications(session, superadmin)
+    if notification and superadmin:
+        logger.info(f"   ✔ Notificación configurada para: {superadmin.email}")
+    else:
+        logger.warning("   ⚠ Notificación omitida (superadmin no disponible)")
 
     logger.info("✅ Seed completado exitosamente.\n")
 

@@ -45,8 +45,10 @@ class BackgroundJobWorker:
 
         Instantiates JobRepository and JobService directly within the scoped
         database session (Ponytail: avoids unnecessary factory abstractions for
-        a single worker-to-service pipeline).
+        a single worker-to-service pipeline). Dispatches post-commit actions
+        (such as SSE events) strictly after the database transaction commits.
         """
+        post_commit_actions = []
         async with (
             self.semaphore,
             self.session_factory() as session,
@@ -57,7 +59,11 @@ class BackgroundJobWorker:
             job = await repo.get_by_id(job_id)
             if not job:
                 return
-            await service.execute_claimed_job(job)
+            post_commit_actions = await service.execute_claimed_job(job)
+
+        for action in post_commit_actions:
+            with suppress(Exception):
+                action()
 
     def _on_task_finished(self, task: asyncio.Task[None]) -> None:
         """Remove finished task from tracking set."""

@@ -2,12 +2,14 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 
 from fastapi_plantilla.core.crud.schema import (
     PaginatedResponse,
     PaginationMeta,
     ScopeContext,
 )
+from fastapi_plantilla.core.events import event_broadcaster
 from fastapi_plantilla.modules.jobs.dependencies import get_job_service
 from fastapi_plantilla.modules.jobs.exceptions import JobNotFoundError
 from fastapi_plantilla.modules.jobs.schema import (
@@ -18,7 +20,10 @@ from fastapi_plantilla.modules.jobs.schema import (
     JobRetryResponse,
 )
 from fastapi_plantilla.modules.jobs.service import JobService
-from fastapi_plantilla.modules.rbac.dependencies import require_permission
+from fastapi_plantilla.modules.rbac.dependencies import (
+    require_permission,
+    require_sse_permission,
+)
 from fastapi_plantilla.modules.rbac.schema import RbacActions
 
 __all__ = ["router"]
@@ -59,6 +64,64 @@ async def list_jobs(
     items, total = await service.list_jobs(params, scope=scope)
     meta = PaginationMeta.create(page=params.page, limit=params.limit, total=total)
     return PaginatedResponse(data=items, meta=meta)
+
+
+@router.get(
+    "/stream",
+    summary="Real-time Server-Sent Events stream for background jobs",
+)
+async def stream_jobs(
+    scope: Annotated[
+        ScopeContext, Depends(require_sse_permission("jobs", RbacActions.READ))
+    ],
+) -> StreamingResponse:
+    """Stream real-time job execution events for the current user."""
+    if scope.user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No autenticado",
+        )
+
+    return StreamingResponse(
+        event_broadcaster.subscribe_user(scope.user_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get(
+    "/{job_id}/stream",
+    summary="Real-time Server-Sent Events stream for a specific background job",
+)
+async def stream_job(
+    job_id: uuid.UUID,
+    service: Annotated[JobService, Depends(get_job_service)],
+    scope: Annotated[
+        ScopeContext, Depends(require_sse_permission("jobs", RbacActions.READ))
+    ],
+) -> StreamingResponse:
+    """Stream real-time progress and terminal events for a single job."""
+    try:
+        await service.get_job(job_id, scope=scope)
+    except JobNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    return StreamingResponse(
+        event_broadcaster.subscribe_job(job_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get(

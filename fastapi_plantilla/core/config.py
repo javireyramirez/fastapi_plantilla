@@ -147,6 +147,16 @@ class Settings(BaseSettings):
     jobs_reaper_interval_seconds: float = 60.0
     jobs_retention_days: int = 30
 
+    # SSE & Real-Time Events
+    sse_max_queues_per_user: int = 5
+    sse_max_queues_per_job: int = 5
+    sse_max_queue_size: int = 50
+    sse_ping_interval_seconds: float = 15.0
+
+    # In-App Notifications
+    notifications_batch_chunk_size: int = 100
+    notifications_fan_out_max_recipients: int = 500
+
     @property
     def db_url(self) -> URL:
         """Assemble database URL from settings."""

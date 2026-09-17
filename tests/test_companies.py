@@ -16,6 +16,10 @@ from fastapi_plantilla.modules.auth.dependencies import (
 from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.auth.schema import UserResponse
 from fastapi_plantilla.modules.companies.routes import router as companies_router
+from fastapi_plantilla.modules.notifications.models import (
+    Notification,
+    NotificationType,
+)
 from fastapi_plantilla.modules.rbac.models import (
     RbacActions,
     Role,
@@ -617,3 +621,132 @@ async def test_companies_restore_out_of_scope_does_not_leak_nif_conflict(
     context.user = regular_user
     res_restore = await client.post(f"/api/companies/{c1_id}/restore")
     assert res_restore.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.anyio
+async def test_company_notify_by_id_endpoint(
+    companies_client: tuple[AsyncClient, CompaniesAuthContext],
+    setup_companies_context: tuple[UserResponse, UserResponse],
+    dbsession: AsyncSession,
+) -> None:
+    """Verify dispatching a localized notification for a specific company."""
+    client, context = companies_client
+    admin_user, regular_user = setup_companies_context
+    context.user = admin_user
+
+    # 1. Create company
+    c_res = await client.post(
+        "/api/companies",
+        json={
+            "name": "Acme Notification Target",
+            "nif": f"NOTIF_{uuid.uuid4().hex[:6]}",
+        },
+    )
+    assert c_res.status_code == status.HTTP_201_CREATED
+    company_id = c_res.json()["id"]
+
+    # 2. Dispatch notification with localized title and comment from front
+    payload = {
+        "recipient_id": str(regular_user.id),
+        "title": "Empresa asignada para revisión",
+        "comment": "Por favor revisa la documentación de la empresa Acme.",
+        "notification_type": "INFO",
+        "data": {"priority": "high"},
+    }
+    notify_res = await client.post(
+        f"/api/companies/{company_id}/notify",
+        json=payload,
+    )
+    assert notify_res.status_code == status.HTTP_201_CREATED
+    data = notify_res.json()
+    assert data["recipient_id"] == str(regular_user.id)
+    assert data["title"] == "Empresa asignada para revisión"
+    assert data["message"] == "Por favor revisa la documentación de la empresa Acme."
+    assert data["type"] == "INFO"
+    assert data["entity_type"] == "company"
+    assert data["entity_id"] == company_id
+    assert data["action_url"] == f"/companies/{company_id}"
+    assert data["data"]["company_name"] == "Acme Notification Target"
+    assert data["data"]["priority"] == "high"
+
+    # 3. Verify notification persisted in database
+    notif_id = uuid.UUID(data["id"])
+    persisted = await dbsession.get(Notification, notif_id)
+    assert persisted is not None
+    assert persisted.recipient_id == regular_user.id
+    assert persisted.notification_type == NotificationType.INFO
+
+
+@pytest.mark.anyio
+async def test_company_notify_general_endpoint(
+    companies_client: tuple[AsyncClient, CompaniesAuthContext],
+    setup_companies_context: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify dispatching a general company notification and message alias."""
+    client, context = companies_client
+    admin_user, regular_user = setup_companies_context
+    context.user = admin_user
+
+    # Test with 'message' instead of 'comment' (alias support)
+    payload = {
+        "recipient_id": str(regular_user.id),
+        "title": "Actualización global del módulo",
+        "message": "Se han importado 20 empresas nuevas al sistema.",
+        "notification_type": "SUCCESS",
+    }
+    notify_res = await client.post("/api/companies/notify", json=payload)
+    assert notify_res.status_code == status.HTTP_201_CREATED
+    data = notify_res.json()
+    assert data["recipient_id"] == str(regular_user.id)
+    assert data["title"] == "Actualización global del módulo"
+    assert data["message"] == "Se han importado 20 empresas nuevas al sistema."
+    assert data["type"] == "SUCCESS"
+    assert data["entity_type"] == "company"
+    assert data["entity_id"] is None
+    assert data["action_url"] == "/companies"
+
+
+@pytest.mark.anyio
+async def test_company_notify_error_cases(
+    companies_client: tuple[AsyncClient, CompaniesAuthContext],
+    setup_companies_context: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify 404 responses for missing company or invalid recipient."""
+    client, context = companies_client
+    admin_user, regular_user = setup_companies_context
+    context.user = admin_user
+
+    missing_company_id = uuid.uuid4()
+    missing_user_id = uuid.uuid4()
+
+    # 1. Company not found
+    res1 = await client.post(
+        f"/api/companies/{missing_company_id}/notify",
+        json={
+            "recipient_id": str(regular_user.id),
+            "title": "Aviso",
+            "comment": "Comentario de prueba",
+        },
+    )
+    assert res1.status_code == status.HTTP_404_NOT_FOUND
+
+    # 2. Recipient not found
+    c_res = await client.post(
+        "/api/companies",
+        json={
+            "name": "Test Company For Error",
+            "nif": f"ERR_{uuid.uuid4().hex[:6]}",
+        },
+    )
+    company_id = c_res.json()["id"]
+
+    res2 = await client.post(
+        f"/api/companies/{company_id}/notify",
+        json={
+            "recipient_id": str(missing_user_id),
+            "title": "Aviso",
+            "comment": "Comentario de prueba",
+        },
+    )
+    assert res2.status_code == status.HTTP_404_NOT_FOUND
+    assert "destinatario" in res2.json()["detail"].lower()

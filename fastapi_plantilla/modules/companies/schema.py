@@ -1,17 +1,25 @@
 import uuid
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from fastapi_plantilla.core.crud.schema import (
     AuditFieldsSchema,
     PaginationParams,
     UserReference,
 )
+from fastapi_plantilla.modules.notifications.models import NotificationType
 
 __all__ = [
     "CompaniesPaginationParams",
     "CompanyCreate",
+    "CompanyNotifyRequest",
     "CompanyResponse",
     "CompanyUpdate",
 ]
@@ -70,3 +78,50 @@ class CompaniesPaginationParams(PaginationParams):
             part.strip() for it in items for part in str(it).split(",") if part.strip()
         ]
         return tokens or None
+
+
+class CompanyNotifyRequest(BaseModel):
+    """Payload for dispatching a localized notification from the companies domain."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    recipient_id: uuid.UUID = Field(
+        ...,
+        description="ID del usuario destinatario de la notificación",
+    )
+    title: str = Field(
+        ...,
+        min_length=1,
+        max_length=150,
+        description="Título de la notificación (localizado desde el frontend)",
+    )
+    comment: str = Field(
+        ...,
+        min_length=1,
+        description="Comentario o mensaje de notificación (localizado en frontend)",
+    )
+    company_id: uuid.UUID | None = Field(
+        default=None,
+        description="ID opcional de la empresa (si no se pasa en la ruta)",
+    )
+    notification_type: NotificationType = Field(
+        default=NotificationType.INFO,
+        description="Tipo de notificación (INFO, SUCCESS, WARNING, ERROR, SYSTEM)",
+    )
+    action_url: str | None = Field(
+        default=None,
+        max_length=255,
+        description="URL de redirección opcional",
+    )
+    data: dict[str, Any] | None = Field(
+        default=None,
+        description="Metadatos contextuales adicionales en formato JSON",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def check_comment_or_message(cls, data: Any) -> Any:
+        """Allow 'message' as an alias for 'comment' for client convenience."""
+        if isinstance(data, dict) and "comment" not in data and "message" in data:
+            data["comment"] = data["message"]
+        return data

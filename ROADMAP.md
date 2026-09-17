@@ -35,7 +35,7 @@ flowchart TD
     F3 --> F4["Fase 4: Almacenamiento Multi-Cloud & Papelera (✅ Completado)"]
     F4 --> F5["Fase 5: Background Jobs en BD, Ingesta & Exportación (🟡 5.1 y 5.2 Completados)"]
     F5 --> F6["Fase 6: Módulo de Ejemplo 'Companies' (✅ Completado)"]
-    F6 --> F7["Fase 7: Auditoría Centralizada, Settings, Notificaciones & Métricas (🟡 7.1 Completado)"]
+    F6 --> F7["Fase 7: Auditoría, Settings, Notificaciones & Métricas (🟢 7.1, 7.2 y 7.3 Completados)"]
     F7 --> F8["Fase 8: Rate Limiting & Auth Avanzado (⚪ Pendiente)"]
     F8 --> F9["Fase 9: Motor de Prompts IA Git-like en DB (⚪ Pendiente)"]
     F9 --> F10["Fase 10: LLM Gateway, FinOps & Pipeline RAG Vectorial (⚪ Pendiente)"]
@@ -151,19 +151,25 @@ flowchart TD
 
 ---
 
-### 🟡 FASE 7: Auditoría Centralizada, Settings Dinámicos, Notificaciones & Métricas Prometheus *(🟡 7.1 COMPLETADO)*
+### 🟡 FASE 7: Auditoría Centralizada, Settings Dinámicos, Notificaciones & Métricas Prometheus *(🟢 7.1, 7.2 y 7.3 COMPLETADOS / ⏳ 7.4 PENDIENTE)*
 * **7.1 Módulo de Auditoría (`modules/audit`):** *(COMPLETADO)*
   * *Descripción:* Tabla `sys_audit_logs` con registro de acciones (`CREATE`, `UPDATE`, `LOGIN`, etc.), diffs `before`/`after`, IP, User-Agent, ofuscación de datos sensibles (`[REDACTED]`) y niveles configurables (`FULL`, `PARTIAL`, `NONE`).
   * *Purga Programada (`audit.purge`):* Planificada la transición del loop periódico en `core/lifespan.py:63` a job recurrente del catálogo (`sys_jobs`) con `scheduled_at`, permitiendo trazabilidad de purgas históricas, control de reintentos y observabilidad desde `/api/jobs` y panel administrativo.
   * *Problema que soluciona:* Cumplimiento de normativas de seguridad (ISO 27001 / GDPR), retención de datos configurable y trazabilidad completa de cambios.
-* **7.2 Settings Dinámicos & Feature Flags (`sys_settings`):** *(⏳ PENDIENTE)*
-  * *Descripción:* Configuración clave-valor en BD con scopes (`GLOBAL` o por `entity_type`/`entity_id`).
-  * *Problema que soluciona:* Modificar parámetros (modo mantenimiento, límites de tamaño, activar betas) en caliente sin redeploy.
-* **7.3 Notificaciones In-App & Streaming SSE en Tiempo Real (`sys_notifications` + SSE):** *(⏳ PENDIENTE)*
+* **7.2 Settings Dinámicos & Feature Flags (`modules/settings` -> `sys_settings`):** *(✅ COMPLETADO)*
+  * *Descripción:* Configuración clave-valor en base de datos con tipado JSONB y soporte dual (`PostgreSQL` / `SQLite`). Incluye:
+    - *Modelo `SystemSetting`:* Clave única `key`, `value` JSON estructurado, `description`, `category` (ej. `general`, `pagination`, `storage`, `trash`, `audit`) e `is_public` para discriminar parámetros visibles para el frontend de variables operativas internas.
+    - *Caché en Memoria de Alto Rendimiento:* Cacheado reactivo en `SystemSettingService` para servir configuraciones públicas de forma instantánea sin consultas SQL repetitivas, con invalidación atómica y automática ante cualquier mutación (`PATCH /api/settings/{key}`).
+    - *Endpoints de Administración:* `GET /api/settings/public` (mapa de settings para frontend), `GET /api/settings` (listado administrativo filtrable por categoría para SuperAdmins), `GET /api/settings/categories`, `GET /api/settings/{key}`, `PATCH /api/settings/{key}` (actualización en caliente con auditoría de actor) y `GET /api/settings/export-formats` (descubrimiento de formatos de exportación soportados).
+    - *Seeder Modular Idempotente (`scripts/seeds/settings.py`):* Inicialización automática de valores por defecto del sistema (tamaños de página, límites de papelera, auto-purga y retenciones).
+  * *Problema que soluciona:* Modificar parámetros operativos y feature flags en caliente (límites de carga, políticas de retención, opciones de paginación, etc.) sin requerir re-despliegues de la aplicación, ofreciendo al frontend un punto único y cacheado para sincronizar su configuración de interfaz.
+* **7.3 Notificaciones In-App & Streaming SSE en Tiempo Real (`sys_notifications` + SSE):** *(✅ COMPLETADO)*
   * *Descripción:* Campanita 🔔 de notificaciones polimórficas (`entity_type`, `entity_id`) con persistencia en BD y canal de **Server-Sent Events (SSE)** (`GET /api/notifications/stream` y `GET /api/jobs/stream`). Permite emisión reactiva de eventos en tiempo real:
     - *Progreso en vivo de jobs:* Emisión de eventos `job_progress` con avance porcentual (`0..100%`) y mensajes dinámicos sin polling HTTP.
     - *Finalización y entrega:* Eventos `job_completed` y `job_failed` con resultados (ej. URL de descarga de exportación) y creación automática de notificación persistente en campanita vinculada al actor (`created_by_id`).
     - *Alertas del sistema & Fan-out:* Notificaciones broadcast o individuales (mantenimiento, menciones, asignaciones de equipo), gestionadas asíncronamente vía el job `notifications.fan_out` para no degradar peticiones HTTP al notificar a grupos masivos.
+    - *Notificación de Bienvenida en Seeds (`scripts/seeds/notifications.py`):* Notificación automática e idempotente de bienvenida para el usuario inicial (superadmin) al provisionar la base de datos.
+    - *Integración en Módulos de Negocio (`POST /api/companies/{id}/notify` y `POST /api/companies/notify`):* Endpoints de notificación contextual donde el frontend proporciona el título y comentario traducidos (soporte i18n nativo) para notificar a cualquier usuario destinatario.
   * *Problema que soluciona:* Elimina por completo el short-polling innecesario del frontend hacia la API, garantizando que el usuario visualice barras de progreso fluidas en tiempo real y reciba avisos instantáneos al concluir tareas pesadas (exportaciones masivas, compresión de archivos, ingesta y embeddings de IA).
 * **7.4 Métricas Operativas Prometheus (`/metrics`) & Salud del Pool:** *(⏳ PENDIENTE)*
   * *Descripción:* Endpoint estándar `/metrics` (formato OpenMetrics/Prometheus) para telemetría en tiempo real: peticiones por segundo, latencias p50/p95/p99 por endpoint, conteo de respuestas por código de estado (2xx, 4xx, 5xx) y saturación del connection pool de SQLAlchemy.
@@ -296,8 +302,8 @@ flowchart TD
 | **Fase 3: RBAC, Teams, Users & Impersonate** | 🟢 Completado | 100% Passing | ✅ Verificado (`users/routes.py`: 180 líneas) |
 | **Fase 4: Storage Multi-Cloud & Papelera** | 🟢 Completado | 100% Passing | ✅ Verificado |
 | **Fase 5: Background Jobs & Exportación** | 🟡 5.1 y 5.2 Completados (5.3 y 5.4 pendientes / en expansión) | 100% Passing (9 tests dedicados) | ✅ Verificado (`jobs/routes.py`: 124 líneas) |
-| **Fase 6: Módulo de Ejemplo 'Companies'** | 🟢 Completado | 100% Passing (10 tests) | ✅ Verificado (`companies/routes.py`: 27 líneas) |
-| **Fase 7: Auditoría Centralizada (7.1)** | 🟡 7.1 Completado (7.2-7.4 pendientes) | 100% Passing | ✅ Verificado (todos los archivos < 90 líneas) |
+| **Fase 6: Módulo de Ejemplo 'Companies'** | 🟢 Completado | 100% Passing (13 tests) | ✅ Verificado (`companies/routes.py`: 115 líneas) |
+| **Fase 7: Auditoría, Settings & Notificaciones SSE (7.1, 7.2 & 7.3)** | 🟢 7.1, 7.2 y 7.3 Completados (7.4 pendiente) | 100% Passing (28 tests dedicados en 7.1, 7.2 y 7.3) | ✅ Verificado (todos los archivos < 185 líneas) |
 | **Fase 8: Seguridad Global & Auth Avanzado** | ⚪ Pendiente | — | ⏳ Planificado |
 | **Fase 9: Motor Prompts IA Git-like en DB** | ⚪ Pendiente | — | ⏳ Planificado |
 | **Fase 10: LLM Gateway, FinOps & RAG** | ⚪ Pendiente | — | ⏳ Planificado |
@@ -306,7 +312,7 @@ flowchart TD
 | **Fase 13: Hardening OWASP & Batería Intrusión** | ⚪ Pendiente | — | ⏳ Planificado |
 
 ### Métricas de Calidad Global:
-* **Pytest**: **251/251 tests pasando al 100%**.
+* **Pytest**: **276/276 tests pasando al 100%**.
 * **Ruff**: Formato consistente y linter verificado en el 100% del código nuevo.
-* **Mypy**: **0 errores** de tipado estricto en los 134 archivos fuente.
+* **Mypy**: **0 errores** de tipado estricto en los 150 archivos fuente.
 

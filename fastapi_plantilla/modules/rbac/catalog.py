@@ -241,6 +241,24 @@ CORE_SYSTEM_MODULES: Final[list[SystemModuleDefinition]] = [
             RbacActions.UPDATE,
         ],
     },
+    {
+        "code": "notifications",
+        "name": "Notificaciones",
+        "description": "Notificaciones in-app y alertas en tiempo real",
+        "category": "system",
+        "category_name": "Sistema",
+        "category_icon": "cpu",
+        "category_order": 4,
+        "icon": "bell",
+        "sort_order": 9,
+        "is_active": True,
+        "supported_actions": [
+            RbacActions.CREATE,
+            RbacActions.READ,
+            RbacActions.UPDATE,
+            RbacActions.DELETE,
+        ],
+    },
 ]
 
 

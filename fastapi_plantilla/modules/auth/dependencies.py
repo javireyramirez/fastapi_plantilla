@@ -1,4 +1,4 @@
-from fastapi import Cookie, Depends, Header, HTTPException, status
+from fastapi import Cookie, Depends, Header, HTTPException, Query, status
 
 from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.modules.auth.schema import AuthResponse, UserResponse
@@ -49,3 +49,43 @@ async def get_current_active_superuser(
             detail="Permisos insuficientes",
         )
     return current_user
+
+
+async def get_sse_user(
+    token_query: str | None = Query(default=None, alias="token"),
+    session_token: str | None = Cookie(
+        default=None,
+        alias=settings.session_cookie_name,
+    ),
+    auth_header: str | None = Header(
+        default=None,
+        alias="Authorization",
+    ),
+    service: AuthService = Depends(),
+) -> UserResponse:
+    """Validate user authentication for SSE streaming endpoints.
+
+    Supports browser EventSource via query param ?token=..., session cookie,
+    or standard Authorization: Bearer header.
+    """
+    token = None
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.removeprefix("Bearer ").strip()
+    if not token:
+        token = session_token
+    if not token:
+        token = token_query
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No autenticado",
+        )
+
+    auth_data = await service.get_session(token=token)
+    if not auth_data.user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuario inactivo",
+        )
+    return auth_data.user

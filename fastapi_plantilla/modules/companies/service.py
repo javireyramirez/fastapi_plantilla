@@ -14,8 +14,13 @@ from fastapi_plantilla.core.crud.schema import (
 )
 from fastapi_plantilla.core.crud.service_owned import BaseOwnedService
 from fastapi_plantilla.core.mixins import RecordStatus
+from fastapi_plantilla.modules.auth.models import User
+from fastapi_plantilla.modules.auth.schema import UserResponse
 from fastapi_plantilla.modules.companies.models import Company
 from fastapi_plantilla.modules.companies.repository import CompanyRepository
+from fastapi_plantilla.modules.notifications.models import NotificationType
+from fastapi_plantilla.modules.notifications.schema import NotificationResponse
+from fastapi_plantilla.modules.notifications.service import NotificationService
 
 __all__ = ["CompanyService"]
 
@@ -210,3 +215,72 @@ class CompanyService(BaseOwnedService[Company]):
                 status_code=status.HTTP_409_CONFLICT,
                 detail="One or more companies violate unique NIF constraint",
             ) from exc
+
+    async def notify_recipient(
+        self,
+        company_id: uuid.UUID,
+        recipient_id: uuid.UUID,
+        title: str,
+        comment: str,
+        notification_service: NotificationService,
+        current_user: UserResponse | None = None,
+        scope: ScopeContext | None = None,
+        notification_type: NotificationType = NotificationType.INFO,
+        action_url: str | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> NotificationResponse:
+        """Send localized notification for a specific company to a target recipient."""
+        company = await self.get_by_id(company_id, scope=scope)
+        recipient = await self.repository.session.get(User, recipient_id)
+        if not recipient or not recipient.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuario destinatario no encontrado o inactivo",
+            )
+
+        payload_data = {
+            "company_id": str(company.id),
+            "company_name": company.name,
+            **(data or {}),
+        }
+        effective_action_url = action_url or f"/companies/{company.id}"
+
+        return await notification_service.notify_user(
+            recipient_id=recipient_id,
+            title=title,
+            message=comment,
+            notification_type=notification_type,
+            entity_type="company",
+            entity_id=company.id,
+            action_url=effective_action_url,
+            data=payload_data,
+        )
+
+    async def notify_general(
+        self,
+        recipient_id: uuid.UUID,
+        title: str,
+        comment: str,
+        notification_service: NotificationService,
+        notification_type: NotificationType = NotificationType.INFO,
+        action_url: str | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> NotificationResponse:
+        """Send localized notification without linking a specific company."""
+        recipient = await self.repository.session.get(User, recipient_id)
+        if not recipient or not recipient.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuario destinatario no encontrado o inactivo",
+            )
+
+        return await notification_service.notify_user(
+            recipient_id=recipient_id,
+            title=title,
+            message=comment,
+            notification_type=notification_type,
+            entity_type="company",
+            entity_id=None,
+            action_url=action_url or "/companies",
+            data=data or {},
+        )

@@ -5,6 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.crud.schema import ScopeType
 from fastapi_plantilla.modules.auth.models import User
+from fastapi_plantilla.modules.notifications.models import (
+    Notification,
+    NotificationType,
+)
 from fastapi_plantilla.modules.rbac.models import (
     Role,
     RoleAssignment,
@@ -137,6 +141,21 @@ async def test_run_all_seeds_idempotency(dbsession: AsyncSession) -> None:  # no
     assert "trash.purge_limit" in setting_keys
     assert "trash.auto_purge_enabled" in setting_keys
 
+    # 6. Verify welcome notification
+    notif_res = await dbsession.execute(
+        select(Notification).where(Notification.recipient_id == superadmin.id)
+    )
+    notifications = notif_res.scalars().all()
+    assert len(notifications) == 1
+    assert notifications[0].title == "¡Bienvenido a tu nueva app!"
+    assert notifications[0].notification_type == NotificationType.SUCCESS
+
     # Run 2: Verify Idempotency (running again doesn't crash or duplicate)
     await run_all_seeds(dbsession)
     await dbsession.commit()
+
+    # Verify notification is still only 1 (not duplicated)
+    notif_res_2 = await dbsession.execute(
+        select(Notification).where(Notification.recipient_id == superadmin.id)
+    )
+    assert len(notif_res_2.scalars().all()) == 1
