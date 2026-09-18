@@ -27,6 +27,7 @@ SETTING_NUMERIC_CONSTRAINTS: Final[dict[str, tuple[int, int]]] = {
     "storage.presigned_expiry_seconds": (60, 86400),  # 1 min to 24 h
     "storage.orphan_retention_seconds": (60, 2592000),  # 1 min to 30 days
     "auth.password_reset_expiry_minutes": (5, 1440),  # 5 min to 24 h
+    "auth.magic_link_expiry_minutes": (5, 120),  # 5 min to 2 h
     "auth.email_verification_expiry_hours": (1, 168),  # 1 h to 7 days
     "auth.invitation_expiry_hours": (1, 168),  # 1 h to 7 days
     "pagination.default_page_size": (1, 100),
@@ -35,6 +36,10 @@ SETTING_NUMERIC_CONSTRAINTS: Final[dict[str, tuple[int, int]]] = {
     "trash.purge_limit": (1, 5000),
     "audit.retention_days": (1, 3650),
     "audit.purge_limit": (1, 5000),
+    "security.rate_limit_global_requests": (1, 10000),
+    "security.rate_limit_global_window_seconds": (1, 3600),
+    "security.rate_limit_auth_requests": (1, 1000),
+    "security.rate_limit_auth_window_seconds": (1, 3600),
 }
 
 

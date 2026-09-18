@@ -100,6 +100,52 @@ class Settings(BaseSettings):
     initial_superadmin_email: str | None = None
     initial_superadmin_password: str | None = None
     initial_superadmin_name: str = "Super Admin"
+    magic_link_expiry_minutes: int = 15
+
+    # Rate Limiting & Proxies (Límites en memoria por worker;
+    # límite global efectivo = límite * workers).
+    # En producción tras Traefik/Nginx/Docker bridge, configurar
+    # FASTAPI_PLANTILLA_TRUSTED_PROXIES con las IPs o subredes de proxies
+    # para permitir X-Forwarded-For seguro.
+    rate_limit_enabled: bool = True
+    rate_limit_global_requests: int = 120
+    rate_limit_global_window_seconds: int = 60
+    rate_limit_auth_requests: int = 5
+    rate_limit_auth_window_seconds: int = 60
+    trusted_proxies: list[str] = ["127.0.0.1", "::1"]
+
+    @field_validator("trusted_proxies", mode="before")
+    @classmethod
+    def assemble_trusted_proxies(cls, v: Any) -> list[str]:
+        """Parse trusted proxies list."""
+        if isinstance(v, str) and not v.startswith("["):
+            return [i.strip() for i in v.split(",") if i.strip()]
+        if isinstance(v, list):
+            return [str(i).strip() for i in v if str(i).strip()]
+        return ["127.0.0.1", "::1"]
+
+    # Security Headers (OWASP)
+    security_headers_enabled: bool = True
+    security_hsts_enabled: bool = True
+    security_hsts_max_age: int = 31536000
+    security_hsts_include_subdomains: bool = True
+    security_frame_options: str = "DENY"
+    security_referrer_policy: str = "strict-origin-when-cross-origin"
+    security_content_type_options: str = "nosniff"
+    security_permissions_policy: str = (
+        "accelerometer=(), camera=(), geolocation=(), "
+        "gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+    )
+    security_csp_policy: str = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "img-src 'self' data: https:; "
+        "font-src 'self' data: https://cdn.jsdelivr.net; "
+        "connect-src 'self' ws: wss:; "
+        "frame-ancestors 'none'; "
+        "object-src 'none';"
+    )
 
     # Email
     email_backend: EmailBackend | None = None

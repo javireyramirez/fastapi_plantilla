@@ -3,7 +3,14 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    model_validator,
+)
 
 MIN_PASSWORD_LENGTH: int = 8
 
@@ -102,6 +109,7 @@ class UserResponse(UserBase):
     updated_at: datetime
     is_system: bool
     is_super_admin: bool
+    two_factor_enabled: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -128,6 +136,8 @@ class AuthResponse(BaseModel):
 
     user: UserResponse
     session: SessionResponse | None = None
+    two_factor_required: bool = False
+    two_factor_token: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -174,3 +184,66 @@ class DeleteAccountInput(BaseModel):
     """Schema to confirm account deletion."""
 
     password: str | None = None
+
+
+class MagicLinkRequest(BaseModel):
+    """Payload to request a passwordless magic login link."""
+
+    email: EmailStr
+    callback_url: str | None = None
+
+
+class VerifyMagicLinkInput(BaseModel):
+    """Payload to verify magic link token and establish session."""
+
+    token: str
+
+
+class TwoFactorSetupResponse(BaseModel):
+    """Response returned when initiating 2FA setup."""
+
+    secret: str
+    otpauth_url: str
+    qr_code: str
+
+
+class TwoFactorEnableInput(BaseModel):
+    """Payload to verify TOTP code and finalize 2FA enablement."""
+
+    code: str = Field(..., min_length=6, max_length=6)
+
+
+class TwoFactorEnableResponse(BaseModel):
+    """Response returned upon successfully enabling 2FA with emergency backup codes."""
+
+    backup_codes: list[str]
+
+
+class TwoFactorDisableInput(BaseModel):
+    """Payload to disable 2FA.
+
+    Requires either a valid TOTP code or current password.
+    """
+
+    code: str | None = None
+    password: str | None = None
+
+    @model_validator(mode="after")
+    def check_at_least_one(self) -> "TwoFactorDisableInput":
+        """Verify that at least code or password is provided."""
+        if not self.code and not self.password:
+            raise ValueError("Debe proporcionar un código 2FA o su contraseña actual")
+        return self
+
+
+class TwoFactorLoginInput(BaseModel):
+    """Payload to complete two-factor authentication login."""
+
+    two_factor_token: str
+    code: str
+
+
+class TwoFactorRecoveryCodesResponse(BaseModel):
+    """Response returned when regenerating recovery backup codes."""
+
+    backup_codes: list[str]

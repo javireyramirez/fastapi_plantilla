@@ -3,6 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response
 
+from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.core.crud.schema import (
     BulkIdsRequest,
     BulkResponse,
@@ -11,6 +12,7 @@ from fastapi_plantilla.core.crud.schema import (
     PaginatedResponse,
     ScopeContext,
 )
+from fastapi_plantilla.core.middlewares.rate_limit import get_client_ip
 from fastapi_plantilla.modules.auth.dependencies import (
     get_current_session,
     get_current_user,
@@ -69,7 +71,7 @@ async def revoke_session(
     current_session: AuthResponse = Depends(get_current_session),
 ) -> MessageResponse:
     """Revoke a specific session by ID with audit logging."""
-    ip_address = request.client.host if request.client else None
+    ip_address = get_client_ip(request.scope, settings.trusted_proxies)
     user_agent = request.headers.get("user-agent")
     current_token = current_session.session.token if current_session.session else None
     return await service.revoke_session(
@@ -91,7 +93,7 @@ async def bulk_revoke_sessions(
     current_user: UserResponse = Depends(get_current_user),
 ) -> BulkResponse:
     """Bulk revoke multiple active sessions in a single operation."""
-    ip_address = request.client.host if request.client else None
+    ip_address = get_client_ip(request.scope, settings.trusted_proxies)
     user_agent = request.headers.get("user-agent")
     return await service.bulk_revoke_sessions(
         req=req,

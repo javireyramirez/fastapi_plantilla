@@ -36,7 +36,7 @@ flowchart TD
     F4 --> F5["Fase 5: Background Jobs en BD, Ingesta & Exportación (✅ Completado)"]
     F5 --> F6["Fase 6: Módulo de Ejemplo 'Companies' (✅ Completado)"]
     F6 --> F7["Fase 7: Auditoría, Settings, Notificaciones & Observabilidad (✅ Completado)"]
-    F7 --> F8["Fase 8: Rate Limiting & Auth Avanzado (⚪ Pendiente)"]
+    F7 --> F8["Fase 8: Rate Limiting & Auth Avanzado (🚧 En progreso: 8.1 ✅)"]
     F8 --> F9["Fase 9: Motor de Prompts IA Git-like en DB (⚪ Pendiente)"]
     F9 --> F10["Fase 10: LLM Gateway, FinOps & Pipeline RAG Vectorial (⚪ Pendiente)"]
     F10 --> F11["Fase 11: Panel SQLAdmin Ops (⚪ Pendiente de Evaluar / Opcional)"]
@@ -191,16 +191,36 @@ flowchart TD
 
 ---
 
-### ⚪ FASE 8: Seguridad Global & Autenticación Avanzada *(⏳ PENDIENTE)*
-* **8.1 Rate Limiting Global & Security Headers:** *(⏳ PENDIENTE)*
-  * *Descripción:* Limitador de peticiones anti-fuerza bruta en login y endpoints sensibles + cabeceras de seguridad HTTP (HSTS, CSP, etc.).
-  * *Problema que soluciona:* Protección contra ataques DoS y scraping malicioso.
-* **8.2 Magic Links (Passwordless Login):** *(⏳ PENDIENTE)*
-  * *Descripción:* Flujo de login por enlace temporal directo al correo sin contraseña.
-  * *Problema que soluciona:* Experiencia de usuario ágil y moderna.
-* **8.3 Doble Factor de Autenticación (2FA / TOTP):** *(⏳ PENDIENTE)*
-  * *Descripción:* Códigos QR con `pyotp` para Google Authenticator / Authy + códigos de recuperación.
-  * *Problema que soluciona:* Seguridad de grado corporativo para cuentas críticas y administradores.
+### 🟡 FASE 8: Seguridad Global & Autenticación Avanzada *(🚧 EN PROGRESO)*
+* **8.1 Rate Limiting Global & Security Headers:** *(✅ COMPLETADO)*
+  * *Descripción:* Middleware ASGI puro de ultra alto rendimiento (`SecurityHeadersMiddleware` y `RateLimitMiddleware`) sin buffer de memoria compatible con streaming y Server-Sent Events (SSE). Incluye:
+    - *Cabeceras de Seguridad OWASP:* Inyección automática de `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `X-XSS-Protection: 0` (estándar moderno que deshabilita auditores defectuosos legacy), `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy` y `Strict-Transport-Security` (HSTS) en producción. Configuración de CSP compatible con Swagger UI y Redoc (`/api/docs`).
+    - *Motor de Rate Limiting por Ventana Deslizante (In-Memory por Worker):* Implementado según filosofía Ponytail con O(1) vía `collections.deque` y `time.monotonic()` (cero Redis, cero dependencias externas). Documentado explícitamente como límite por worker (límite global efectivo = límite * workers).
+    - *Prevención de IP Spoofing tras Proxy:* Extracción segura de la IP del cliente (`get_client_ip`) con lista de proxies de confianza (`trusted_proxies`).
+    - *Orden ASGI Robusto:* Garantiza que las respuestas de cortocircuito `HTTP 429 Too Many Requests` siempre lleven `X-Request-ID`, cabeceras de seguridad completas y cabeceras RFC 6585 (`Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining: 0`, `X-RateLimit-Reset`).
+    - *Jerarquía SSOT (`get_effective_limit`):* `sys_settings` en base de datos con caché en memoria tiene precedencia como *hot-override*, con fallback a `config.py`.
+    - *Dependencia Granular para FastAPI (`RateLimiter`):* Inyectada en endpoints sensibles de autenticación (`sign-in`, `sign-up`, `forget-password`, `reset-password`, `send-verification-email`) limitando por IP.
+  * *Problema que soluciona:* Protección perimetral contra ataques de denegación de servicio (DoS), scraping masivo y credential stuffing / fuerza bruta en autenticación.
+* **8.2 Magic Links (Passwordless Login):** *(✅ COMPLETADO)*
+  * *Descripción:* Flujo de login passwordless por enlace seguro de un solo uso enviado al correo electrónico:
+    - *Zero New Tables (Ponytail & SRP-SSOT):* Reutilización directa del modelo canónico `Verification` (`auth_verifications`) e `identifier = user.email` plano.
+    - *Anti-Enumeración:* El endpoint `POST /api/auth/sign-in/magic-link` responde siempre `200 OK (True)` de forma indistinta tanto si el usuario existe como si no o se encuentra inactivo.
+    - *Seguridad del Token & Ciclo de Vida:* Token de alta entropía con `secrets.token_urlsafe(32)` (~43 chars), de un solo uso (invalidación/borrado inmediato tras consumo exitoso), e invalidación proactiva de tokens anteriores del mismo correo antes de generar uno nuevo.
+    - *Prevención de Open Redirect:* Validación rigurosa de origen estricto con `is_safe_callback_url()` (relativo o coincidente con `frontend_url`) tanto en la solicitud como en el enlace incrustado en el email.
+    - *Verificación Automática & Control de Estados:* Al acceder por Magic Link, se marca automáticamente `email_verified = True` (control probado del buzón de correo). Se bloquea con `403 Forbidden` a usuarios inactivos o marcados como `TRASHED`.
+    - *Configuración Dinámica SSOT:* Expiración configurable mediante setting dinámico `auth.magic_link_expiry_minutes` (5 a 120 min, valor por defecto 15 min en categoría `"auth"`) con caché en memoria y fallback a `config.py`.
+    - *Protección con Rate Limiting:* Rate limiter por IP integrado en `POST /sign-in/magic-link` (`scope="auth_magic_link"`) y `POST /verify-magic-link` (`scope="auth_verify_magic_link"`).
+  * *Problema que soluciona:* Experiencia de usuario ágil y moderna para inicio de sesión sin recordar contraseñas, minimizando la superficie de ataque frente a credential stuffing y contraseñas débiles.
+* **8.3 Doble Factor de Autenticación (2FA / TOTP):** *(✅ COMPLETADO)*
+  * *Descripción:* Implementación robusta de 2FA basado en TOTP (RFC 6238) y códigos de recuperación de un solo uso:
+    - *Zero New Tables & Filosofía Ponytail:* Cero tablas nuevas. Se extiende `auth_users` con `two_factor_enabled: bool`, `two_factor_secret: str | None` y `two_factor_backup_codes: MutableList.as_mutable(JSON)`. Reutiliza `auth_verifications` para los tokens de desafío y configuración temporal.
+    - *Criptografía de Grado Militar:* Cifrado autenticado AES-256-GCM para el secreto TOTP en base de datos. Clave derivada mediante HKDF(SHA256, 32B, info=`"2fa_totp_encryption"`) desde `settings.auth_secret`. Nonce aleatorio de 12 bytes por fila (`base64(nonce + ciphertext_tag)`).
+    - *Generación y Renderizado de QR:* Generación de URI `otpauth://` compatible con Google Authenticator, Authy y 1Password mediante `pyotp` y generación de imagen PNG en base64 Data URI mediante `segno` (sin dependencias C/system-level).
+    - *Códigos de Recuperación Seguros:* 8 códigos de recuperación con formato legible `XXXX-XXXX` generados con alfabeto no ambiguo (excluye `0, O, 1, I, l`). Almacenados en DB exclusivamente como hashes SHA-256 individuales. Consumo atómico de un solo uso (`single-use`) garantizado por `MutableList`.
+    - *Intercepción Universal de Login:* Bloqueo y emisión de desafío de 5 minutos (`two_factor_required: True`, `two_factor_token: ...`, `session: None`, sin cookie de sesión) en todos los métodos de autenticación: contraseña (`POST /api/auth/sign-in/email`), magic link (`POST /api/auth/verify-magic-link`) y Google OAuth (`GET /api/auth/callback/google` redirigiendo al frontend con el token).
+    - *Endpoint de Desafío 2FA:* `POST /api/auth/sign-in/two-factor` protegido con `RateLimiter(scope_prefix="auth_two_factor")`, capaz de autenticar tanto códigos TOTP de 6 dígitos con ventana de deriva de ±30s (`valid_window=1`) como códigos de recuperación de 8 caracteres.
+    - *Flujo Flexible de Desactivación:* `POST /api/auth/two-factor/disable` permite confirmar con código TOTP o con contraseña actual (soportando usuarios federados de OAuth sin clave). Endpoint para regenerar códigos de recuperación `POST /api/auth/two-factor/recovery-codes`.
+  * *Problema que soluciona:* Seguridad de grado corporativo para cuentas críticas y administradores, protegiendo las cuentas ante brechas de credenciales o accesos no autorizados.
 * **8.4 API Keys & Trazabilidad de Envíos de Correo (`email_logs`):** *(⏳ PENDIENTE)*
   * *Descripción:* Modelo `Key` para integración programática externa + tabla dedicada `sys_email_logs` para registrar historial de envíos (`to`, `subject`, `template_name`, `status`, error, timestamp), sanitizando y excluyendo estrictamente tokens temporales o URLs secretas por cumplimiento GDPR y seguridad (prevención de Account Takeover).
   * *Envío Asíncrono Resiliente (`emails.send`):* Desacople del envío mediante el job `emails.send` de `sys_jobs` (reemplazando la ejecución síncrona actual en `modules/email/service.py:22` `await transport.send()`), incorporando reintentos con backoff exponencial y registro automático de estados en `sys_email_logs`.
@@ -318,7 +338,7 @@ flowchart TD
 | **Fase 5: Background Jobs, Ingesta & Exportación** | 🟢 5.1, 5.2 y 5.3 Completados (5.4 en expansión) | 100% Passing (36 tests dedicados) | ✅ Verificado (`importer.py` & `jobs/routes.py` < 250 líneas) |
 | **Fase 6: Módulo de Ejemplo 'Companies'** | 🟢 Completado | 100% Passing (24 tests) | ✅ Verificado (`companies/routes.py`: 115 líneas) |
 | **Fase 7: Auditoría, Settings, Notificaciones & Observabilidad (Métricas & Logs)** | 🟢 Completado | 100% Passing (35 tests dedicados) | ✅ Verificado (todos los archivos < 185 líneas) |
-| **Fase 8: Seguridad Global & Auth Avanzado** | ⚪ Pendiente | — | ⏳ Planificado |
+| **Fase 8: Seguridad Global & Auth Avanzado** | 🟡 En progreso (8.1 ✅) | 100% Passing (13 tests dedicados) | ✅ Verificado (todos los archivos < 250 líneas) |
 | **Fase 9: Motor Prompts IA Git-like en DB** | ⚪ Pendiente | — | ⏳ Planificado |
 | **Fase 10: LLM Gateway, FinOps & RAG** | ⚪ Pendiente | — | ⏳ Planificado |
 | **Fase 11: SQLAdmin Ops Web Nativo** | ⚪ Pendiente de evaluar necesidad | — | ⏳ Opcional (YAGNI si hay Frontend) |
@@ -326,7 +346,7 @@ flowchart TD
 | **Fase 13: Hardening OWASP & Batería Intrusión** | ⚪ Pendiente | — | ⏳ Planificado |
 
 ### Métricas de Calidad Global:
-* **Pytest**: **317/317 tests pasando al 100%**.
-* **Ruff**: Formato consistente y linter verificado en el 100% del código nuevo.
-* **Mypy**: **0 errores** de tipado estricto en los 194 archivos fuente.
+* **Pytest**: **330/330 tests pasando al 100%** (13 tests dedicados añadidos en `tests/test_security.py`).
+* **Ruff**: Formato consistente y linter verificado con 0 advertencias en los 195 archivos del proyecto.
+* **Mypy**: **0 errores** de tipado estricto verificado en los 165 módulos del código fuente.
 

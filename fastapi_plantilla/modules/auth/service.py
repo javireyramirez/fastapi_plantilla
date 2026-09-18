@@ -1,9 +1,13 @@
 import contextlib
+import hashlib
+import hmac
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pyotp
+import segno
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import Depends, HTTPException, status
@@ -27,17 +31,28 @@ from fastapi_plantilla.modules.auth.schema import (
     ChangeEmailInput,
     DeleteAccountInput,
     ForgotPasswordRequest,
+    MagicLinkRequest,
     OAuthUserInfo,
     PasswordChange,
     ResetPasswordInput,
     RevokeSessionInput,
     SessionDetailResponse,
     SessionResponse,
+    TwoFactorLoginInput,
+    TwoFactorSetupResponse,
     UserCreate,
     UserLogin,
     UserResponse,
+    VerifyMagicLinkInput,
 )
-from fastapi_plantilla.modules.auth.utils import sign_token, unsign_token
+from fastapi_plantilla.modules.auth.utils import (
+    decrypt_totp_secret,
+    encrypt_totp_secret,
+    generate_backup_codes,
+    is_safe_callback_url,
+    sign_token,
+    unsign_token,
+)
 from fastapi_plantilla.modules.email.dependencies import get_email_service
 from fastapi_plantilla.modules.email.service import EmailService
 from fastapi_plantilla.modules.settings.dependencies import get_settings_service
@@ -45,6 +60,7 @@ from fastapi_plantilla.modules.settings.service import SystemSettingService
 
 DEFAULT_TOKEN_BYTES: int = 32
 DEFAULT_PASSWORD_RESET_EXPIRY_MINUTES: int = 30
+DEFAULT_MAGIC_LINK_EXPIRY_MINUTES: int = 15
 DEFAULT_EMAIL_VERIFICATION_EXPIRY_HOURS: int = 24
 DEFAULT_CREDENTIAL_PROVIDER: str = "credential"
 DUMMY_PASSWORD_HASH: str = (
@@ -54,6 +70,7 @@ DUMMY_PASSWORD_HASH: str = (
 __all__ = [
     "DEFAULT_CREDENTIAL_PROVIDER",
     "DEFAULT_EMAIL_VERIFICATION_EXPIRY_HOURS",
+    "DEFAULT_MAGIC_LINK_EXPIRY_MINUTES",
     "DEFAULT_PASSWORD_RESET_EXPIRY_MINUTES",
     "DEFAULT_TOKEN_BYTES",
     "DUMMY_PASSWORD_HASH",
@@ -98,6 +115,20 @@ class AuthService:
                 )
             )
         return DEFAULT_EMAIL_VERIFICATION_EXPIRY_HOURS
+
+    async def get_magic_link_expiry_minutes(self) -> int:
+        """Get configured expiry for magic link tokens in minutes."""
+        fallback = getattr(
+            settings, "magic_link_expiry_minutes", DEFAULT_MAGIC_LINK_EXPIRY_MINUTES
+        )
+        if self.settings_service:
+            return int(
+                await self.settings_service.get_value(
+                    "auth.magic_link_expiry_minutes",
+                    default=fallback,
+                )
+            )
+        return fallback
 
     async def _emit_audit(
         self,
@@ -155,6 +186,24 @@ class AuthService:
             session=session_dto,
         )
 
+    async def _create_2fa_challenge(self, user: User) -> AuthResponse:
+        """Issue a short-lived 2FA challenge token without creating a session."""
+        challenge_token = secrets.token_urlsafe(DEFAULT_TOKEN_BYTES)
+        await self.repository.delete_verifications_by_identifier(
+            f"2fa_challenge:{user.id}"
+        )
+        await self.repository.create_verification(
+            identifier=f"2fa_challenge:{user.id}",
+            value=challenge_token,
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        )
+        return AuthResponse(
+            user=UserResponse.model_validate(user),
+            session=None,
+            two_factor_required=True,
+            two_factor_token=challenge_token,
+        )
+
     async def _handle_oauth_user(
         self,
         user_info: OAuthUserInfo,
@@ -189,6 +238,9 @@ class AuthService:
                 id_token=id_token,
                 expires_at=expires_at,
             )
+            if user.two_factor_enabled:
+                return await self._create_2fa_challenge(user)
+
             resp = await self._create_user_session(user, ip_address, user_agent)
             await self._emit_audit(
                 action=AuditAction.LOGIN,
@@ -219,6 +271,9 @@ class AuthService:
                 await self.repository.update_user_by_id(
                     user_id=user.id, update_data={"email_verified": True}
                 )
+            if user.two_factor_enabled:
+                return await self._create_2fa_challenge(user)
+
             resp = await self._create_user_session(user, ip_address, user_agent)
             await self._emit_audit(
                 action=AuditAction.LOGIN,
@@ -418,6 +473,9 @@ class AuthService:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Credenciales inválidas",
             ) from e
+
+        if user.two_factor_enabled:
+            return await self._create_2fa_challenge(user)
 
         resp = await self._create_user_session(user, ip_address, user_agent)
         await self._emit_audit(
@@ -625,6 +683,47 @@ class AuthService:
         except Exception as exc:
             logger.warning(f"Could not enqueue verification email: {exc}")
 
+    async def _send_magic_link_email(
+        self,
+        user: User,
+        token: str,
+        callback_url: str | None = None,
+        expiry_minutes: int | None = None,
+    ) -> None:
+        """Render and dispatch passwordless magic link email."""
+        if not settings.frontend_url:
+            return
+
+        if expiry_minutes is None:
+            expiry_minutes = await self.get_magic_link_expiry_minutes()
+
+        query_params = {"token": token}
+        if callback_url and is_safe_callback_url(callback_url):
+            query_params["callback_url"] = callback_url
+
+        magic_link = str(
+            (URL(settings.frontend_url) / "magic-link").with_query(query_params)
+        )
+        email_msg = (
+            self.email_service.create_builder()
+            .to(user.email)
+            .subject("Tu enlace mágico para iniciar sesión")
+            .template(
+                "auth/magic_link.html",
+                name=user.name,
+                magic_link=magic_link,
+                expiry_minutes=expiry_minutes,
+            )
+        )
+        try:
+            await self.email_service.enqueue_send(
+                email_msg,
+                session=self.repository.session,
+                user_id=user.id,
+            )
+        except Exception as exc:
+            logger.warning(f"Could not enqueue magic link email: {exc}")
+
     async def forget_password(self, schema: ForgotPasswordRequest) -> bool:
         """Generate password reset token (safe against user enumeration)."""
         user = await self.repository.get_user_by_email(schema.email)
@@ -745,6 +844,354 @@ class AuthService:
             value=verification.value,
         )
         return True
+
+    async def request_magic_link(
+        self,
+        schema: MagicLinkRequest,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> bool:
+        """Generate magic link login token (safe against user enumeration)."""
+        user = await self.repository.get_user_by_email(schema.email)
+        if user and user.is_active and user.status != RecordStatus.TRASHED:
+            await self.repository.delete_verifications_by_identifier(schema.email)
+            token = secrets.token_urlsafe(DEFAULT_TOKEN_BYTES)
+            expiry_minutes = await self.get_magic_link_expiry_minutes()
+            await self.repository.create_verification(
+                identifier=schema.email,
+                value=token,
+                expires_at=datetime.now(UTC) + timedelta(minutes=expiry_minutes),
+            )
+            await self._send_magic_link_email(
+                user=user,
+                token=token,
+                callback_url=schema.callback_url,
+                expiry_minutes=expiry_minutes,
+            )
+        return True
+
+    async def verify_magic_link(
+        self,
+        schema: VerifyMagicLinkInput,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> AuthResponse:
+        """Verify magic link token, verify email if needed, and create user session."""
+        verification = await self.repository.get_valid_verification_by_value(
+            value=schema.token,
+        )
+        if not verification:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El enlace de acceso es inválido o ha expirado",
+            )
+
+        user = await self.repository.get_user_by_email(verification.identifier)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Usuario no encontrado o inactivo",
+            )
+        if not user.is_active or user.status == RecordStatus.TRASHED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Usuario inactivo o suspendido",
+            )
+
+        if not user.email_verified:
+            await self.repository.update_user_by_id(
+                user_id=user.id,
+                update_data={"email_verified": True},
+            )
+            user.email_verified = True
+
+        await self.repository.delete_verification(
+            identifier=verification.identifier,
+            value=verification.value,
+        )
+
+        if user.two_factor_enabled:
+            return await self._create_2fa_challenge(user)
+
+        resp = await self._create_user_session(user, ip_address, user_agent)
+        await self._emit_audit(
+            action=AuditAction.LOGIN,
+            user=user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details="User logged in via magic link",
+        )
+        return resp
+
+    async def setup_two_factor(
+        self, user: User | UserResponse
+    ) -> TwoFactorSetupResponse:
+        """Initialize two-factor authentication setup and generate QR code."""
+        secret = pyotp.random_base32()
+        await self.repository.delete_verifications_by_identifier(f"2fa_setup:{user.id}")
+        await self.repository.create_verification(
+            identifier=f"2fa_setup:{user.id}",
+            value=secret,
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        )
+        issuer = settings.app_name or "fastapi_plantilla"
+        totp = pyotp.TOTP(secret)
+        otpauth_url = totp.provisioning_uri(name=user.email, issuer_name=issuer)
+        qr = segno.make(otpauth_url, error="m")
+        qr_code = qr.svg_data_uri(scale=4)
+        return TwoFactorSetupResponse(
+            secret=secret,
+            otpauth_url=otpauth_url,
+            qr_code=qr_code,
+        )
+
+    async def enable_two_factor(
+        self, user: User | UserResponse, code: str
+    ) -> list[str]:
+        """Verify initial TOTP code and enable two-factor authentication."""
+        verification = await self.repository.get_valid_verification_by_identifier(
+            f"2fa_setup:{user.id}"
+        )
+        if not verification:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No hay una configuración 2FA pendiente o ha expirado",
+            )
+        secret = verification.value
+        totp = pyotp.TOTP(secret)
+        if not totp.verify(code.strip(), valid_window=1):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Código de autenticación inválido",
+            )
+
+        plain_codes, hashed_codes = generate_backup_codes(count=8)
+        encrypted_secret = encrypt_totp_secret(secret, settings.auth_secret)
+        await self.repository.update_user_by_id(
+            user_id=user.id,
+            update_data={
+                "two_factor_enabled": True,
+                "two_factor_secret": encrypted_secret,
+                "two_factor_backup_codes": hashed_codes,
+            },
+        )
+        await self.repository.delete_verification(
+            identifier=verification.identifier,
+            value=verification.value,
+        )
+        await self._emit_audit(
+            action=AuditAction.SETTINGS_CHANGE,
+            user_id=user.id,
+            actor_id=user.id,
+            details="Two-factor authentication enabled",
+        )
+        return plain_codes
+
+    async def disable_two_factor(
+        self,
+        user: User | UserResponse,
+        code: str | None = None,
+        password: str | None = None,
+    ) -> bool:
+        """Disable two-factor authentication confirming TOTP code or password."""
+        db_user = await self.repository.get_user_by_id(user.id)
+        if not db_user or not db_user.two_factor_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El doble factor de autenticación no está activado",
+            )
+
+        verified = False
+        if code and db_user.two_factor_secret:
+            try:
+                decrypted_secret = decrypt_totp_secret(
+                    db_user.two_factor_secret, settings.auth_secret
+                )
+                totp = pyotp.TOTP(decrypted_secret)
+                if totp.verify(code.strip(), valid_window=1):
+                    verified = True
+            except (ValueError, TypeError, Exception) as err:
+                logger.debug("2FA TOTP verification failed during disable: {}", err)
+
+        if not verified and password:
+            account = await self.repository.get_account_by_provider(
+                user_id=user.id, provider_id=DEFAULT_CREDENTIAL_PROVIDER
+            )
+            if account and account.password:
+                try:
+                    ph.verify(account.password, password)
+                    verified = True
+                except VerifyMismatchError:
+                    pass
+
+        if not verified:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Código 2FA o contraseña incorrectos",
+            )
+
+        await self.repository.update_user_by_id(
+            user_id=user.id,
+            update_data={
+                "two_factor_enabled": False,
+                "two_factor_secret": None,
+                "two_factor_backup_codes": None,
+            },
+        )
+        await self._emit_audit(
+            action=AuditAction.SETTINGS_CHANGE,
+            user=db_user,
+            details="Two-factor authentication disabled",
+        )
+        return True
+
+    async def regenerate_backup_codes(
+        self, user: User | UserResponse, code: str
+    ) -> list[str]:
+        """Regenerate recovery backup codes verifying a valid TOTP code."""
+        db_user = await self.repository.get_user_by_id(user.id)
+        if (
+            not db_user
+            or not db_user.two_factor_enabled
+            or not db_user.two_factor_secret
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El doble factor de autenticación no está activado",
+            )
+
+        decrypted_secret = decrypt_totp_secret(
+            db_user.two_factor_secret, settings.auth_secret
+        )
+        totp = pyotp.TOTP(decrypted_secret)
+        if not totp.verify(code.strip(), valid_window=1):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Código de autenticación inválido",
+            )
+
+        plain_codes, hashed_codes = generate_backup_codes(count=8)
+        await self.repository.update_user_by_id(
+            user_id=user.id,
+            update_data={"two_factor_backup_codes": hashed_codes},
+        )
+        await self._emit_audit(
+            action=AuditAction.SETTINGS_CHANGE,
+            user=db_user,
+            details="Two-factor backup recovery codes regenerated",
+        )
+        return plain_codes
+
+    async def _verify_totp_or_backup_code(
+        self, user: User, code: str
+    ) -> tuple[bool, bool]:
+        """Validate TOTP or backup code, updating remaining codes if backup was used."""
+        clean_code = code.strip()
+        # 1. Check TOTP
+        if user.two_factor_secret:
+            try:
+                decrypted_secret = decrypt_totp_secret(
+                    user.two_factor_secret, settings.auth_secret
+                )
+                totp = pyotp.TOTP(decrypted_secret)
+                if totp.verify(clean_code, valid_window=1):
+                    return True, False
+            except (ValueError, TypeError, Exception) as err:
+                logger.debug("2FA login TOTP verification failed: {}", err)
+
+        # 2. Check Backup Codes
+        if user.two_factor_backup_codes:
+            code_hash = hashlib.sha256(clean_code.encode("utf-8")).hexdigest()
+            for stored_hash in user.two_factor_backup_codes:
+                if hmac.compare_digest(stored_hash, code_hash):
+                    remaining = [
+                        h
+                        for h in user.two_factor_backup_codes
+                        if not hmac.compare_digest(h, code_hash)
+                    ]
+                    await self.repository.update_user_by_id(
+                        user_id=user.id,
+                        update_data={"two_factor_backup_codes": remaining},
+                    )
+                    return True, True
+
+        return False, False
+
+    async def verify_two_factor_login(
+        self,
+        schema: TwoFactorLoginInput,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> AuthResponse:
+        """Verify 2FA TOTP or recovery backup code to complete login."""
+        verification = await self.repository.get_valid_verification_by_value(
+            value=schema.two_factor_token
+        )
+        if not verification or not verification.identifier.startswith("2fa_challenge:"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El token de desafío es inválido o ha expirado",
+            )
+
+        user_id_str = verification.identifier.split(":", 1)[1]
+        try:
+            user_id = uuid.UUID(user_id_str)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Token de desafío corrupto",
+            ) from None
+
+        user = await self.repository.get_user_by_id(user_id)
+        if not user or not user.is_active or user.status == RecordStatus.TRASHED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Usuario inactivo o suspendido",
+            )
+
+        if not user.two_factor_enabled or not user.two_factor_secret:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El usuario no tiene 2FA configurado",
+            )
+
+        is_valid, used_backup_code = await self._verify_totp_or_backup_code(
+            user=user, code=schema.code
+        )
+
+        if not is_valid:
+            await self._emit_audit(
+                action=AuditAction.LOGIN_FAILED,
+                user=user,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details="Failed 2FA verification attempt",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Código de autenticación o código de recuperación inválido",
+            )
+
+        # Delete challenge token (single use)
+        await self.repository.delete_verification(
+            identifier=verification.identifier,
+            value=verification.value,
+        )
+
+        audit_detail = (
+            "User logged in via 2FA (Recovery Code)"
+            if used_backup_code
+            else "User logged in via 2FA (TOTP)"
+        )
+        resp = await self._create_user_session(user, ip_address, user_agent)
+        await self._emit_audit(
+            action=AuditAction.LOGIN,
+            user=user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details=audit_detail,
+        )
+        return resp
 
     async def cleanup_expired_tokens(self) -> dict[str, int]:
         """Delete expired sessions and verification tokens."""
@@ -972,8 +1419,8 @@ class AuthService:
         token: str,
         ip_address: str | None = None,
         user_agent: str | None = None,
-    ) -> bool:
-        """Terminate the active impersonated session."""
+    ) -> AuthResponse | None:
+        """Terminate the active impersonated session and restore admin session."""
         raw_token = unsign_token(token, settings.auth_secret)
         if not raw_token:
             raise HTTPException(
@@ -988,7 +1435,16 @@ class AuthService:
             )
         target_user = session.user
         admin_user = await self.repository.get_user_by_id(session.impersonated_by)
-        result = await self.repository.invalidate_session(token=raw_token)
+        await self.repository.invalidate_session(token=raw_token)
+
+        auth_data: AuthResponse | None = None
+        if admin_user and admin_user.is_active:
+            auth_data = await self._create_user_session(
+                user=admin_user,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+
         if admin_user:
             await self._emit_audit(
                 action=AuditAction.IMPERSONATE,
@@ -1000,4 +1456,4 @@ class AuthService:
                     f"{target_user.email} (ID: {target_user.id})"
                 ),
             )
-        return result
+        return auth_data

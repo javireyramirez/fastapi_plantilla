@@ -2,7 +2,9 @@ from typing import Any
 
 from fastapi import Depends, Request
 
+from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.core.crud.schema import ScopeContext, ScopeType, WriteOptions
+from fastapi_plantilla.core.middlewares.rate_limit import get_client_ip
 
 __all__ = ["build_write_options", "get_scope_context", "get_write_options"]
 
@@ -14,7 +16,9 @@ def build_write_options(
 ) -> WriteOptions:
     """Build WriteOptions from user, scope, and request metadata."""
     user_id = getattr(current_user, "id", None) or getattr(scope, "user_id", None)
-    ip_address = request.client.host if request and request.client else None
+    ip_address = (
+        get_client_ip(request.scope, settings.trusted_proxies) if request else None
+    )
     user_agent = request.headers.get("user-agent") if request else None
     return WriteOptions(
         user_id=user_id,

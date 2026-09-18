@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     ForeignKey,
@@ -11,6 +12,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
 )
+from sqlalchemy.ext.mutable import MutableList
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from fastapi_plantilla.core.database import Base
@@ -34,6 +36,13 @@ class User(UUID7PrimaryKeyMixin, AuditFieldsMixin, OptimisticLockMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
     is_super_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    two_factor_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    two_factor_secret: Mapped[str | None] = mapped_column(
+        String(length=255), nullable=True
+    )
+    two_factor_backup_codes: Mapped[list[str] | None] = mapped_column(
+        MutableList.as_mutable(JSON), nullable=True
+    )
 
     # Relaciones
     accounts: Mapped[list["Account"]] = relationship(

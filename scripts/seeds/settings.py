@@ -165,6 +165,15 @@ DEFAULT_SYSTEM_SETTINGS: Final[list[SettingDef]] = [
         "is_public": False,
     },
     {
+        "key": "auth.magic_link_expiry_minutes",
+        "value": 15,
+        "description": (
+            "Tiempo de expiración en minutos para enlaces mágicos de inicio de sesión"
+        ),
+        "category": "auth",
+        "is_public": False,
+    },
+    {
         "key": "auth.email_verification_expiry_hours",
         "value": 24,
         "description": (
@@ -321,6 +330,43 @@ DEFAULT_SYSTEM_SETTINGS: Final[list[SettingDef]] = [
         ),
         "category": "storage",
         "is_public": True,
+    },
+    {
+        "key": "security.rate_limit_enabled",
+        "value": True,
+        "description": "Habilitar limitador de peticiones global y por endpoint",
+        "category": "security",
+        "is_public": False,
+    },
+    {
+        "key": "security.rate_limit_global_requests",
+        "value": 120,
+        "description": "Límite de peticiones por ventana global (por worker)",
+        "category": "security",
+        "is_public": False,
+    },
+    {
+        "key": "security.rate_limit_global_window_seconds",
+        "value": 60,
+        "description": "Tamaño en segundos de la ventana de limitación global",
+        "category": "security",
+        "is_public": False,
+    },
+    {
+        "key": "security.rate_limit_auth_requests",
+        "value": 5,
+        "description": "Límite de intentos en endpoints de autenticación (por worker)",
+        "category": "security",
+        "is_public": False,
+    },
+    {
+        "key": "security.rate_limit_auth_window_seconds",
+        "value": 60,
+        "description": (
+            "Tamaño en segundos de la ventana de limitación de autenticación"
+        ),
+        "category": "security",
+        "is_public": False,
     },
 ]
 

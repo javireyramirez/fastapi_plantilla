@@ -32,6 +32,8 @@ dependencies = [
   "python-multipart>=0.0.32",
   "openpyxl>=3.1.5",
   "prometheus-client>=0.20.0,<1",
+  "pyotp>=2.9.0",
+  "segno>=1.6.1",
 ]
 
 [dependency-groups]
@@ -82,6 +84,7 @@ env = [
     "FASTAPI_PLANTILLA_ENVIRONMENT=pytest",
     "FASTAPI_PLANTILLA_DB_BASE=fastapi_plantilla_test",
     "FASTAPI_PLANTILLA_AUTH_SECRET=9f8c6e2a1b4d3c5e7a9b0c2d4e6f8a0b1c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f",
+    "FASTAPI_PLANTILLA_RATE_LIMIT_ENABLED=false",
 ]
 
 [tool.ruff]

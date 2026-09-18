@@ -11,10 +11,10 @@ from fastapi import (
     status,
 )
 from fastapi.responses import RedirectResponse
-from yarl import URL
 
 from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.core.crud.schema import MessageResponse
+from fastapi_plantilla.core.middlewares import RateLimiter, get_client_ip
 from fastapi_plantilla.modules.auth.dependencies import (
     get_current_active_superuser,
     get_current_session,
@@ -25,43 +25,37 @@ from fastapi_plantilla.modules.auth.schema import (
     ChangeEmailInput,
     DeleteAccountInput,
     ForgotPasswordRequest,
+    MagicLinkRequest,
     PasswordChange,
     ResetPasswordInput,
     RevokeSessionInput,
     SendVerificationEmailRequest,
     SessionDetailResponse,
+    TwoFactorDisableInput,
+    TwoFactorEnableInput,
+    TwoFactorEnableResponse,
+    TwoFactorLoginInput,
+    TwoFactorRecoveryCodesResponse,
+    TwoFactorSetupResponse,
     UserCreate,
     UserLogin,
     UserResponse,
     VerifyEmailInput,
+    VerifyMagicLinkInput,
 )
 from fastapi_plantilla.modules.auth.service import DEFAULT_TOKEN_BYTES, AuthService
+from fastapi_plantilla.modules.auth.utils import is_safe_callback_url
 
 SECONDS_PER_DAY: int = 86400
 DEFAULT_OAUTH_STATE_MAX_AGE_SECONDS: int = 300
+_is_safe_callback_url = is_safe_callback_url
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
-def _is_safe_callback_url(url_str: str) -> bool:
-    """Validate that callback_url is a relative path or matches frontend_url origin."""
-    if not url_str:
-        return False
-    if url_str.startswith("/") and not url_str.startswith("//"):
-        return True
-    if settings.frontend_url:
-        try:
-            target = URL(url_str)
-            frontend = URL(settings.frontend_url)
-            if (
-                target.scheme in ("http", "https")
-                and target.host == frontend.host
-                and target.port == frontend.port
-            ):
-                return True
-        except Exception:
-            return False
-    return False
+def _extract_ip(request: Request) -> str:
+    """Safely extract client IP respecting configured trusted reverse proxies."""
+    return get_client_ip(request.scope, settings.trusted_proxies)
 
 
 def set_session_cookie(response: Response, token: str) -> None:
@@ -88,7 +82,11 @@ def delete_session_cookie(response: Response) -> None:
     )
 
 
-@router.post("/sign-up/email", response_model=AuthResponse)
+@router.post(
+    "/sign-up/email",
+    response_model=AuthResponse,
+    dependencies=[Depends(RateLimiter(scope_prefix="auth_signup"))],
+)
 async def sign_up_email(
     user: UserCreate,
     request: Request,
@@ -102,7 +100,7 @@ async def sign_up_email(
     """
     result = await service.register(
         schema=user,
-        ip_address=request.client.host if request.client else None,
+        ip_address=_extract_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
 
@@ -112,7 +110,11 @@ async def sign_up_email(
     return result
 
 
-@router.post("/sign-in/email", response_model=AuthResponse)
+@router.post(
+    "/sign-in/email",
+    response_model=AuthResponse,
+    dependencies=[Depends(RateLimiter(scope_prefix="auth_signin"))],
+)
 async def sign_in_email(
     user: UserLogin,
     request: Request,
@@ -126,7 +128,7 @@ async def sign_in_email(
     """
     result = await service.login(
         schema=user,
-        ip_address=request.client.host if request.client else None,
+        ip_address=_extract_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
 
@@ -152,7 +154,7 @@ async def sign_out(
         await service.logout(
             token=session.session.token,
             user=session.user,
-            ip_address=request.client.host if request.client else None,
+            ip_address=_extract_ip(request),
             user_agent=request.headers.get("user-agent"),
         )
     delete_session_cookie(response=response)
@@ -160,6 +162,7 @@ async def sign_out(
 
 
 @router.get("/get-session", response_model=AuthResponse)
+@router.get("/me", response_model=AuthResponse)
 async def get_session(
     session: AuthResponse = Depends(get_current_session),
 ) -> AuthResponse:
@@ -221,7 +224,7 @@ async def revoke_sessions(
     if user:
         await service.logout_all(
             user_id=user.id,
-            ip_address=request.client.host if request.client else None,
+            ip_address=_extract_ip(request),
             user_agent=request.headers.get("user-agent"),
         )
     delete_session_cookie(response=response)
@@ -249,7 +252,7 @@ async def change_password(
         user_id=session.user.id,
         schema=schema,
         token=session.session.token,
-        ip_address=request.client.host if request.client else None,
+        ip_address=_extract_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
     return True
@@ -289,14 +292,18 @@ async def delete_user(
     await service.delete_user(
         user_id=session.user.id,
         schema=schema,
-        ip_address=request.client.host if request.client else None,
+        ip_address=_extract_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
     delete_session_cookie(response=response)
     return True
 
 
-@router.post("/forget-password", response_model=bool)
+@router.post(
+    "/forget-password",
+    response_model=bool,
+    dependencies=[Depends(RateLimiter(scope_prefix="auth_forget"))],
+)
 async def forget_password(
     schema: ForgotPasswordRequest,
     service: AuthService = Depends(),
@@ -310,7 +317,11 @@ async def forget_password(
     return True
 
 
-@router.post("/reset-password", response_model=bool)
+@router.post(
+    "/reset-password",
+    response_model=bool,
+    dependencies=[Depends(RateLimiter(scope_prefix="auth_reset"))],
+)
 async def reset_password(
     schema: ResetPasswordInput,
     request: Request,
@@ -323,13 +334,17 @@ async def reset_password(
     """
     await service.reset_password(
         schema=schema,
-        ip_address=request.client.host if request.client else None,
+        ip_address=_extract_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
     return True
 
 
-@router.post("/send-verification-email", response_model=bool)
+@router.post(
+    "/send-verification-email",
+    response_model=bool,
+    dependencies=[Depends(RateLimiter(scope_prefix="auth_verify_send"))],
+)
 async def send_verification_email(
     schema: SendVerificationEmailRequest,
     service: AuthService = Depends(),
@@ -353,6 +368,124 @@ async def verify_email(
     Marks the user's email as verified and consumes the one-time token.
     """
     return await service.verify_email(token=schema.token)
+
+
+@router.post(
+    "/sign-in/magic-link",
+    response_model=bool,
+    dependencies=[Depends(RateLimiter(scope_prefix="auth_magic_link"))],
+)
+async def sign_in_magic_link(
+    schema: MagicLinkRequest,
+    request: Request,
+    service: AuthService = Depends(),
+) -> bool:
+    """
+    Request a passwordless magic link for login.
+
+    Sends a one-time login link to the user's email if active.
+    Safe against user enumeration.
+    """
+    return await service.request_magic_link(
+        schema=schema,
+        ip_address=_extract_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+
+
+@router.post(
+    "/verify-magic-link",
+    response_model=AuthResponse,
+    dependencies=[Depends(RateLimiter(scope_prefix="auth_verify_magic_link"))],
+)
+async def verify_magic_link(
+    schema: VerifyMagicLinkInput,
+    request: Request,
+    response: Response,
+    service: AuthService = Depends(),
+) -> AuthResponse:
+    """
+    Verify magic link token and establish an authenticated session.
+
+    Consumes the single-use token, validates the user status,
+    marks email as verified if needed, and sets the session cookie.
+    """
+    result = await service.verify_magic_link(
+        schema=schema,
+        ip_address=_extract_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    if result.session:
+        set_session_cookie(response, result.session.token)
+    return result
+
+
+@router.post("/two-factor/setup", response_model=TwoFactorSetupResponse)
+async def setup_two_factor(
+    current_user: UserResponse = Depends(get_current_user),
+    service: AuthService = Depends(),
+) -> TwoFactorSetupResponse:
+    """Initialize two-factor authentication setup and retrieve QR code."""
+    return await service.setup_two_factor(user=current_user)
+
+
+@router.post("/two-factor/enable", response_model=TwoFactorEnableResponse)
+async def enable_two_factor(
+    schema: TwoFactorEnableInput,
+    current_user: UserResponse = Depends(get_current_user),
+    service: AuthService = Depends(),
+) -> TwoFactorEnableResponse:
+    """Validate initial TOTP code and enable two-factor authentication."""
+    codes = await service.enable_two_factor(user=current_user, code=schema.code)
+    return TwoFactorEnableResponse(backup_codes=codes)
+
+
+@router.post("/two-factor/disable", response_model=bool)
+async def disable_two_factor(
+    schema: TwoFactorDisableInput,
+    current_user: UserResponse = Depends(get_current_user),
+    service: AuthService = Depends(),
+) -> bool:
+    """Disable two-factor authentication confirming TOTP code or password."""
+    return await service.disable_two_factor(
+        user=current_user, code=schema.code, password=schema.password
+    )
+
+
+@router.post(
+    "/two-factor/recovery-codes",
+    response_model=TwoFactorRecoveryCodesResponse,
+)
+async def regenerate_recovery_codes(
+    schema: TwoFactorEnableInput,
+    current_user: UserResponse = Depends(get_current_user),
+    service: AuthService = Depends(),
+) -> TwoFactorRecoveryCodesResponse:
+    """Regenerate recovery backup codes confirming valid TOTP code."""
+    codes = await service.regenerate_backup_codes(user=current_user, code=schema.code)
+    return TwoFactorRecoveryCodesResponse(backup_codes=codes)
+
+
+@router.post(
+    "/sign-in/two-factor",
+    response_model=AuthResponse,
+    dependencies=[Depends(RateLimiter(scope_prefix="auth_two_factor"))],
+)
+async def sign_in_two_factor(
+    schema: TwoFactorLoginInput,
+    request: Request,
+    response: Response,
+    service: AuthService = Depends(),
+) -> AuthResponse:
+    """Complete two-factor login challenge via TOTP code or backup code."""
+    result = await service.verify_two_factor_login(
+        schema=schema,
+        ip_address=_extract_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    if result.session:
+        set_session_cookie(response, result.session.token)
+    return result
 
 
 @router.get("/sign-in/social/google", response_class=RedirectResponse)
@@ -415,9 +548,24 @@ async def callback_google(
     auth_data = await service.authenticate_google(
         code=code,
         redirect_uri=redirect_uri,
-        ip_address=request.client.host if request.client else None,
+        ip_address=_extract_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
+
+    if auth_data.two_factor_required:
+        token_param = auth_data.two_factor_token
+        two_factor_url = f"{settings.frontend_url}/two-factor?token={token_param}"
+        if oauth_callback_url and _is_safe_callback_url(oauth_callback_url):
+            two_factor_url = f"{two_factor_url}&callback_url={oauth_callback_url}"
+        redirect = RedirectResponse(
+            url=two_factor_url,
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+        )
+        redirect.delete_cookie("oauth_state", path="/", httponly=True, samesite="lax")
+        redirect.delete_cookie(
+            "oauth_callback_url", path="/", httponly=True, samesite="lax"
+        )
+        return redirect
 
     if oauth_callback_url:
         if not _is_safe_callback_url(oauth_callback_url):
@@ -459,12 +607,15 @@ async def exit_impersonation(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No active session found",
         )
-    await service.exit_impersonation(
+    auth_data = await service.exit_impersonation(
         token=current_session.session.token,
-        ip_address=request.client.host if request.client else None,
+        ip_address=_extract_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
-    delete_session_cookie(response)
+    if auth_data and auth_data.session:
+        set_session_cookie(response, auth_data.session.token)
+    else:
+        delete_session_cookie(response)
     return MessageResponse(message="Impersonación finalizada")
 
 
@@ -477,7 +628,7 @@ async def impersonate_user(
     service: AuthService = Depends(),
 ) -> AuthResponse:
     """Start an impersonated session as target user (SuperAdmin only)."""
-    ip_address = request.client.host if request.client else None
+    ip_address = _extract_ip(request)
     user_agent = request.headers.get("user-agent")
     auth_data = await service.impersonate_user(
         admin_user=admin,

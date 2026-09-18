@@ -604,6 +604,21 @@ class AuthRepository:
         result = await self.session.execute(query)
         return result.scalars().first()
 
+    async def get_valid_verification_by_identifier(
+        self, identifier: str
+    ) -> Verification | None:
+        """Find latest valid, non-expired verification record by identifier."""
+        query = (
+            select(Verification)
+            .where(
+                Verification.identifier == identifier,
+                Verification.expires_at > func.now(),
+            )
+            .order_by(Verification.created_at.desc())
+        )
+        result = await self.session.execute(query)
+        return result.scalars().first()
+
     async def delete_verification(self, identifier: str, value: str) -> bool:
         """Delete verification record after use (one-time token consumption)."""
         query = delete(Verification).where(
