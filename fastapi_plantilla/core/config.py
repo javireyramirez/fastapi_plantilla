@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     reload: bool = False
     environment: str = "dev"
     log_level: LogLevel = LogLevel.INFO
+    log_colorize: bool = True
 
     @property
     def is_dev(self) -> bool:
@@ -167,6 +168,9 @@ class Settings(BaseSettings):
     # In-App Notifications
     notifications_batch_chunk_size: int = 100
     notifications_fan_out_max_recipients: int = 500
+
+    # Observability & Metrics
+    prometheus_enabled: bool = True
 
     @property
     def db_url(self) -> URL:

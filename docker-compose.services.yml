@@ -73,14 +73,18 @@ services:
     container_name: fastapi_plantilla-minio-init
     depends_on:
       - minio
+    env_file:
+      - path: .env
+        required: false
     entrypoint: >
       /bin/sh -c "
-      until /usr/bin/mc alias set localminio http://fastapi_plantilla-minio:9000 minioadmin minioadmin; do
+      until /usr/bin/mc alias set localminio http://minio:9000 minioadmin minioadmin; do
         echo 'Waiting for MinIO...';
         sleep 1;
       done;
-      /usr/bin/mc mb localminio/fastapi-plantilla-bucket --ignore-existing;
-      /usr/bin/mc anonymous set download localminio/fastapi-plantilla-bucket;
+      BUCKET_NAME=\"$${FASTAPI_PLANTILLA_STORAGE_BUCKET:-fastapi-plantilla-bucket}\";
+      /usr/bin/mc mb localminio/$${BUCKET_NAME} --ignore-existing;
+      /usr/bin/mc anonymous set download localminio/$${BUCKET_NAME};
       exit 0;
       "
 

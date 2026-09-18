@@ -35,7 +35,7 @@ flowchart TD
     F3 --> F4["Fase 4: Almacenamiento Multi-Cloud & Papelera (✅ Completado)"]
     F4 --> F5["Fase 5: Background Jobs en BD, Ingesta & Exportación (✅ Completado)"]
     F5 --> F6["Fase 6: Módulo de Ejemplo 'Companies' (✅ Completado)"]
-    F6 --> F7["Fase 7: Auditoría, Settings, Notificaciones & Métricas (🟢 7.1, 7.2 y 7.3 Completados)"]
+    F6 --> F7["Fase 7: Auditoría, Settings, Notificaciones & Observabilidad (✅ Completado)"]
     F7 --> F8["Fase 8: Rate Limiting & Auth Avanzado (⚪ Pendiente)"]
     F8 --> F9["Fase 9: Motor de Prompts IA Git-like en DB (⚪ Pendiente)"]
     F9 --> F10["Fase 10: LLM Gateway, FinOps & Pipeline RAG Vectorial (⚪ Pendiente)"]
@@ -159,7 +159,7 @@ flowchart TD
 
 ---
 
-### 🟡 FASE 7: Auditoría Centralizada, Settings Dinámicos, Notificaciones & Métricas Prometheus *(🟢 7.1, 7.2 y 7.3 COMPLETADOS / ⏳ 7.4 PENDIENTE)*
+### 🟢 FASE 7: Auditoría Centralizada, Settings Dinámicos, Notificaciones & Observabilidad Integral (Métricas & Logs en Vivo) *(✅ COMPLETADO)*
 * **7.1 Módulo de Auditoría (`modules/audit`):** *(✅ COMPLETADO)*
   * *Descripción:* Tabla `sys_audit_logs` con registro de acciones (`CREATE`, `UPDATE`, `LOGIN`, etc.), diffs `before`/`after`, IP, User-Agent, ofuscación de datos sensibles (`[REDACTED]`) y niveles configurables (`FULL`, `PARTIAL`, `NONE`).
   * *Purga Programada (`audit.purge`):* Implementada como job canónico recurrente del catálogo (`sys_jobs`) con `scheduled_at`, clave de idempotencia diaria y auto-reprogramación transaccional multi-réplica, sustituyendo los loops en memoria y ofreciendo trazabilidad de purgas históricas, control de reintentos y observabilidad desde `/api/jobs` y panel administrativo.
@@ -179,9 +179,15 @@ flowchart TD
     - *Notificación de Bienvenida en Seeds (`scripts/seeds/notifications.py`):* Notificación automática e idempotente de bienvenida para el usuario inicial (superadmin) al provisionar la base de datos.
     - *Integración en Módulos de Negocio (`POST /api/companies/{id}/notify` y `POST /api/companies/notify`):* Endpoints de notificación contextual donde el frontend proporciona el título y comentario traducidos (soporte i18n nativo) para notificar a cualquier usuario destinatario.
   * *Problema que soluciona:* Elimina por completo el short-polling innecesario del frontend hacia la API, garantizando que el usuario visualice barras de progreso fluidas en tiempo real y reciba avisos instantáneos al concluir tareas pesadas (exportaciones masivas, compresión de archivos, ingesta y embeddings de IA).
-* **7.4 Métricas Operativas Prometheus (`/metrics`) & Salud del Pool:** *(⏳ PENDIENTE)*
-  * *Descripción:* Endpoint estándar `/metrics` (formato OpenMetrics/Prometheus) para telemetría en tiempo real: peticiones por segundo, latencias p50/p95/p99 por endpoint, conteo de respuestas por código de estado (2xx, 4xx, 5xx) y saturación del connection pool de SQLAlchemy.
-  * *Problema que soluciona:* Observabilidad proactiva para alertar ante degradación del rendimiento o agotamiento del pool de base de datos antes de que ocurra una caída.
+* **7.4 Observabilidad Completa: Métricas Prometheus (`/metrics`), Salud del Pool & Stack de Logs en Tiempo Real (Loki / Promtail / Grafana):** *(✅ COMPLETADO)*
+  * *Descripción:* Solución integral de telemetría y diagnóstico en tiempo real compuesta por:
+    - *Telemetría Numérica (`/metrics`):* Endpoint estándar en formato OpenMetrics/Prometheus con conteo de peticiones HTTP por método, endpoint y código de estado (2xx, 4xx, 5xx), distribución de latencias (p50/p95/p99) y métricas de saturación del connection pool de SQLAlchemy (`asyncpg`: conexiones activas, en uso, disponibles y overflow).
+    - *Logging Centralizado & Live Tail (Stack PLG en Docker):* Configuración modular de infraestructura de observabilidad (`docker-compose.monitoring.yml`) 100% gratuita y Open Source:
+      - **Grafana Loki:** Base de datos ultraligera y eficiente para almacenamiento y retención de logs comprimidos.
+      - **Promtail / Grafana Alloy:** Agente recolector no invasivo que extrae los logs emitidos a `stdout`/`stderr` por `fastapi_plantilla` (enriquecidos con `X-Request-ID` y `Loguru`) desde el socket de Docker sin sobrecargar el runtime de la API.
+      - **Grafana UI:** Panel web unificado (`:3000`) con dashboards preconfigurados de métricas de la API y vista **Explore / Live Tail** para streaming de logs en tiempo real con filtrado por contenedor, nivel de severidad y traza única de petición.
+    - *Despliegue Flexible (Self-Hosted vs. Cloud):* Soporte para ejecución local o en VPS mediante Docker Compose (~250 MB de RAM total), y compatibilidad directa con **Grafana Cloud** (plan gratuito permanente) mediante configuración de endpoints seguros sin tocar código fuente.
+  * *Problema que soluciona:* Aporta observabilidad 360° correlacionando métricas y logs en una sola pantalla: detecta caídas o degradaciones del pool antes de que ocurran fallos masivos, y permite inspeccionar la traza exacta de un error en tiempo real usando el `X-Request-ID` sin requerir accesos SSH a servidores ni búsquedas manuales en ficheros de texto.
 
 ---
 
@@ -311,7 +317,7 @@ flowchart TD
 | **Fase 4: Storage Multi-Cloud & Papelera** | 🟢 Completado | 100% Passing | ✅ Verificado |
 | **Fase 5: Background Jobs, Ingesta & Exportación** | 🟢 5.1, 5.2 y 5.3 Completados (5.4 en expansión) | 100% Passing (36 tests dedicados) | ✅ Verificado (`importer.py` & `jobs/routes.py` < 250 líneas) |
 | **Fase 6: Módulo de Ejemplo 'Companies'** | 🟢 Completado | 100% Passing (24 tests) | ✅ Verificado (`companies/routes.py`: 115 líneas) |
-| **Fase 7: Auditoría, Settings & Notificaciones SSE (7.1, 7.2 & 7.3)** | 🟢 7.1, 7.2 y 7.3 Completados (7.4 pendiente) | 100% Passing (28 tests dedicados en 7.1, 7.2 y 7.3) | ✅ Verificado (todos los archivos < 185 líneas) |
+| **Fase 7: Auditoría, Settings, Notificaciones & Observabilidad (Métricas & Logs)** | 🟢 Completado | 100% Passing (35 tests dedicados) | ✅ Verificado (todos los archivos < 185 líneas) |
 | **Fase 8: Seguridad Global & Auth Avanzado** | ⚪ Pendiente | — | ⏳ Planificado |
 | **Fase 9: Motor Prompts IA Git-like en DB** | ⚪ Pendiente | — | ⏳ Planificado |
 | **Fase 10: LLM Gateway, FinOps & RAG** | ⚪ Pendiente | — | ⏳ Planificado |
@@ -320,7 +326,7 @@ flowchart TD
 | **Fase 13: Hardening OWASP & Batería Intrusión** | ⚪ Pendiente | — | ⏳ Planificado |
 
 ### Métricas de Calidad Global:
-* **Pytest**: **294/294 tests pasando al 100%**.
+* **Pytest**: **317/317 tests pasando al 100%**.
 * **Ruff**: Formato consistente y linter verificado en el 100% del código nuevo.
-* **Mypy**: **0 errores** de tipado estricto en los 178 archivos fuente.
+* **Mypy**: **0 errores** de tipado estricto en los 194 archivos fuente.
 

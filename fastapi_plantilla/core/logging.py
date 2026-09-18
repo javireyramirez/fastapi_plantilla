@@ -70,4 +70,5 @@ def configure_logging() -> None:  # pragma: no cover
         sys.stdout,
         format=LOG_FORMAT,
         level=settings.log_level.value,
+        colorize=settings.log_colorize,
     )

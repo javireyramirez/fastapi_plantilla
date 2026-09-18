@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from loguru import logger
@@ -29,7 +30,13 @@ from fastapi_plantilla.modules.trash.listener import setup_trash_listeners
 
 def _setup_db(app: FastAPI) -> None:  # pragma: no cover
     """Initialize database engine and session factory on app state."""
-    engine = create_async_engine(str(settings.db_url), echo=settings.db_echo)
+    engine_kwargs: dict[str, Any] = {"echo": settings.db_echo}
+    if settings.db_pool_size is not None:
+        engine_kwargs["pool_size"] = settings.db_pool_size
+    if settings.db_max_overflow is not None:
+        engine_kwargs["max_overflow"] = settings.db_max_overflow
+
+    engine = create_async_engine(str(settings.db_url), **engine_kwargs)
     session_factory = async_sessionmaker(
         engine,
         expire_on_commit=False,

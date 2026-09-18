@@ -1,0 +1,65 @@
+name: fastapi_plantilla
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: fastapi_plantilla-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./scripts/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - fastapi_plantilla-prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: fastapi_plantilla-loki
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./scripts/monitoring/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - fastapi_plantilla-loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+
+  alloy:
+    image: grafana/alloy:v1.1.0
+    container_name: fastapi_plantilla-alloy
+    restart: unless-stopped
+    volumes:
+      - ./scripts/monitoring/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: run --server.http.listen-addr=0.0.0.0:12345 /etc/alloy/config.alloy
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: fastapi_plantilla-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./scripts/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - fastapi_plantilla-grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+
+volumes:
+  fastapi_plantilla-prometheus-data:
+    name: fastapi_plantilla-prometheus-data
+  fastapi_plantilla-loki-data:
+    name: fastapi_plantilla-loki-data
+  fastapi_plantilla-grafana-data:
+    name: fastapi_plantilla-grafana-data
