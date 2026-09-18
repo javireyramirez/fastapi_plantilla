@@ -88,9 +88,14 @@ class EmailService:
                 return await self.send(payload, fail_silently=False)
             job_service = JobService(JobRepository(session))
 
+        job_payload = (
+            payload.model_copy(update={"html": None})
+            if payload.template_name
+            else payload
+        )
         req = JobCreateRequest(
             name="emails.send",
-            payload=payload.model_dump(mode="json"),
+            payload=job_payload.model_dump(mode="json"),
             scheduled_at=scheduled_at,
         )
         return await job_service.enqueue(req, created_by_id=user_id)

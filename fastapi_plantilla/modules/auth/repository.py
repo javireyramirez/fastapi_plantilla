@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import Depends
-from sqlalchemy import asc, delete, desc, func, or_, select, update
+from sqlalchemy import asc, case, delete, desc, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -55,9 +55,17 @@ class AuthRepository:
         await self.session.refresh(user)
         return user
 
-    async def get_user_by_email(self, email: str) -> User | None:
-        """Find user by email address."""
+    async def get_user_by_email(
+        self, email: str, include_trashed: bool = False
+    ) -> User | None:
+        """Find user by email address, filtering trashed users by default."""
         query = select(User).where(User.email == email)
+        if not include_trashed:
+            query = query.where(User.status != RecordStatus.TRASHED)
+        else:
+            query = query.order_by(
+                case((User.status != RecordStatus.TRASHED, 0), else_=1)
+            )
         result = await self.session.execute(query)
         return result.scalars().first()
 
@@ -217,6 +225,40 @@ class AuthRepository:
         await self.session.flush()
         await self.session.refresh(account)
         return account
+
+    async def release_user_credentials(self, user_id: uuid.UUID | str) -> int:
+        """Suffix credential accounts for a trashed user so the email can be reused."""
+        prefix = f"trashed_{user_id}_"
+        stmt = (
+            update(Account)
+            .where(
+                Account.user_id == user_id,
+                Account.provider_id == "credential",
+                ~Account.account_id.startswith("trashed_"),
+            )
+            .values(account_id=func.concat(prefix, Account.account_id))
+        )
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        return result.rowcount if isinstance(result, CursorResult) else 0
+
+    async def restore_user_credentials(
+        self, user_id: uuid.UUID | str, email: str
+    ) -> int:
+        """Restore credential account_id back to user active email upon restoration."""
+        prefix = f"trashed_{user_id}_"
+        stmt = (
+            update(Account)
+            .where(
+                Account.user_id == user_id,
+                Account.provider_id == "credential",
+                Account.account_id.startswith(prefix),
+            )
+            .values(account_id=email)
+        )
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        return result.rowcount if isinstance(result, CursorResult) else 0
 
     # ==========================================
     # 3. Session Operations

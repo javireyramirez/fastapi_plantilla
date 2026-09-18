@@ -1,9 +1,13 @@
 from functools import lru_cache
 
 from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.core.config import EmailBackend, settings
+from fastapi_plantilla.core.database import get_db_session
+from fastapi_plantilla.modules.email.email_log_service import EmailLogService
 from fastapi_plantilla.modules.email.renderer import TemplateRenderer
+from fastapi_plantilla.modules.email.repository import EmailLogRepository
 from fastapi_plantilla.modules.email.service import EmailService
 from fastapi_plantilla.modules.email.transports import (
     BaseTransport,
@@ -13,7 +17,13 @@ from fastapi_plantilla.modules.email.transports import (
     SmtpTransport,
 )
 
-__all__ = ["get_email_service", "get_email_transport", "get_template_renderer"]
+__all__ = [
+    "create_email_log_service",
+    "get_email_log_service",
+    "get_email_service",
+    "get_email_transport",
+    "get_template_renderer",
+]
 
 
 @lru_cache
@@ -45,3 +55,15 @@ def get_email_service(
 ) -> EmailService:
     """Dependency provider for EmailService."""
     return EmailService(transport=transport, renderer=renderer)
+
+
+def get_email_log_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> EmailLogService:
+    """Dependency provider for EmailLogService."""
+    return EmailLogService(EmailLogRepository(session))
+
+
+def create_email_log_service(session: AsyncSession) -> EmailLogService:
+    """Factory helper creating EmailLogService from an existing session."""
+    return EmailLogService(EmailLogRepository(session))

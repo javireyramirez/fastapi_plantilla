@@ -747,3 +747,47 @@ async def test_create_user_with_manual_password_vs_invitation_email(
         "Cannot provide a password and request an invitation email"
         in conflict_res.json()["detail"][0]["msg"]
     )
+
+
+@pytest.mark.anyio
+async def test_user_trash_reuse_email_and_restore_conflict(
+    users_client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify that trashed users allow email reuse and restoring triggers 409."""
+    shared_email = f"reuse_{uuid.uuid4().hex[:6]}@example.com"
+
+    # 1. Create User A with password
+    res1 = await users_client.post(
+        "/api/users",
+        json={
+            "name": "User Original",
+            "email": shared_email,
+            "password": "Password123!",
+        },
+    )
+    assert res1.status_code == status.HTTP_201_CREATED
+    user1_id = res1.json()["id"]
+
+    # 2. Soft-delete User A (send to trash)
+    trash_res = await users_client.delete(f"/api/users/{user1_id}")
+    assert trash_res.status_code == status.HTTP_200_OK
+
+    # 3. Create User B with the same email -> should succeed!
+    res2 = await users_client.post(
+        "/api/users",
+        json={
+            "name": "User Recreated",
+            "email": shared_email,
+            "password": "NewPassword123!",
+        },
+    )
+    assert res2.status_code == status.HTTP_201_CREATED
+    user2_id = res2.json()["id"]
+    assert user2_id != user1_id
+
+    # 4. Attempt to restore User A -> should fail with 409 Conflict
+    restore_res = await users_client.post(f"/api/users/{user1_id}/restore")
+    assert restore_res.status_code == status.HTTP_409_CONFLICT
+    err_detail = restore_res.json()["detail"]
+    assert "Cannot restore user: email is already in use." in err_detail

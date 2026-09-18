@@ -11,6 +11,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.ext.mutable import MutableList
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -30,7 +31,7 @@ class User(UUID7PrimaryKeyMixin, AuditFieldsMixin, OptimisticLockMixin, Base):
     __tablename__ = "auth_users"
 
     name: Mapped[str] = mapped_column(String(length=200))
-    email: Mapped[str] = mapped_column(String(length=200), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(length=200), unique=False, index=True)
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     image: Mapped[str | None] = mapped_column(String(length=500), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
@@ -42,6 +43,16 @@ class User(UUID7PrimaryKeyMixin, AuditFieldsMixin, OptimisticLockMixin, Base):
     )
     two_factor_backup_codes: Mapped[list[str] | None] = mapped_column(
         MutableList.as_mutable(JSON), nullable=True
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_auth_users_email_active",
+            "email",
+            unique=True,
+            postgresql_where=text("status != 'TRASHED'"),
+            sqlite_where=text("status != 'TRASHED'"),
+        ),
     )
 
     # Relaciones

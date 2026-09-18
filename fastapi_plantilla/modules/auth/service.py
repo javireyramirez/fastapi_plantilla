@@ -402,7 +402,9 @@ class AuthService:
         user_agent: str | None = None,
     ) -> AuthResponse:
         """Login user and start active session."""
-        user = await self.repository.get_user_by_email(schema.email)
+        user = await self.repository.get_user_by_email(
+            schema.email, include_trashed=True
+        )
         if not user:
             with contextlib.suppress(VerifyMismatchError):
                 ph.verify(DUMMY_PASSWORD_HASH, schema.password)
@@ -886,7 +888,9 @@ class AuthService:
                 detail="El enlace de acceso es inválido o ha expirado",
             )
 
-        user = await self.repository.get_user_by_email(verification.identifier)
+        user = await self.repository.get_user_by_email(
+            verification.identifier, include_trashed=True
+        )
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1345,6 +1349,7 @@ class AuthService:
             },
         )
         await self.repository.invalidate_all_user_sessions(user_id=user.id)
+        await self.repository.release_user_credentials(user_id=user.id)
         await dispatch_trash_hook(
             self.repository.session,
             user,

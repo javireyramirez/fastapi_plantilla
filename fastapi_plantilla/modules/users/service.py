@@ -146,6 +146,7 @@ class UserAdminService(BaseAuditService[User]):
             user = await super().restore(
                 id, *where, user_id=user_id, scope=scope, options=options
             )
+            await self.repository.restore_user_credentials(user.id, user.email)
         except IntegrityError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -158,9 +159,10 @@ class UserAdminService(BaseAuditService[User]):
         item: User,
         user_id: str | uuid.UUID | None = None,
     ) -> None:
-        """Invalidate active sessions when user is soft-deleted."""
+        """Invalidate sessions and credentials when user is soft-deleted."""
         await super().on_after_trash(item, user_id=user_id)
         await self.repository.invalidate_user_sessions(item.id)
+        await self.repository.release_user_credentials(item.id)
 
     def build_where_filters(self, params: PaginationParams) -> list[Any]:
         """Build query clauses including name, email, and boolean status filters."""
@@ -394,9 +396,14 @@ class UserAdminService(BaseAuditService[User]):
                 if deactivating:
                     await self.repository.invalidate_user_sessions(user.id)
         except IntegrityError as exc:
+            detail = (
+                "Cannot restore user: email is already in use."
+                if update_dict.get("status") == RecordStatus.ACTIVE
+                else "User with this email already exists"
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="User with this email already exists",
+                detail=detail,
             ) from exc
 
         if allow_immutable or not isinstance(data, BaseModel):

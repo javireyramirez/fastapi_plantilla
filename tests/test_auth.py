@@ -596,6 +596,51 @@ async def test_delete_user_soft_deletes_to_trash(
 
 
 @pytest.mark.anyio
+async def test_delete_user_and_re_register_same_email(
+    client: AsyncClient,
+    dbsession: AsyncSession,
+) -> None:
+    """Verify that a user who self-deleted can re-register with the same email."""
+    email = f"reregister_{uuid.uuid4().hex[:8]}@example.com"
+    pwd1 = "InitialPassword123!"
+    pwd2 = "SecondPassword456!"
+
+    # 1. First registration
+    reg1 = await client.post(
+        "/api/auth/sign-up/email",
+        json={"name": "First Account", "email": email, "password": pwd1},
+    )
+    assert reg1.status_code == 200
+    user1_id = reg1.json()["user"]["id"]
+    token1 = reg1.json()["session"]["token"]
+
+    # 2. Self-delete account
+    del_resp = await client.post(
+        "/api/auth/delete-user",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"password": pwd1},
+    )
+    assert del_resp.status_code == 200
+
+    # 3. Re-register with the same email -> must succeed
+    reg2 = await client.post(
+        "/api/auth/sign-up/email",
+        json={"name": "Reborn Account", "email": email, "password": pwd2},
+    )
+    assert reg2.status_code == 200
+    user2_id = reg2.json()["user"]["id"]
+    assert user2_id != user1_id
+
+    # 4. Login with new credentials succeeds
+    login_resp = await client.post(
+        "/api/auth/sign-in/email",
+        json={"email": email, "password": pwd2},
+    )
+    assert login_resp.status_code == 200
+    assert login_resp.json()["user"]["id"] == user2_id
+
+
+@pytest.mark.anyio
 async def test_auth_audit_events_emitted(
     client: AsyncClient,
     dbsession: AsyncSession,

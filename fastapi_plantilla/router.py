@@ -1,8 +1,10 @@
 from fastapi import APIRouter
 
+from fastapi_plantilla.modules.api_keys.routes import router as api_keys_router
 from fastapi_plantilla.modules.audit.routes import router as audit_router
 from fastapi_plantilla.modules.auth.routes import router as auth_router
 from fastapi_plantilla.modules.companies.routes import router as companies_router
+from fastapi_plantilla.modules.email.routes import router as email_logs_router
 from fastapi_plantilla.modules.health.routes import router as health_router
 from fastapi_plantilla.modules.jobs.routes import router as jobs_router
 from fastapi_plantilla.modules.notifications.routes import (
@@ -20,6 +22,7 @@ api_router = APIRouter(prefix="/api")
 
 api_router.include_router(health_router)
 api_router.include_router(auth_router)
+api_router.include_router(api_keys_router)
 api_router.include_router(rbac_router)
 api_router.include_router(sessions_router)
 api_router.include_router(teams_router)
@@ -31,3 +34,4 @@ api_router.include_router(audit_router)
 api_router.include_router(settings_router)
 api_router.include_router(jobs_router)
 api_router.include_router(notifications_router)
+api_router.include_router(email_logs_router)

@@ -6,10 +6,10 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.modules.email.renderer import TemplateRenderer
 
-__all__ = ["EmailBuilder", "EmailPayload"]
+__all__ = ["EmailBuilder", "EmailPayload", "html_to_plain_text"]
 
 
-def _html_to_plain_text(html_text: str) -> str:
+def html_to_plain_text(html_text: str) -> str:
     """Extract readable plain text from HTML content without external dependencies."""
     text = re.sub(
         r"<(script|style)[^>]*>.*?</\1>", "", html_text, flags=re.DOTALL | re.IGNORECASE
@@ -39,6 +39,8 @@ class EmailPayload(BaseModel):
     reply_to: EmailStr | None = None
     cc: list[EmailStr] = Field(default_factory=list)
     bcc: list[EmailStr] = Field(default_factory=list)
+    template_name: str | None = None
+    template_context: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("subject", "from_name", mode="before")
     @classmethod
@@ -64,6 +66,8 @@ class EmailBuilder:
         self._reply_to: str | None = None
         self._cc: list[str] = []
         self._bcc: list[str] = []
+        self._template_name: str | None = None
+        self._template_context: dict[str, Any] = {}
 
     def to(self, *recipients: str) -> Self:
         """Add recipient email addresses, trimming whitespace and filtering empty."""
@@ -79,8 +83,10 @@ class EmailBuilder:
     def template(
         self, template_name: str, context: dict[str, Any] | None = None, **kwargs: Any
     ) -> Self:
-        """Render and set HTML body from template."""
+        """Render and set HTML body from template, preserving template metadata."""
         merged_context = {**(context or {}), **kwargs}
+        self._template_name = template_name
+        self._template_context = merged_context
         self._html = self.renderer.render(
             template_name=template_name, context=merged_context
         )
@@ -89,6 +95,8 @@ class EmailBuilder:
     def html(self, html: str) -> Self:
         """Set raw HTML body content."""
         self._html = html
+        self._template_name = None
+        self._template_context = {}
         return self
 
     def text(self, text: str) -> Self:
@@ -131,7 +139,7 @@ class EmailBuilder:
 
         text_content = self._text
         if not text_content and self._html:
-            text_content = _html_to_plain_text(self._html)
+            text_content = html_to_plain_text(self._html)
 
         from_name = (
             self._from_name
@@ -154,4 +162,6 @@ class EmailBuilder:
             reply_to=self._reply_to,
             cc=self._cc,
             bcc=self._bcc,
+            template_name=self._template_name,
+            template_context=self._template_context,
         )

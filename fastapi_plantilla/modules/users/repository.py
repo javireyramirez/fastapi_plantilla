@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi_plantilla.core.crud.repository import BaseRepository
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.core.mixins import RecordStatus
+from fastapi_plantilla.modules.auth.models import Account, User
 from fastapi_plantilla.modules.auth.models import Session as AuthSession
-from fastapi_plantilla.modules.auth.models import User
 from fastapi_plantilla.modules.rbac.models import Role, RoleAssignment
 from fastapi_plantilla.modules.teams.models import Team, TeamUser
 
@@ -24,13 +24,49 @@ class UserAdminRepository(BaseRepository[User]):
         super().__init__(User, session)
 
     async def get_by_email(
-        self, email: str, include_trashed: bool = True
+        self, email: str, include_trashed: bool = False
     ) -> User | None:
         """Fetch user by email, optionally including trashed records."""
         where = [User.email == email]
         if not include_trashed:
             where.append(User.status != RecordStatus.TRASHED)
         return await self.find_first(*where)
+
+    async def release_user_credentials(self, user_id: uuid.UUID) -> int:
+        """Suffix credential accounts for a trashed user so the email can be reused."""
+        prefix = f"trashed_{user_id}_"
+        stmt = (
+            update(Account)
+            .where(
+                Account.user_id == user_id,
+                Account.provider_id == "credential",
+                ~Account.account_id.startswith("trashed_"),
+            )
+            .values(account_id=func.concat(prefix, Account.account_id))
+        )
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        if isinstance(result, CursorResult):
+            return int(result.rowcount)
+        return 0
+
+    async def restore_user_credentials(self, user_id: uuid.UUID, email: str) -> int:
+        """Restore credential account_id back to user active email upon restoration."""
+        prefix = f"trashed_{user_id}_"
+        stmt = (
+            update(Account)
+            .where(
+                Account.user_id == user_id,
+                Account.provider_id == "credential",
+                Account.account_id.startswith(prefix),
+            )
+            .values(account_id=email)
+        )
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        if isinstance(result, CursorResult):
+            return int(result.rowcount)
+        return 0
 
     async def count_active_superadmins(self) -> int:
         """Count active, non-trashed super admin users."""

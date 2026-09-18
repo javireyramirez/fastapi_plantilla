@@ -138,3 +138,139 @@ async def test_auth_and_users_enqueue_send_integration(
     with patch.object(settings, "frontend_url", "http://localhost:3000"):
         await user_service._send_invitation_email(user)  # noqa: SLF001
         mock_email_service.enqueue_send.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_email_service_enqueue_send_omits_html_when_template_present(
+    dbsession: AsyncSession,
+) -> None:
+    """Test enqueue_send strips raw HTML and persists template info."""
+    transport = AsyncMock()
+    renderer = TemplateRenderer()
+    service = EmailService(transport=transport, renderer=renderer)
+
+    builder = (
+        service.create_builder()
+        .to("recipient@example.com")
+        .subject("Prueba de plantilla")
+        .template(
+            "auth/verify_email.html",
+            name="Bob",
+            verify_link="http://localhost:3000/verify?token=123",
+            expiry_hours=24,
+        )
+    )
+
+    with patch.object(settings, "jobs_worker_enabled", True):
+        res = await service.enqueue_send(builder, session=dbsession)
+        assert isinstance(res, JobResponse)
+        assert res.payload["html"] is None
+        assert res.payload["template_name"] == "auth/verify_email.html"
+        assert res.payload["template_context"]["name"] == "Bob"
+        assert res.payload["template_context"]["expiry_hours"] == 24
+
+
+@pytest.mark.anyio
+async def test_handle_email_send_renders_template_and_logs(
+    dbsession: AsyncSession,
+) -> None:
+    """Test background handler renders HTML from template on-the-fly and records log."""
+    from fastapi_plantilla.modules.email.repository import EmailLogRepository
+
+    payload = EmailPayload(
+        to=["recipient@example.com"],
+        subject="Verificación",
+        template_name="auth/verify_email.html",
+        template_context={
+            "name": "Carlos",
+            "verify_link": "http://localhost:3000/verify-email?token=xyz",
+            "expiry_hours": 48,
+        },
+        html=None,
+    )
+    from fastapi_plantilla.modules.jobs.repository import JobRepository
+
+    job_repo = JobRepository(dbsession)
+    job = await job_repo.create("emails.send", payload.model_dump(mode="json"))
+    job_id = job.id
+    ctx = JobContext(
+        job_id=job_id,
+        name="emails.send",
+        payload=payload,
+        entity_type="email",
+        entity_id=None,
+        lease_token=1,
+        session=dbsession,
+        _update_progress_fn=AsyncMock(),
+        _check_cancelled_fn=AsyncMock(return_value=False),
+    )
+
+    with patch(
+        "fastapi_plantilla.modules.email.jobs.get_email_transport"
+    ) as mock_get_trans:
+        mock_transport = AsyncMock()
+        mock_get_trans.return_value = mock_transport
+
+        result = await handle_email_send(ctx)
+
+        assert result is not None
+        assert result["status"] == "sent"
+        assert payload.html is not None
+        assert "Carlos" in payload.html
+        assert "http://localhost:3000/verify-email?token=xyz" in payload.html
+        mock_transport.send.assert_awaited_once_with(payload=payload)
+
+        # Verify record in sys_email_logs
+        repo = EmailLogRepository(dbsession)
+        log = await repo.get_by_job_id_and_attempt(job_id, attempt=1)
+        assert log is not None
+        assert log.status == "SENT"
+        assert log.template_name == "auth/verify_email.html"
+        assert log.to == ["recipient@example.com"]
+        assert log.sent_at is not None
+
+
+@pytest.mark.anyio
+async def test_handle_email_send_failure_propagates_and_records_failed(
+    dbsession: AsyncSession,
+) -> None:
+    """Test handler records FAILED in logs and re-raises exception."""
+    from fastapi_plantilla.modules.email.repository import EmailLogRepository
+
+    payload = EmailPayload(
+        to=["failing@example.com"],
+        subject="Fallo de conexión",
+        text="Texto de prueba",
+    )
+    from fastapi_plantilla.modules.jobs.repository import JobRepository
+
+    job_repo = JobRepository(dbsession)
+    job = await job_repo.create("emails.send", payload.model_dump(mode="json"))
+    job_id = job.id
+    ctx = JobContext(
+        job_id=job_id,
+        name="emails.send",
+        payload=payload,
+        entity_type="email",
+        entity_id=None,
+        lease_token=1,
+        session=dbsession,
+        _update_progress_fn=AsyncMock(),
+        _check_cancelled_fn=AsyncMock(return_value=False),
+    )
+
+    with patch(
+        "fastapi_plantilla.modules.email.jobs.get_email_transport"
+    ) as mock_get_trans:
+        mock_transport = AsyncMock()
+        mock_transport.send.side_effect = ConnectionError("SMTP server timeout")
+        mock_get_trans.return_value = mock_transport
+
+        with pytest.raises(ConnectionError, match="SMTP server timeout"):
+            await handle_email_send(ctx)
+
+        repo = EmailLogRepository(dbsession)
+        log = await repo.get_by_job_id_and_attempt(job_id, attempt=1)
+        assert log is not None
+        assert log.status == "FAILED"
+        assert "SMTP server timeout" in (log.error or "")
