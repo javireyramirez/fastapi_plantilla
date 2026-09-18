@@ -6,7 +6,7 @@ from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi_plantilla.core.config import settings
+from fastapi_plantilla.core.config import StorageBackend, settings
 from fastapi_plantilla.core.database import get_db_session
 from fastapi_plantilla.modules.health.schema import (
     ComponentCheck,
@@ -83,6 +83,34 @@ async def ready_probe(
             status=ComponentStatus.ERROR,
             error=err_msg,
         )
+
+    if settings.storage_backend == StorageBackend.S3:
+        try:
+            from fastapi_plantilla.modules.storage.dependencies import (  # noqa: PLC0415
+                get_storage_provider,
+            )
+
+            storage_prov = get_storage_provider()
+            if hasattr(storage_prov, "check_bucket_exists"):
+                bucket_exists = await storage_prov.check_bucket_exists()
+                if not bucket_exists:
+                    is_healthy = False
+                    checks["storage"] = ComponentCheck(
+                        status=ComponentStatus.ERROR,
+                        error=(
+                            f"Bucket '{settings.storage_bucket}' does not exist "
+                            "or is not accessible"
+                        ),
+                    )
+                else:
+                    checks["storage"] = ComponentCheck(status=ComponentStatus.OK)
+        except Exception as exc:
+            is_healthy = False
+            logger.error(f"Healthcheck readiness: storage check error: {exc}")
+            checks["storage"] = ComponentCheck(
+                status=ComponentStatus.ERROR,
+                error=str(exc) if settings.is_dev else "Storage check failed",
+            )
 
     maintenance_mode = False
     if is_healthy and settings_service is not None:

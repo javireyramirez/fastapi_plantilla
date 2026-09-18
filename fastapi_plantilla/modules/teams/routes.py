@@ -9,7 +9,10 @@ from fastapi_plantilla.core.crud.schema import (
 )
 from fastapi_plantilla.modules.rbac.dependencies import require_permission
 from fastapi_plantilla.modules.rbac.schema import RbacActions
-from fastapi_plantilla.modules.teams.dependencies import get_team_service
+from fastapi_plantilla.modules.teams.dependencies import (
+    create_team_service,
+    get_team_service,
+)
 from fastapi_plantilla.modules.teams.schema import (
     TeamCreate,
     TeamMemberAdd,
@@ -30,6 +33,7 @@ router = create_crud_router(
     prefix="/teams",
     tags=["Teams"],
     resource_name="teams",
+    service_factory=create_team_service,
 )
 
 

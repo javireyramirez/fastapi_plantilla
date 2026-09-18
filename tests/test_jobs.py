@@ -411,6 +411,7 @@ async def test_jobs_rbac_own_scope_isolation(
 @pytest.mark.anyio
 async def test_job_worker_lifecycle(dbsession: AsyncSession) -> None:
     """Test BackgroundJobWorker polling, execution, and graceful stop."""
+    original_handlers = dict(job_registry._handlers)  # noqa: SLF001
     job_registry.clear()
     executed = False
 
@@ -433,14 +434,18 @@ async def test_job_worker_lifecycle(dbsession: AsyncSession) -> None:
     )
 
     worker.start()
-    # Wait briefly for worker to pick up and process job
-    for _ in range(20):
-        if executed:
-            break
-        await asyncio.sleep(0.05)
+    try:
+        # Wait briefly for worker to pick up and process job
+        for _ in range(20):
+            if executed:
+                break
+            await asyncio.sleep(0.05)
 
-    await worker.stop()
-    assert executed is True
+        assert executed is True
+    finally:
+        await worker.stop()
+        job_registry._handlers.clear()  # noqa: SLF001
+        job_registry._handlers.update(original_handlers)  # noqa: SLF001
 
 
 @pytest.mark.anyio
@@ -670,3 +675,47 @@ async def test_jobs_date_filter_timezone_spain(
         next_names = {item["name"] for item in res_next.json()["data"]}
         assert "tz.early_morning" not in next_names
         assert "tz.late_night" not in next_names
+
+
+@pytest.mark.anyio
+async def test_get_job_definitions(
+    dbsession: AsyncSession,
+    job_users: tuple[UserResponse, UserResponse],
+) -> None:
+    """Verify GET /api/jobs/definitions returns rich backend-driven catalog."""
+    admin, _ = job_users
+    app = get_app()
+    app.dependency_overrides[get_db_session] = lambda: dbsession
+    app.dependency_overrides[get_current_user] = lambda: admin
+    app.dependency_overrides[get_current_active_superuser] = lambda: admin
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        res = await client.get("/api/jobs/definitions")
+        assert res.status_code == 200
+        definitions = res.json()
+        assert isinstance(definitions, list)
+        assert len(definitions) >= 7
+
+        def_map = {d["name"]: d for d in definitions}
+        assert "emails.send" in def_map
+        assert "exports.generate" in def_map
+        assert "imports.validate" in def_map
+        assert "storage.compress" in def_map
+        assert "trash.purge" in def_map
+        assert "audit.purge" in def_map
+        assert "notifications.fan_out" in def_map
+
+        export_def = def_map["exports.generate"]
+        assert export_def["title"] == "Exportación de Datos"
+        assert export_def["category"] == "data"
+        assert export_def["icon"] == "download"
+        assert export_def["is_dispatchable"] is False
+        assert isinstance(export_def["payload_schema"], dict)
+
+        trash_def = def_map["trash.purge"]
+        assert trash_def["title"] == "Purga de Papelera"
+        assert trash_def["category"] == "system"
+        assert trash_def["icon"] == "trash"
+        assert trash_def["is_dispatchable"] is True

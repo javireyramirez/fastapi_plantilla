@@ -153,6 +153,21 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
             service_factory=service_factory,
         )
 
+    if service_factory is not None and resource_name is not None and can_export:
+        from fastapi_plantilla.core.crud.export_job import (  # noqa: PLC0415, F401
+            handle_exports_generate,
+        )
+        from fastapi_plantilla.core.crud.exporter import (  # noqa: PLC0415
+            register_export_resource,
+        )
+
+        register_export_resource(
+            resource_name=resource_name,
+            service_factory=service_factory,
+            export_schema=effective_export_schema,
+            pagination_params_class=pagination_params,
+        )
+
     def _scope_dep(action: RbacActions) -> Any:
         if permission_factory is not None and resource_name is not None:
             return permission_factory(resource_name, action)
@@ -201,17 +216,54 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
             return await service.find_list(params=params, scope=scope)
 
     if can_export:
+        from fastapi_plantilla.core.crud.exporter import (  # noqa: PLC0415
+            dispatch_export_job,
+            should_run_export_async,
+        )
 
         @router.post(
             "/export",
             response_class=Response,
             summary=f"Export {effective_export_schema.__name__} records",
+            responses={
+                status.HTTP_200_OK: {"description": "Synchronous file download"},
+                status.HTTP_202_ACCEPTED: {
+                    "description": "Background export job accepted"
+                },
+            },
         )
         async def export_data(
             req: ExportRequest,
+            request: Request,
+            async_job: bool = Query(
+                False,
+                description="Trigger export asynchronously via background jobs worker",
+            ),
             service: Any = Depends(service_getter),
             scope: ScopeContext = Depends(_scope_dep(RbacActions.EXPORT)),
         ) -> Response:
+            res_name = resource_name or effective_export_schema.__name__
+            if await should_run_export_async(
+                async_job=async_job,
+                request=request,
+                service=service,
+                req=req,
+                scope=scope,
+                pagination_params_class=pagination_params,
+            ):
+                job = await dispatch_export_job(
+                    request=request,
+                    service=service,
+                    resource_name=res_name,
+                    req=req,
+                    scope=scope,
+                )
+                return Response(
+                    content=job.model_dump_json(),
+                    media_type="application/json",
+                    status_code=status.HTTP_202_ACCEPTED,
+                )
+
             result = await service.export_data(
                 req,
                 scope=scope,
@@ -323,9 +375,17 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
                 if fmt == ImportFormat.CSV
                 else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-            await storage_provider.upload(
-                storage_key, file_bytes, content_type=content_type
-            )
+            try:
+                await storage_provider.upload(
+                    storage_key, file_bytes, content_type=content_type
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Storage upload failed: {exc}",
+                ) from exc
 
             user_id = getattr(current_user, "id", None)
             scope_dict = (

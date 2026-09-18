@@ -174,6 +174,11 @@ class ZipDownloadRequest(BaseModel):
     storage_ids: list[uuid.UUID] | None = Field(default=None, max_length=100)
     entity_type: str | None = Field(default=None, max_length=50)
     entity_id: uuid.UUID | None = None
+    archive_name: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Optional custom filename for the generated ZIP archive",
+    )
 
     @model_validator(mode="after")
     def validate_targets(self) -> Self:

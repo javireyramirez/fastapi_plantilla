@@ -7,6 +7,7 @@ from typing import Any
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import Depends, HTTPException, status
+from loguru import logger
 from sqlalchemy.exc import IntegrityError
 from yarl import URL
 
@@ -582,7 +583,14 @@ class AuthService:
                 expiry_minutes=expiry_minutes,
             )
         )
-        await self.email_service.send(email_msg, fail_silently=True)
+        try:
+            await self.email_service.enqueue_send(
+                email_msg,
+                session=self.repository.session,
+                user_id=user.id,
+            )
+        except Exception as exc:
+            logger.warning(f"Could not enqueue reset password email: {exc}")
 
     async def _send_verification_email(
         self, user: User, token: str, expiry_hours: int | None = None
@@ -608,7 +616,14 @@ class AuthService:
                 expiry_hours=expiry_hours,
             )
         )
-        await self.email_service.send(email_msg, fail_silently=True)
+        try:
+            await self.email_service.enqueue_send(
+                email_msg,
+                session=self.repository.session,
+                user_id=user.id,
+            )
+        except Exception as exc:
+            logger.warning(f"Could not enqueue verification email: {exc}")
 
     async def forget_password(self, schema: ForgotPasswordRequest) -> bool:
         """Generate password reset token (safe against user enumeration)."""

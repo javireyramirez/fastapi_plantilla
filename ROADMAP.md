@@ -33,7 +33,7 @@ flowchart TD
     F1 --> F2["Fase 2: Motor Base CRUD, Paginación & Router Factory (✅ Completado)"]
     F2 --> F3["Fase 3: RBAC, Teams, User Admin & Impersonation (✅ Completado)"]
     F3 --> F4["Fase 4: Almacenamiento Multi-Cloud & Papelera (✅ Completado)"]
-    F4 --> F5["Fase 5: Background Jobs en BD, Ingesta & Exportación (🟢 5.1, 5.2 y 5.3 Completados)"]
+    F4 --> F5["Fase 5: Background Jobs en BD, Ingesta & Exportación (✅ Completado)"]
     F5 --> F6["Fase 6: Módulo de Ejemplo 'Companies' (✅ Completado)"]
     F6 --> F7["Fase 7: Auditoría, Settings, Notificaciones & Métricas (🟢 7.1, 7.2 y 7.3 Completados)"]
     F7 --> F8["Fase 8: Rate Limiting & Auth Avanzado (⚪ Pendiente)"]
@@ -114,20 +114,20 @@ flowchart TD
 * **4.3 Papelera de Reciclaje Centralizada (`modules/trash`):** *(COMPLETADO)*
   * *Descripción:* Modelo `sys_trash_bin` con retención temporal (`expires_at`, ej. 30 días), vista unificada de elementos borrados en cualquier módulo, restauración individual/masiva y purga definitiva.
   * *Problema que soluciona:* Recuperación uniforme de desastres ante borrados accidentales de usuarios.
-* **4.4 Background Trash Purge Job:** *(✅ COMPLETADO)(⏳ Extensión Futura)*
-  * *Descripción:* Actualmente implementado como loop periódico en `core/lifespan.py:35` para purga automática de registros caducados. Planificada su evolución a job recurrente del catálogo (`trash.purge` con `scheduled_at`), ganando trazabilidad, historial de ejecuciones, alertas y reintentos en `/api/jobs` y panel de administración.
+* **4.4 Background Trash Purge Job (`trash.purge`):** *(✅ COMPLETADO)*
+  * *Descripción:* Implementado como job canónico recurrente en PostgreSQL (`trash.purge` con `scheduled_at`, clave de idempotencia determinista diaria y auto-reprogramación segura transaccional para entornos multi-réplica), sustituyendo los loops en memoria de lifespan y aportando trazabilidad de purgas históricas, alertas y reintentos en `/api/jobs` y panel administrativo.
   * *Problema que soluciona:* Mantenimiento automático de la base de datos sin acumular basura residual y con trazabilidad operacional unificada.
 
 ---
 
-### 🟢 FASE 5: Background Jobs en PostgreSQL, Ingesta & Exportación Masiva (CSV & Excel) *(🟢 5.1, 5.2 y 5.3 COMPLETADOS)*
+### 🟢 FASE 5: Background Jobs en PostgreSQL, Ingesta & Exportación Masiva (CSV & Excel) *(✅ COMPLETADO)*
 * **5.1 Motor de Tareas en Segundo Plano (`sys_jobs` con `SKIP LOCKED`):** *(✅ COMPLETADO)*
   * *Descripción:* Cola de trabajos asíncronos nativa en PostgreSQL sin dependencias pesadas (cero Redis, cero Celery). Consumo atómico con `FOR UPDATE SKIP LOCKED` e incremento de `lease_token` (fencing token contra ejecuciones zombies concurrentes), recuperación automática de leases expirados, pool de workers concurrente en lifespan gobernado por `asyncio.Semaphore`, cancelación cooperativa con `JobCancelledError`, reintentos con backoff exponencial y jitter seguro (`secrets`), soporte polimórfico (`entity_type`, `entity_id`), deduplicación por `idempotency_key` y endpoints REST de gestión `/api/jobs` (`enqueue`, `get`, `list`, `cancel`, `retry`).
   * *Problema que soluciona:* Evita caídas por `HTTP 504 Gateway Timeout` al procesar archivos masivos, generar ZIPs de storage o ejecutar exportaciones pesadas sin bloquear el hilo de la API, proporcionando a su vez el sustrato asíncrono para la futura ingesta de documentos y embeddings en IA.
 * **5.2 Motor de Exportación Avanzada (Strategy Pattern Multi-Provider):** *(✅ COMPLETADO a nivel de Router & Servicio)*
   * *Descripción:* Patrón de registro desacoplado `EXPORT_STRATEGIES` (`ExportStrategy`) con conversor multi-formato a `CSV`, `TSV`, `GOOGLE_SHEETS` (TSV con marca de orden de bytes UTF-8 BOM `\ufeff` que permite a Google Sheets y Drive auto-detectar columnas y caracteres especiales sin advertencias de codificación), `JSON` formateado y `EXCEL` (`.xlsx` nativo mediante OpenPyXL). Helper puro `format_export` integrado de forma nativa en `create_crud_router` (`POST /export`) y `BaseAuditService.export_data` para consumo inmediato en cualquier módulo derivado de CRUD en una sola línea.
   * *Problema que soluciona:* Permite descargar cualquier tabla filtrada en tiempo real en los formatos corporativos más demandados sin librerías frontend pesadas, desacoplando completamente los servicios de los detalles de serialización y tipos MIME (filosofías SRP y SSOT).
-* **5.3 Importador Masivo con Validación Fila por Fila (`imports.validate`):** *(✅ COMPLETADO)(⏳ Extensión Futura)*
+* **5.3 Importador Masivo con Validación Fila por Fila (`imports.validate`):** *(✅ COMPLETADO)*
   * *Descripción:* Motor simétrico al exportador integrado de forma nativa en `create_crud_router` (`GET /{resource}/import-template` y `POST /{resource}/import`) y el catálogo de jobs (`imports.validate`). Incluye:
     - *Generador de Plantillas Universales:* Deducción dinámica de cabeceras, tipos esperados y campos obligatorios a partir del esquema de creación Pydantic (`schema_create` / `schema_import`), excluyendo campos automáticos del sistema (`SYSTEM_IMPORT_EXCLUDE_FIELDS`). Soporte descargable para Excel (`.xlsx`) y CSV con UTF-8 BOM.
     - *Staging y Limpieza Multi-Cloud:* Almacenamiento temporal en `StorageProvider` (`imports/{job_id}_{filename}`) y borrado seguro garantizado en el bloque `finally` del worker.
@@ -136,13 +136,13 @@ flowchart TD
     - *Registro SSOT:* Catálogo centralizado `RESOURCE_IMPORT_REGISTRY` enlazado con la sesión del worker para transaccionalidad real sin acoplamiento.
     - *Evolución a Futuro (Resolución por Claves Naturales / Nombres Relacionales):* Extensión planificada para permitir la importación de entidades foráneas por su nombre o selector (ej. asociar `owner_id` pasando el nombre/email de usuario, o resolver sectores/categorías aceptando nombres legibles en español e inglés alineados con el endpoint `/list` del frontend), resolviendo internamente el UUID correspondiente en memoria sin forzar al usuario a conocer o introducir identificadores técnicos en la hoja de cálculo.
   * *Problema que soluciona:* Ingesta masiva segura de datos para clientes sin bloquear el ciclo HTTP ni arriesgar corrupción de datos, devolviendo reportes de errores claros y estructurados (*"Fila 12: NIF inválido"*).
-* **5.4 Catálogo Canónico de Background Jobs (`JobRegistry`):** *(🟡 Parcial / ⏳ En Expansión)*
+* **5.4 Catálogo Canónico de Background Jobs (`JobRegistry`):** *(✅ COMPLETADO)*
   * *Descripción:* Ecosistema de handlers tipados registrados en `job_registry` con esquemas Pydantic para payload/result, garantizando ejecución asíncrona no bloqueante, reintentos con backoff exponencial, deduplicación y observabilidad centralizada:
-    1. **`emails.send`**: Desacopla el envío de emails (`EmailService.send()`, actualmente `await transport.send()` en el ciclo del request HTTP en `modules/email/service.py:22`, donde SMTP/Resend bloquea y falla sin reintento). Payload `{to, subject, template, vars}`, result `{message_id}`, con backoff exponencial + auditoría en `sys_email_logs` (Fase 8.4).
-    2. **`exports.generate`**: Generación pesada y asíncrona de exportaciones (`CSV`, `TSV`, `EXCEL`, `JSON`) iniciadas vía `POST /{resource}/export` o reportes globales, evitando caídas `HTTP 504 Gateway Timeout`. Almacena el fichero resultante en storage temporal/S3 y notifica su disponibilidad vía SSE y campanita (Fase 7.3).
+    1. **`emails.send`**: Desacopla el envío de emails (`EmailService.send()`, ahora con fallback transparente síncrono si el worker está inactivo o encolamiento asíncrono con `enqueue_send`). Payload canónico `EmailPayload` ({to, subject, html_content, text_content, template, vars}), result `{message_id, transport, attempts}`, con backoff exponencial + auditoría de entrega.
+    2. **`exports.generate`**: Generación pesada y asíncrona de exportaciones (`CSV`, `TSV`, `EXCEL`, `JSON`, `GOOGLE_SHEETS`) iniciadas vía `POST /{resource}/export?async_job=true` o automáticamente al superar el umbral dinámico configurable en `sys_settings` (`exports.async_threshold_rows`). Persiste el fichero en `StorageProvider`, notifica en tiempo real vía SSE (`job_progress`, `job_completed`) y campanita, con descarga directa presigned.
     3. **`imports.validate`**: Validación fila por fila contra esquemas Pydantic y generación de reporte estructurado de errores para ingesta masiva (Fase 5.3).
-    4. **`storage.compress`**: Compresión ZIP de descargas de documentos (`storage/service.py`, límites `max_zip_*` en `sys_settings`), citado explícitamente en el Roadmap 5.1 como causa potencial de `HTTP 504 Gateway Timeout` al empaquetar volúmenes elevados de archivos en el request.
-    5. **`trash.purge` / `audit.purge`**: Tareas periódicas de mantenimiento (actualmente loops sueltos en `core/lifespan.py:35,63`), migradas a jobs recurrentes con programación (`scheduled_at`) para disponer de trazabilidad, historial y reintentos en `/api/jobs` y panel administrativo.
+    4. **`storage.compress`**: Compresión ZIP streaming a disco temporal de documentos (`storage/service.py`), activada síncronamente o en background vía `POST /api/storage/zip?async_job=true` ante descargas masivas para evitar timeouts 504 y caídas OOM de memoria RAM, con cancelación cooperativa.
+    5. **`trash.purge` / `audit.purge`**: Tareas periódicas de mantenimiento migradas de loops en memoria a jobs recurrentes nativos en PostgreSQL con programación (`scheduled_at`, `idempotency_key` determinista diaria y auto-reprogramación transaccional multi-réplica), aportando trazabilidad, historial y reintentos en `/api/jobs`.
     6. **Jobs Futuros de Escala & IA**:
        - **`ai.*`**: Procesamiento asíncrono para extracción de texto (`ai.parse`), segmentación semántica (`ai.chunk`), generación de embeddings vectoriales (`ai.embed`) y llamadas costosas a LLMs (Fase 10).
        - **`notifications.fan_out`**: Dispersión y entrega masiva de notificaciones multi-usuario / broadcast en tiempo real vía SSE (Fase 7.3).
@@ -160,9 +160,9 @@ flowchart TD
 ---
 
 ### 🟡 FASE 7: Auditoría Centralizada, Settings Dinámicos, Notificaciones & Métricas Prometheus *(🟢 7.1, 7.2 y 7.3 COMPLETADOS / ⏳ 7.4 PENDIENTE)*
-* **7.1 Módulo de Auditoría (`modules/audit`):** *(✅ COMPLETADO)(⏳ Extensión Futura)*
+* **7.1 Módulo de Auditoría (`modules/audit`):** *(✅ COMPLETADO)*
   * *Descripción:* Tabla `sys_audit_logs` con registro de acciones (`CREATE`, `UPDATE`, `LOGIN`, etc.), diffs `before`/`after`, IP, User-Agent, ofuscación de datos sensibles (`[REDACTED]`) y niveles configurables (`FULL`, `PARTIAL`, `NONE`).
-  * *Purga Programada (`audit.purge`):* Planificada la transición del loop periódico en `core/lifespan.py:63` a job recurrente del catálogo (`sys_jobs`) con `scheduled_at`, permitiendo trazabilidad de purgas históricas, control de reintentos y observabilidad desde `/api/jobs` y panel administrativo.
+  * *Purga Programada (`audit.purge`):* Implementada como job canónico recurrente del catálogo (`sys_jobs`) con `scheduled_at`, clave de idempotencia diaria y auto-reprogramación transaccional multi-réplica, sustituyendo los loops en memoria y ofreciendo trazabilidad de purgas históricas, control de reintentos y observabilidad desde `/api/jobs` y panel administrativo.
   * *Problema que soluciona:* Cumplimiento de normativas de seguridad (ISO 27001 / GDPR), retención de datos configurable y trazabilidad completa de cambios.
 * **7.2 Settings Dinámicos & Feature Flags (`modules/settings` -> `sys_settings`):** *(✅ COMPLETADO)*
   * *Descripción:* Configuración clave-valor en base de datos con tipado JSONB y soporte dual (`PostgreSQL` / `SQLite`). Incluye:

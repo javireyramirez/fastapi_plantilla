@@ -26,6 +26,9 @@ from fastapi_plantilla.core.crud.schema import (
     ScopeContext,
     WriteOptions,
 )
+from fastapi_plantilla.modules.jobs.dependencies import get_job_service
+from fastapi_plantilla.modules.jobs.schema import JobCreateRequest
+from fastapi_plantilla.modules.jobs.service import JobService
 from fastapi_plantilla.modules.storage.dependencies import get_storage_service
 from fastapi_plantilla.modules.storage.local_routes import local_router
 from fastapi_plantilla.modules.storage.models import Storage
@@ -217,13 +220,104 @@ async def download_file(
 @router.post(
     "/zip",
     summary="Download multiple storage files packaged in a ZIP archive",
+    responses={
+        status.HTTP_200_OK: {"description": "Synchronous ZIP file download"},
+        status.HTTP_202_ACCEPTED: {
+            "description": "Background ZIP compression job accepted"
+        },
+    },
 )
 async def download_zip(
     request: ZipDownloadRequest,
+    async_job: bool = Query(
+        False,
+        description="Process ZIP compression asynchronously via background worker",
+    ),
     service: StorageService = Depends(get_storage_service),
     scope: ScopeContext = Depends(get_scope_context),
+    job_service: JobService = Depends(get_job_service),
 ) -> Response:
-    """Package selected files into a ZIP archive and return payload."""
+    """Package selected files into a ZIP archive or enqueue background job."""
+    should_async = async_job
+    if service.settings_service:
+        scope_filters = service.build_scope_filters(scope) if scope else []
+        candidates = []
+        if request.storage_ids:
+            candidates = await service.storage_repo.find_uploaded_by_ids(
+                request.storage_ids, scope_filters=scope_filters
+            )
+        elif request.entity_type and request.entity_id:
+            max_zip_files = await service.get_max_zip_file_count()
+            candidates = await service.storage_repo.find_by_entity(
+                request.entity_type,
+                request.entity_id,
+                limit=max_zip_files,
+                scope_filters=scope_filters,
+            )
+
+        if candidates:
+            total_bytes = sum(c.size_bytes or 0 for c in candidates)
+            max_zip_bytes = await service.get_max_zip_total_bytes()
+            if total_bytes > max_zip_bytes:
+                max_mb = max_zip_bytes / (1024 * 1024)
+                actual_mb = total_bytes / (1024 * 1024)
+                raise HTTPException(
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    detail=(
+                        f"Total size of files to zip ({actual_mb:.1f} MB) "
+                        f"exceeds maximum limit of {max_mb:.0f} MB"
+                    ),
+                )
+
+            if not should_async:
+                threshold_bytes = int(
+                    await service.settings_service.get_value(
+                        "storage.zip_async_threshold_bytes",
+                        default=52428800,  # 50 MB
+                    )
+                )
+                if total_bytes > threshold_bytes:
+                    should_async = True
+
+    if should_async:
+        zip_filename = "storage.zip"
+        if request.archive_name:
+            clean_name = request.archive_name.strip()
+            zip_filename = (
+                clean_name
+                if clean_name.lower().endswith(".zip")
+                else f"{clean_name}.zip"
+            )
+        job_payload = {
+            "storage_ids": [str(sid) for sid in request.storage_ids]
+            if request.storage_ids
+            else None,
+            "entity_type": request.entity_type,
+            "entity_id": str(request.entity_id) if request.entity_id else None,
+            "zip_filename": zip_filename,
+            "scope": {
+                "scope": scope.scope.value,
+                "user_id": str(scope.user_id) if scope.user_id else None,
+                "teammate_ids": [str(t) for t in scope.teammate_ids]
+                if scope.teammate_ids
+                else [],
+                "is_super_admin": scope.is_super_admin,
+            },
+        }
+        job = await job_service.enqueue(
+            JobCreateRequest(
+                name="storage.compress",
+                payload=job_payload,
+                entity_type="storage",
+            ),
+            created_by_id=scope.user_id,
+        )
+        return Response(
+            content=job.model_dump_json(),
+            media_type="application/json",
+            status_code=status.HTTP_202_ACCEPTED,
+        )
+
     zip_bytes, zip_filename = await service.download_zip(request, scope=scope)
     return Response(
         content=zip_bytes,

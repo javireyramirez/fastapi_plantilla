@@ -20,3 +20,6 @@ def get_settings_service(
 ) -> SystemSettingService:
     """Dependency injector for SystemSettingService."""
     return SystemSettingService(repository)
+
+
+get_system_setting_service = get_settings_service

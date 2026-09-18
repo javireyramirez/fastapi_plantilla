@@ -20,10 +20,23 @@ __all__ = [
     "JobCancelResponse",
     "JobContext",
     "JobCreateRequest",
+    "JobDefinitionResponse",
     "JobFilterParams",
     "JobResponse",
     "JobRetryResponse",
 ]
+
+
+class JobDefinitionResponse(BaseModel):
+    """Catalog metadata defining a background job for backend-driven UI."""
+
+    name: str
+    title: str
+    description: str
+    category: str
+    icon: str
+    is_dispatchable: bool
+    payload_schema: dict[str, Any] | None = None
 
 
 class JobResponse(BaseModel):

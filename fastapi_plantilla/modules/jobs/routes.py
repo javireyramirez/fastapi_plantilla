@@ -12,9 +12,11 @@ from fastapi_plantilla.core.crud.schema import (
 from fastapi_plantilla.core.events import event_broadcaster
 from fastapi_plantilla.modules.jobs.dependencies import get_job_service
 from fastapi_plantilla.modules.jobs.exceptions import JobNotFoundError
+from fastapi_plantilla.modules.jobs.registry import job_registry
 from fastapi_plantilla.modules.jobs.schema import (
     JobCancelResponse,
     JobCreateRequest,
+    JobDefinitionResponse,
     JobFilterParams,
     JobResponse,
     JobRetryResponse,
@@ -64,6 +66,20 @@ async def list_jobs(
     items, total = await service.list_jobs(params, scope=scope)
     meta = PaginationMeta.create(page=params.page, limit=params.limit, total=total)
     return PaginatedResponse(data=items, meta=meta)
+
+
+@router.get(
+    "/definitions",
+    response_model=list[JobDefinitionResponse],
+    summary="Get registered background job definitions and catalog",
+)
+async def get_job_definitions(
+    scope: Annotated[
+        ScopeContext, Depends(require_permission("jobs", RbacActions.READ))
+    ],
+) -> list[JobDefinitionResponse]:
+    """Return metadata catalog of all registered jobs for backend-driven UI."""
+    return job_registry.get_definitions()
 
 
 @router.get(

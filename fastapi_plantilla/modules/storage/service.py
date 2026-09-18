@@ -703,8 +703,16 @@ class StorageService(BaseOwnedService[Storage]):
                     continue
 
                 zf.writestr(filename, file_bytes)
+        out_filename = DEFAULT_ZIP_FILENAME
+        if request.archive_name:
+            clean_name = request.archive_name.strip()
+            out_filename = (
+                clean_name
+                if clean_name.lower().endswith(".zip")
+                else f"{clean_name}.zip"
+            )
 
-        return zip_buffer.getvalue(), DEFAULT_ZIP_FILENAME
+        return zip_buffer.getvalue(), out_filename
 
     async def permanent_delete_storage(
         self,

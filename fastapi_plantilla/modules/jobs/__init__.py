@@ -18,12 +18,12 @@ from fastapi_plantilla.modules.jobs.registry import (
     register_job,
 )
 from fastapi_plantilla.modules.jobs.repository import JobRepository
-from fastapi_plantilla.modules.jobs.routes import router
 from fastapi_plantilla.modules.jobs.schema import (
     JobActionResponse,
     JobCancelResponse,
     JobContext,
     JobCreateRequest,
+    JobDefinitionResponse,
     JobFilterParams,
     JobResponse,
     JobRetryResponse,
@@ -43,6 +43,7 @@ __all__ = [
     "JobCancelledError",
     "JobContext",
     "JobCreateRequest",
+    "JobDefinitionResponse",
     "JobError",
     "JobFilterParams",
     "JobLeaseLostError",
@@ -56,5 +57,4 @@ __all__ = [
     "JobStatus",
     "job_registry",
     "register_job",
-    "router",
 ]

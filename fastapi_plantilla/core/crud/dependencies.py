@@ -3,8 +3,6 @@ from typing import Any
 from fastapi import Depends, Request
 
 from fastapi_plantilla.core.crud.schema import ScopeContext, ScopeType, WriteOptions
-from fastapi_plantilla.modules.auth.dependencies import get_current_user
-from fastapi_plantilla.modules.auth.schema import UserResponse
 
 __all__ = ["build_write_options", "get_scope_context", "get_write_options"]
 
@@ -26,6 +24,12 @@ def build_write_options(
         user_agent=user_agent,
         ip_address=ip_address,
     )
+
+
+from fastapi_plantilla.modules.auth.dependencies import (  # noqa: E402
+    get_current_user,
+)
+from fastapi_plantilla.modules.auth.schema import UserResponse  # noqa: E402
 
 
 async def get_scope_context(

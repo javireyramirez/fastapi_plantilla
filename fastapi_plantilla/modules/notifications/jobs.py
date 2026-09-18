@@ -9,7 +9,17 @@ from fastapi_plantilla.modules.notifications.service import NotificationService
 __all__ = ["handle_notifications_fan_out"]
 
 
-@register_job("notifications.fan_out", payload_model=NotificationFanOutPayload)
+@register_job(
+    "notifications.fan_out",
+    payload_model=NotificationFanOutPayload,
+    title="Difusión de Notificaciones",
+    description=(
+        "Distribución masiva de notificaciones y alertas a múltiples destinatarios"
+    ),
+    category="communication",
+    icon="bell",
+    is_dispatchable=False,
+)
 async def handle_notifications_fan_out(
     ctx: JobContext[NotificationFanOutPayload],
 ) -> dict[str, Any]:

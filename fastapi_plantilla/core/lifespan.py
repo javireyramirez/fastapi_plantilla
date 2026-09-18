@@ -1,6 +1,5 @@
-import asyncio
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from loguru import logger
@@ -11,14 +10,21 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from fastapi_plantilla.core.config import EmailBackend, settings
+from fastapi_plantilla.modules.audit.jobs import handle_audit_purge  # noqa: F401
 from fastapi_plantilla.modules.audit.listener import setup_audit_listeners
-from fastapi_plantilla.modules.audit.service import purge_expired_audit
+from fastapi_plantilla.modules.email.jobs import handle_email_send  # noqa: F401
+from fastapi_plantilla.modules.jobs.models import JobStatus
+from fastapi_plantilla.modules.jobs.repository import JobRepository
+from fastapi_plantilla.modules.jobs.scheduler import calculate_next_scheduled_time
+from fastapi_plantilla.modules.jobs.schema import JobCreateRequest, JobFilterParams
+from fastapi_plantilla.modules.jobs.service import JobService
 from fastapi_plantilla.modules.jobs.worker import BackgroundJobWorker
 from fastapi_plantilla.modules.rbac.catalog import sync_system_modules
 from fastapi_plantilla.modules.settings.repository import SystemSettingRepository
 from fastapi_plantilla.modules.settings.service import SystemSettingService
+from fastapi_plantilla.modules.storage.jobs import handle_storage_compress  # noqa: F401
+from fastapi_plantilla.modules.trash.jobs import handle_trash_purge  # noqa: F401
 from fastapi_plantilla.modules.trash.listener import setup_trash_listeners
-from fastapi_plantilla.modules.trash.service import purge_expired_trash
 
 
 def _setup_db(app: FastAPI) -> None:  # pragma: no cover
@@ -32,60 +38,79 @@ def _setup_db(app: FastAPI) -> None:  # pragma: no cover
     app.state.db_session_factory = session_factory
 
 
-async def _trash_purge_worker(
+async def _ensure_recurring_maintenance_jobs(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:  # pragma: no cover
-    """Background task to periodically purge expired trash items."""
-    interval_seconds = max(3600, settings.trash_purge_interval_hours * 3600)
-    while True:
-        try:
-            await asyncio.sleep(interval_seconds)
-            async with session_factory() as session, session.begin():
-                settings_service = SystemSettingService(
-                    SystemSettingRepository(session)
-                )
-                auto_enabled = await settings_service.get_value(
-                    "trash.auto_purge_enabled", default=True
-                )
-                if not auto_enabled:
-                    continue
-                count = await purge_expired_trash(
-                    session, settings_service=settings_service
-                )
-                if count > 0:
-                    logger.info(f"Auto-purged {count} expired trash items")
-        except asyncio.CancelledError:
-            break
-        except Exception as exc:
-            logger.error(f"Error in periodic trash purge worker: {exc}")
+    """Ensure baseline recurring maintenance jobs are scheduled in PostgreSQL."""
+    if not settings.jobs_worker_enabled:
+        if settings.trash_purge_enabled or settings.audit_purge_enabled:
+            logger.warning(
+                "Maintenance purges are enabled but 'jobs_worker_enabled' is False; "
+                "recurring background jobs will not execute."
+            )
+        return
 
+    async with session_factory() as session, session.begin():
+        repo = JobRepository(session)
+        service = JobService(repo)
+        settings_service = SystemSettingService(SystemSettingRepository(session))
 
-async def _audit_purge_worker(
-    session_factory: async_sessionmaker[AsyncSession],
-) -> None:  # pragma: no cover
-    """Background task to periodically purge expired audit records."""
-    interval_seconds = max(3600, settings.audit_purge_interval_hours * 3600)
-    while True:
-        try:
-            await asyncio.sleep(interval_seconds)
-            async with session_factory() as session, session.begin():
-                settings_service = SystemSettingService(
-                    SystemSettingRepository(session)
+        if settings.trash_purge_enabled:
+            existing = await service.list_jobs(
+                JobFilterParams(
+                    name="trash.purge",
+                    status=[JobStatus.PENDING, JobStatus.RUNNING],
+                    limit=1,
                 )
-                auto_enabled = await settings_service.get_value(
-                    "audit.auto_purge_enabled", default=True
+            )
+            if existing[1] == 0:
+                trash_time = await settings_service.get_value(
+                    "trash.purge_time_utc", default="03:00"
                 )
-                if not auto_enabled:
-                    continue
-                count = await purge_expired_audit(
-                    session, settings_service=settings_service
+                scheduled_at = calculate_next_scheduled_time(
+                    trash_time, default_hour=3, default_minute=0
                 )
-                if count > 0:
-                    logger.info(f"Auto-purged {count} expired audit records")
-        except asyncio.CancelledError:
-            break
-        except Exception as exc:
-            logger.error(f"Error in periodic audit purge worker: {exc}")
+                idempotency_key = f"trash.purge:{scheduled_at.strftime('%Y-%m-%d')}"
+                await service.enqueue(
+                    JobCreateRequest(
+                        name="trash.purge",
+                        payload={"limit": 1000},
+                        scheduled_at=scheduled_at,
+                        idempotency_key=idempotency_key,
+                    )
+                )
+                logger.info(
+                    f"Initialized 'trash.purge' scheduled at {scheduled_at.isoformat()}"
+                )
+
+        if settings.audit_purge_enabled:
+            existing = await service.list_jobs(
+                JobFilterParams(
+                    name="audit.purge",
+                    status=[JobStatus.PENDING, JobStatus.RUNNING],
+                    limit=1,
+                )
+            )
+
+            if existing[1] == 0:
+                audit_time = await settings_service.get_value(
+                    "audit.purge_time_utc", default="03:30"
+                )
+                scheduled_at = calculate_next_scheduled_time(
+                    audit_time, default_hour=3, default_minute=30
+                )
+                idempotency_key = f"audit.purge:{scheduled_at.strftime('%Y-%m-%d')}"
+                await service.enqueue(
+                    JobCreateRequest(
+                        name="audit.purge",
+                        payload={"limit": 1000},
+                        scheduled_at=scheduled_at,
+                        idempotency_key=idempotency_key,
+                    )
+                )
+                logger.info(
+                    f"Initialized 'audit.purge' scheduled at {scheduled_at.isoformat()}"
+                )
 
 
 def _validate_email_configuration() -> None:
@@ -120,30 +145,28 @@ async def lifespan_setup(
     except Exception as exc:
         logger.warning(f"Could not sync system modules on startup: {exc}")
 
-    purge_tasks: list[asyncio.Task[None]] = []
     jobs_worker: BackgroundJobWorker | None = None
 
     if settings.environment != "test":
-        if settings.trash_purge_enabled:
-            purge_tasks.append(
-                asyncio.create_task(_trash_purge_worker(session_factory))
-            )
-        if settings.audit_purge_enabled:
-            purge_tasks.append(
-                asyncio.create_task(_audit_purge_worker(session_factory))
-            )
+        await _ensure_recurring_maintenance_jobs(session_factory)
         if settings.jobs_worker_enabled:
             jobs_worker = BackgroundJobWorker(session_factory)
             jobs_worker.start()
+
+        try:
+            from fastapi_plantilla.modules.storage.dependencies import (  # noqa: PLC0415
+                get_storage_provider,
+            )
+
+            storage_prov = get_storage_provider()
+            if hasattr(storage_prov, "ensure_bucket_exists"):
+                await storage_prov.ensure_bucket_exists()
+        except Exception as exc:
+            logger.warning(f"Could not verify storage bucket readiness: {exc}")
 
     yield
 
     if jobs_worker:
         await jobs_worker.stop()
-
-    for task in purge_tasks:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
 
     await app.state.db_engine.dispose()

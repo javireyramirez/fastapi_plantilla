@@ -1,6 +1,7 @@
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -141,3 +142,42 @@ def test_health_module_exports() -> None:
     for name in expected:
         assert hasattr(health_pkg, name)
     assert health_pkg.DB_CHECK_TIMEOUT_SECONDS == 2.0
+
+
+@pytest.mark.anyio
+async def test_readiness_s3_storage_check(
+    client: AsyncClient,
+    fastapi_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify readiness probe checks S3 storage when backend is S3."""
+    from fastapi_plantilla.core.config import StorageBackend
+    from fastapi_plantilla.modules.storage.providers.s3 import S3StorageProvider
+
+    monkeypatch.setattr(settings, "storage_backend", StorageBackend.S3)
+
+    mock_provider = AsyncMock(spec=S3StorageProvider)
+    mock_provider.check_bucket_exists.return_value = True
+
+    with patch(
+        "fastapi_plantilla.modules.storage.dependencies.get_storage_provider",
+        return_value=mock_provider,
+    ):
+        url = fastapi_app.url_path_for("ready_probe")
+        response = await client.get(url)
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["checks"]["storage"]["status"] == "ok"
+
+    mock_provider.check_bucket_exists.return_value = False
+
+    with patch(
+        "fastapi_plantilla.modules.storage.dependencies.get_storage_provider",
+        return_value=mock_provider,
+    ):
+        response = await client.get(url)
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        data = response.json()
+        assert data["status"] == "unhealthy"
+        assert data["checks"]["storage"]["status"] == "error"

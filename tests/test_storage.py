@@ -7,10 +7,12 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from botocore.exceptions import ClientError
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi_plantilla.core.config import settings
 from fastapi_plantilla.core.crud.dependencies import (
     get_scope_context,
     get_write_options,
@@ -30,6 +32,9 @@ from fastapi_plantilla.modules.companies.models import Company
 from fastapi_plantilla.modules.settings.dependencies import get_settings_service
 from fastapi_plantilla.modules.storage.dependencies import (
     get_storage_provider,
+)
+from fastapi_plantilla.modules.storage.exceptions import (
+    StorageBucketNotFoundError,
 )
 from fastapi_plantilla.modules.storage.providers import (
     LocalStorageProvider,
@@ -126,8 +131,10 @@ async def test_local_storage_provider(tmp_path: Path) -> None:
     assert not await provider.exists(key)
 
 
-def test_s3_provider_initialization() -> None:
+def test_s3_provider_initialization(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify S3StorageProvider initializes client properly."""
+    monkeypatch.setattr(settings, "storage_s3_endpoint_url", None)
+    monkeypatch.setattr(settings, "storage_s3_public_endpoint_url", None)
     provider = S3StorageProvider(
         bucket="test-bucket",
         region="us-east-1",
@@ -162,6 +169,121 @@ async def test_s3_provider_presigned_url_uses_public_client() -> None:
     )
     url = await provider.get_presigned_url("test.pdf", expires_in=60)
     assert url.startswith("http://localhost:9000/test-bucket/test.pdf?")
+
+
+@pytest.mark.anyio
+async def test_s3_upload_missing_bucket_raises_error() -> None:
+    """Verify S3 upload raises StorageBucketNotFoundError when bucket is missing."""
+    provider = S3StorageProvider(
+        bucket="missing-bucket",
+        endpoint_url="http://localhost:9000",
+        region="us-east-1",
+        access_key="fake-key",
+        secret_key="fake-secret",  # noqa: S106
+    )
+    mock_client = MagicMock()
+    mock_client.put_object.side_effect = ClientError(
+        {
+            "Error": {
+                "Code": "NoSuchBucket",
+                "Message": "The specified bucket does not exist",
+            }
+        },
+        "PutObject",
+    )
+    provider.client = mock_client
+
+    with pytest.raises(StorageBucketNotFoundError) as exc_info:
+        await provider.upload("test.txt", b"content")
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.bucket == "missing-bucket"
+    assert exc_info.value.headers is not None
+    assert "STORAGE_BUCKET_NOT_FOUND" in exc_info.value.headers.get("X-Error-Code", "")
+
+
+@pytest.mark.anyio
+async def test_s3_download_missing_bucket_raises_error() -> None:
+    """Verify S3 download raises StorageBucketNotFoundError when bucket is missing."""
+    provider = S3StorageProvider(
+        bucket="missing-bucket",
+        endpoint_url="http://localhost:9000",
+        region="us-east-1",
+        access_key="fake-key",
+        secret_key="fake-secret",  # noqa: S106
+    )
+    mock_client = MagicMock()
+    mock_client.get_object.side_effect = ClientError(
+        {
+            "Error": {
+                "Code": "NoSuchBucket",
+                "Message": "The specified bucket does not exist",
+            }
+        },
+        "GetObject",
+    )
+    provider.client = mock_client
+
+    with pytest.raises(StorageBucketNotFoundError) as exc_info:
+        await provider.download("test.txt")
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.anyio
+async def test_s3_provider_ensure_bucket_in_production_does_not_autocreate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify production never attempts to auto-create missing bucket."""
+    monkeypatch.setattr(settings, "environment", "production")
+    assert not settings.is_dev
+
+    provider = S3StorageProvider(
+        bucket="prod-bucket",
+        endpoint_url="http://localhost:9000",
+        region="us-east-1",
+        access_key="fake-key",
+        secret_key="fake-secret",  # noqa: S106
+    )
+    mock_client = MagicMock()
+    mock_client.head_bucket.side_effect = ClientError(
+        {"Error": {"Code": "404", "Message": "Not Found"}},
+        "HeadBucket",
+    )
+    provider.client = mock_client
+
+    created = await provider.ensure_bucket_exists()
+    assert created is False
+    mock_client.create_bucket.assert_not_called()
+    mock_client.put_bucket_cors.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_s3_provider_ensure_bucket_in_dev_autocreates_and_sets_cors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify dev environment auto-creates missing bucket and configures CORS."""
+    monkeypatch.setattr(settings, "environment", "dev")
+    assert settings.is_dev
+
+    provider = S3StorageProvider(
+        bucket="dev-bucket",
+        endpoint_url="http://localhost:9000",
+        region="us-east-1",
+        access_key="fake-key",
+        secret_key="fake-secret",  # noqa: S106
+    )
+    mock_client = MagicMock()
+    mock_client.head_bucket.side_effect = ClientError(
+        {"Error": {"Code": "NoSuchBucket", "Message": "Not Found"}},
+        "HeadBucket",
+    )
+    mock_client.meta.region_name = "us-east-1"
+    provider.client = mock_client
+
+    created = await provider.ensure_bucket_exists()
+    assert created is True
+    mock_client.create_bucket.assert_called_once_with(Bucket="dev-bucket")
+    mock_client.put_bucket_cors.assert_called_once()
+    assert provider._bucket_verified is True  # noqa: SLF001
 
 
 # =========================================================================

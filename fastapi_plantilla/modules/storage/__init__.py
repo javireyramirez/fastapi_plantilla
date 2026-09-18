@@ -4,6 +4,11 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_plantilla.modules.storage.dependencies import get_storage_provider
+from fastapi_plantilla.modules.storage.exceptions import StorageBucketNotFoundError
+from fastapi_plantilla.modules.storage.jobs import (
+    StorageCompressJobPayload,
+    handle_storage_compress,
+)
 from fastapi_plantilla.modules.storage.models import Storage
 from fastapi_plantilla.modules.storage.providers import (
     AzureBlobStorageProvider,
@@ -27,9 +32,12 @@ __all__ = [
     "PresignedUrlMethod",
     "S3StorageProvider",
     "Storage",
+    "StorageBucketNotFoundError",
+    "StorageCompressJobPayload",
     "StorageProvider",
     "StorageRepository",
     "StorageService",
+    "handle_storage_compress",
     "storage_router",
 ]
 

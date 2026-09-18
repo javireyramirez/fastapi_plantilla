@@ -275,7 +275,17 @@ async def _persist_rows(
     return imported_count
 
 
-@register_job("imports.validate", payload_model=ImportJobPayload)
+@register_job(
+    "imports.validate",
+    payload_model=ImportJobPayload,
+    title="Importación Masiva",
+    description=(
+        "Validación e importación fila por fila de hojas de cálculo CSV o Excel"
+    ),
+    category="data",
+    icon="upload",
+    is_dispatchable=False,
+)
 async def handle_import_job(ctx: JobContext[ImportJobPayload]) -> dict[str, Any]:
     """Worker handling row-by-row Pydantic validation, persistence, and reporting."""
     from fastapi_plantilla.modules.storage.dependencies import (  # noqa: PLC0415

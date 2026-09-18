@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     environment: str = "dev"
     log_level: LogLevel = LogLevel.INFO
 
+    @property
+    def is_dev(self) -> bool:
+        """Check whether current runtime is a local or development environment."""
+        return self.environment.lower() in (
+            "dev",
+            "development",
+            "local",
+            "test",
+            "pytest",
+        )
+
     # Frontend
     frontend_url: str | None = None
     cors_origins: list[str] = [

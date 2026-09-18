@@ -6,6 +6,7 @@ from typing import Any, ClassVar
 
 from argon2 import PasswordHasher
 from fastapi import Depends, HTTPException, status
+from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
@@ -618,7 +619,14 @@ class UserAdminService(BaseAuditService[User]):
                     expiry_hours=expiry_hours,
                 )
             )
-            await self.email_service.send(msg, fail_silently=True)
+            try:
+                await self.email_service.enqueue_send(
+                    msg,
+                    session=self.repository.session,
+                    user_id=user.id,
+                )
+            except Exception as exc:
+                logger.warning(f"Could not enqueue invitation email: {exc}")
 
     async def resend_invitation(self, user_id: uuid.UUID) -> None:
         """Generate verification token and send invitation / email confirmation."""

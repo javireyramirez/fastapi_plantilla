@@ -227,7 +227,9 @@ DEFAULT_SYSTEM_SETTINGS: Final[list[SettingDef]] = [
     {
         "key": "trash.retention_days",
         "value": 30,
-        "description": "Días de retención de elementos en la papelera antes de su purga automática",
+        "description": (
+            "Días de retención de elementos en la papelera antes de su purga automática"
+        ),
         "category": "trash",
         "is_public": True,
     },
@@ -241,14 +243,27 @@ DEFAULT_SYSTEM_SETTINGS: Final[list[SettingDef]] = [
     {
         "key": "trash.auto_purge_enabled",
         "value": True,
-        "description": "Habilitar purga automática periódica de elementos caducados en la papelera",
+        "description": (
+            "Habilitar purga automática periódica de elementos caducados en la papelera"
+        ),
         "category": "trash",
         "is_public": False,
     },
     {
+        "key": "trash.purge_time_utc",
+        "value": "03:00",
+        "description": (
+            "Hora diaria UTC (HH:MM) para ejecutar la purga automática de papelera"
+        ),
+        "category": "trash",
+        "is_public": True,
+    },
+    {
         "key": "audit.retention_days",
         "value": 365,
-        "description": "Días de retención de registros de auditoría antes de su purga automática",
+        "description": (
+            "Días de retención de registros de auditoría antes de su purga automática"
+        ),
         "category": "audit",
         "is_public": False,
     },
@@ -262,9 +277,50 @@ DEFAULT_SYSTEM_SETTINGS: Final[list[SettingDef]] = [
     {
         "key": "audit.auto_purge_enabled",
         "value": True,
-        "description": "Habilitar purga automática periódica de registros de auditoría caducados",
+        "description": (
+            "Habilitar purga automática periódica de registros de auditoría caducados"
+        ),
         "category": "audit",
         "is_public": False,
+    },
+    {
+        "key": "audit.purge_time_utc",
+        "value": "03:30",
+        "description": (
+            "Hora diaria UTC (HH:MM) para ejecutar la purga automática de auditoría"
+        ),
+        "category": "audit",
+        "is_public": True,
+    },
+    {
+        "key": "exports.async_threshold_rows",
+        "value": 5000,
+        "description": (
+            "Umbral de filas para encolar exportaciones masivas "
+            "en background (CSV/TSV/JSON)"
+        ),
+        "category": "general",
+        "is_public": True,
+    },
+    {
+        "key": "exports.async_threshold_excel_rows",
+        "value": 2000,
+        "description": (
+            "Umbral de filas para encolar exportaciones de hojas "
+            "de cálculo Excel en background"
+        ),
+        "category": "general",
+        "is_public": True,
+    },
+    {
+        "key": "storage.zip_async_threshold_bytes",
+        "value": 52428800,
+        "description": (
+            "Umbral de tamaño total en bytes (50 MB) para derivar "
+            "compresión ZIP a background job"
+        ),
+        "category": "storage",
+        "is_public": True,
     },
 ]
 

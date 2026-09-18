@@ -13,7 +13,10 @@ from fastapi_plantilla.modules.auth.dependencies import get_current_user
 from fastapi_plantilla.modules.auth.schema import UserResponse
 from fastapi_plantilla.modules.rbac.dependencies import require_permission
 from fastapi_plantilla.modules.rbac.schema import RbacActions
-from fastapi_plantilla.modules.users.dependencies import get_user_admin_service
+from fastapi_plantilla.modules.users.dependencies import (
+    create_user_admin_service,
+    get_user_admin_service,
+)
 from fastapi_plantilla.modules.users.schema import (
     UserAdminCreate,
     UserAdminResponse,
@@ -40,6 +43,7 @@ router = create_crud_router(
     tags=["Users Admin"],
     resource_name="users",
     pagination_params=UsersPaginationParams,
+    service_factory=create_user_admin_service,
 )
 
 

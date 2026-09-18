@@ -202,6 +202,35 @@ class ScopeContext(BaseModel):
     teammate_ids: list[uuid.UUID] = Field(default_factory=list)
     is_super_admin: bool = False
 
+    @classmethod
+    def rehydrate(cls, data: dict[str, Any] | None) -> ScopeContext:
+        """Safely reconstruct ScopeContext from a serialized payload dictionary."""
+        if not data:
+            return cls(scope=ScopeType.GLOBAL, is_super_admin=False)
+
+        user_id_raw = data.get("user_id")
+        user_id = uuid.UUID(str(user_id_raw)) if user_id_raw else None
+
+        teammates_raw = data.get("teammate_ids") or []
+        teammates = [uuid.UUID(str(t)) for t in teammates_raw if t]
+
+        team_ids_raw = data.get("team_ids") or []
+        team_ids = [uuid.UUID(str(t)) for t in team_ids_raw if t]
+
+        scope_type_str = str(data.get("scope", "GLOBAL")).upper()
+        try:
+            scope_type = ScopeType(scope_type_str)
+        except ValueError:
+            scope_type = ScopeType.GLOBAL
+
+        return cls(
+            scope=scope_type,
+            user_id=user_id,
+            team_ids=team_ids,
+            teammate_ids=teammates,
+            is_super_admin=bool(data.get("is_super_admin", False)),
+        )
+
 
 class WriteOptions(BaseModel):
     """Execution options passed to repository and service write operations."""
