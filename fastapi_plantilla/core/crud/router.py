@@ -26,12 +26,6 @@ from fastapi_plantilla.core.crud.dependencies import (
     build_write_options,
     get_scope_context,
 )
-from fastapi_plantilla.core.crud.importer import (
-    DEFAULT_MAX_IMPORT_FILE_BYTES,
-    IMPORT_STORAGE_PREFIX,
-    generate_import_template,
-    register_import_resource,
-)
 from fastapi_plantilla.core.crud.schema import (
     BulkIdsRequest,
     BulkResponse,
@@ -149,6 +143,10 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
     )
 
     if service_factory is not None and resource_name is not None:
+        from fastapi_plantilla.core.crud.importer import (  # noqa: PLC0415
+            register_import_resource,
+        )
+
         register_import_resource(
             resource_name=resource_name,
             schema_create=effective_import_schema,
@@ -234,6 +232,11 @@ def create_crud_router[  # noqa: C901, PLR0912, PLR0915
             )
 
     if can_import:
+        from fastapi_plantilla.core.crud.importer import (  # noqa: PLC0415
+            DEFAULT_MAX_IMPORT_FILE_BYTES,
+            IMPORT_STORAGE_PREFIX,
+            generate_import_template,
+        )
         from fastapi_plantilla.modules.jobs.dependencies import (  # noqa: PLC0415
             get_job_service,
         )

@@ -50,6 +50,7 @@ flowchart TD
 
 > **Convención de Estados:**
 > * 🟢 **Completado (`✅`)**: Fase o sub-módulo implementado, integrado y con 100% de tests y tipado estricto.
+> * 🟢 **Completado con Extensión Futura (`(✅ COMPLETADO)(⏳ Extensión Futura)`)**: Totalmente operativo y verificado al 100%, con extensiones o evoluciones de escala planificadas a futuro.
 > * 🟡 **En Progreso / Parcial (`🚧`)**: Fase con hitos clave completados y otros en desarrollo o pendientes.
 > * ⚪ **Pendiente (`⏳`)**: Fase planificada para desarrollo posterior.
 
@@ -113,7 +114,7 @@ flowchart TD
 * **4.3 Papelera de Reciclaje Centralizada (`modules/trash`):** *(COMPLETADO)*
   * *Descripción:* Modelo `sys_trash_bin` con retención temporal (`expires_at`, ej. 30 días), vista unificada de elementos borrados en cualquier módulo, restauración individual/masiva y purga definitiva.
   * *Problema que soluciona:* Recuperación uniforme de desastres ante borrados accidentales de usuarios.
-* **4.4 Background Trash Purge Job:** *(COMPLETADO / ⏳ En Evolución)*
+* **4.4 Background Trash Purge Job:** *(✅ COMPLETADO)(⏳ Extensión Futura)*
   * *Descripción:* Actualmente implementado como loop periódico en `core/lifespan.py:35` para purga automática de registros caducados. Planificada su evolución a job recurrente del catálogo (`trash.purge` con `scheduled_at`), ganando trazabilidad, historial de ejecuciones, alertas y reintentos en `/api/jobs` y panel de administración.
   * *Problema que soluciona:* Mantenimiento automático de la base de datos sin acumular basura residual y con trazabilidad operacional unificada.
 
@@ -126,13 +127,14 @@ flowchart TD
 * **5.2 Motor de Exportación Avanzada (Strategy Pattern Multi-Provider):** *(✅ COMPLETADO a nivel de Router & Servicio)*
   * *Descripción:* Patrón de registro desacoplado `EXPORT_STRATEGIES` (`ExportStrategy`) con conversor multi-formato a `CSV`, `TSV`, `GOOGLE_SHEETS` (TSV con marca de orden de bytes UTF-8 BOM `\ufeff` que permite a Google Sheets y Drive auto-detectar columnas y caracteres especiales sin advertencias de codificación), `JSON` formateado y `EXCEL` (`.xlsx` nativo mediante OpenPyXL). Helper puro `format_export` integrado de forma nativa en `create_crud_router` (`POST /export`) y `BaseAuditService.export_data` para consumo inmediato en cualquier módulo derivado de CRUD en una sola línea.
   * *Problema que soluciona:* Permite descargar cualquier tabla filtrada en tiempo real en los formatos corporativos más demandados sin librerías frontend pesadas, desacoplando completamente los servicios de los detalles de serialización y tipos MIME (filosofías SRP y SSOT).
-* **5.3 Importador Masivo con Validación Fila por Fila (`imports.validate`):** *(✅ COMPLETADO)*
+* **5.3 Importador Masivo con Validación Fila por Fila (`imports.validate`):** *(✅ COMPLETADO)(⏳ Extensión Futura)*
   * *Descripción:* Motor simétrico al exportador integrado de forma nativa en `create_crud_router` (`GET /{resource}/import-template` y `POST /{resource}/import`) y el catálogo de jobs (`imports.validate`). Incluye:
     - *Generador de Plantillas Universales:* Deducción dinámica de cabeceras, tipos esperados y campos obligatorios a partir del esquema de creación Pydantic (`schema_create` / `schema_import`), excluyendo campos automáticos del sistema (`SYSTEM_IMPORT_EXCLUDE_FIELDS`). Soporte descargable para Excel (`.xlsx`) y CSV con UTF-8 BOM.
     - *Staging y Limpieza Multi-Cloud:* Almacenamiento temporal en `StorageProvider` (`imports/{job_id}_{filename}`) y borrado seguro garantizado en el bloque `finally` del worker.
     - *Semántica Transaccional Estricta:* Soporte dual para modo `ATOMIC` (todo o nada, con rollback completo si cualquier fila falla en validación Pydantic o en BD por unicidad/claves) y modo `PARTIAL` (inserción resiliente aislada con savepoints `begin_nested()` para persistir válidos y reportar inválidos), junto con flag `dry_run` de simulación.
     - *Protección Anti-Saturación & Throttle:* Truncado automático a los primeros 100 errores en `job.result` y almacenamiento del reporte íntegro en Storage si excede el límite (`errors_file_key`), con emisión de progreso throttled (cada 5% o 100 filas) compatible con streaming SSE en tiempo real y notificaciones en campanita.
     - *Registro SSOT:* Catálogo centralizado `RESOURCE_IMPORT_REGISTRY` enlazado con la sesión del worker para transaccionalidad real sin acoplamiento.
+    - *Evolución a Futuro (Resolución por Claves Naturales / Nombres Relacionales):* Extensión planificada para permitir la importación de entidades foráneas por su nombre o selector (ej. asociar `owner_id` pasando el nombre/email de usuario, o resolver sectores/categorías aceptando nombres legibles en español e inglés alineados con el endpoint `/list` del frontend), resolviendo internamente el UUID correspondiente en memoria sin forzar al usuario a conocer o introducir identificadores técnicos en la hoja de cálculo.
   * *Problema que soluciona:* Ingesta masiva segura de datos para clientes sin bloquear el ciclo HTTP ni arriesgar corrupción de datos, devolviendo reportes de errores claros y estructurados (*"Fila 12: NIF inválido"*).
 * **5.4 Catálogo Canónico de Background Jobs (`JobRegistry`):** *(🟡 Parcial / ⏳ En Expansión)*
   * *Descripción:* Ecosistema de handlers tipados registrados en `job_registry` con esquemas Pydantic para payload/result, garantizando ejecución asíncrona no bloqueante, reintentos con backoff exponencial, deduplicación y observabilidad centralizada:
@@ -149,15 +151,16 @@ flowchart TD
 
 ---
 
-### 🟢 FASE 6: Módulo de Ejemplo de Negocio (`modules/companies`) *(COMPLETADO)*
-* **6.1 Entidad `Company` & Servicios de Dominio:** *(COMPLETADO)*
-  * *Descripción:* Paridad 1:1 estricta con el módulo de referencia `plantilla-fastify/src/modules/companies`. Modelo `Company` (`companies`) con `id` (UUIDv7), `name` (150 chars), `nif` (50 chars, único), `sector` (100 chars), `website` (255 chars), `description` (Text), `owner_id` (FK a `auth_users.id`), `status` (ACTIVE/INACTIVE/ARCHIVED/TRASH), marcas temporales completas (`created_at`, `updated_at`, `deleted_at`, `restored_at`), trazabilidad de actores (`created_by`, `updated_by`, `deleted_by`, `restored_by`) y control de concurrencia optimista (`version: int`). `CompanyService` derivado de `BaseOwnedService[Company]` con validación de unicidad de NIF (HTTP 409 Conflict), búsqueda multi-campo (`name`, `nif`), filtros específicos por sector y NIF, y control estricto de aislamiento por roles/scopes RBAC (`GLOBAL`, `TEAM`, `OWN`). Rutas generadas en tan solo 27 líneas vía `create_crud_router` (`ponytail`), incluyendo listado combobox (`GET /api/companies/list`), operaciones masivas (`POST /bulk`, `/bulk/trash`, `/bulk/restore`, `/bulk/permanent`) y exportación multi-formato (`CSV`, `JSON`, `TSV`, `GOOGLE_SHEETS`, `EXCEL`).
-  * *Problema que soluciona:* Demuestra y valida en un caso de negocio real la integración armónica de todas las capacidades del framework (CRUD genérico, scopes RBAC, ownership, auditoría, papelera de reciclaje y exportación avanzada) con la mínima cantidad de código posible.
+### 🟢 FASE 6: Módulo de Ejemplo de Negocio (`modules/companies`) *(✅ COMPLETADO)*
+* **6.1 Entidad `Company` & Servicios de Dominio:** *(✅ COMPLETADO)(⏳ Extensión Futura)*
+  * *Descripción:* Paridad 1:1 estricta con el módulo de referencia `plantilla-fastify/src/modules/companies`. Modelo `Company` (`companies`) con `id` (UUIDv7), `name` (150 chars), `nif` (50 chars, único), `sector` (100 chars texto libre), `website` (255 chars), `description` (Text), `owner_id` (FK a `auth_users.id`), `status` (ACTIVE/INACTIVE/ARCHIVED/TRASH), marcas temporales completas (`created_at`, `updated_at`, `deleted_at`, `restored_at`), trazabilidad de actores (`created_by`, `updated_by`, `deleted_by`, `restored_by`) y control de concurrencia optimista (`version: int`). `CompanyService` derivado de `BaseOwnedService[Company]` con validación de unicidad de NIF (HTTP 409 Conflict), búsqueda multi-campo (`name`, `nif`), filtros específicos por sector y NIF, y control estricto de aislamiento por roles/scopes RBAC (`GLOBAL`, `TEAM`, `OWN`). Rutas generadas en tan solo 27 líneas vía `create_crud_router` (`ponytail`), incluyendo listado combobox (`GET /api/companies/list`), operaciones masivas (`POST /bulk`, `/bulk/trash`, `/bulk/restore`, `/bulk/permanent`), exportación multi-formato (`CSV`, `JSON`, `TSV`, `GOOGLE_SHEETS`, `EXCEL`) e ingesta masiva asíncrona (`GET /api/companies/import-template` y `POST /api/companies/import`) con validación y transaccionalidad real (`imports.validate`).
+  * *Nota de Arquitectura Backend-Driven:* Planificada la extensión del módulo para exponer el catálogo canónico de opciones de sector (`value`, `label`) como Single Source of Truth (SSOT) desde el backend (ej. `GET /api/companies/sectors` o metadatos de entidad) junto a un validador permisivo en `CompanyCreate` que acepte indistintamente código o etiqueta legible en importaciones y formularios, eliminando constantes hardcodeadas en frontend (`SECTOR_OPTIONS`).
+  * *Problema que soluciona:* Demuestra y valida en un caso de negocio real la integración armónica de todas las capacidades del framework (CRUD genérico, scopes RBAC, ownership, auditoría, papelera de reciclaje, exportación e importación masiva) con la mínima cantidad de código posible.
 
 ---
 
 ### 🟡 FASE 7: Auditoría Centralizada, Settings Dinámicos, Notificaciones & Métricas Prometheus *(🟢 7.1, 7.2 y 7.3 COMPLETADOS / ⏳ 7.4 PENDIENTE)*
-* **7.1 Módulo de Auditoría (`modules/audit`):** *(COMPLETADO)*
+* **7.1 Módulo de Auditoría (`modules/audit`):** *(✅ COMPLETADO)(⏳ Extensión Futura)*
   * *Descripción:* Tabla `sys_audit_logs` con registro de acciones (`CREATE`, `UPDATE`, `LOGIN`, etc.), diffs `before`/`after`, IP, User-Agent, ofuscación de datos sensibles (`[REDACTED]`) y niveles configurables (`FULL`, `PARTIAL`, `NONE`).
   * *Purga Programada (`audit.purge`):* Planificada la transición del loop periódico en `core/lifespan.py:63` a job recurrente del catálogo (`sys_jobs`) con `scheduled_at`, permitiendo trazabilidad de purgas históricas, control de reintentos y observabilidad desde `/api/jobs` y panel administrativo.
   * *Problema que soluciona:* Cumplimiento de normativas de seguridad (ISO 27001 / GDPR), retención de datos configurable y trazabilidad completa de cambios.
@@ -306,8 +309,8 @@ flowchart TD
 | **Fase 2: Motor CRUD & Router Factory** | 🟢 Completado | 100% Passing | ✅ Verificado |
 | **Fase 3: RBAC, Teams, Users & Impersonate** | 🟢 Completado | 100% Passing | ✅ Verificado (`users/routes.py`: 180 líneas) |
 | **Fase 4: Storage Multi-Cloud & Papelera** | 🟢 Completado | 100% Passing | ✅ Verificado |
-| **Fase 5: Background Jobs, Ingesta & Exportación** | 🟢 5.1, 5.2 y 5.3 Completados (5.4 en expansión) | 100% Passing (24 tests dedicados) | ✅ Verificado (`importer.py` & `jobs/routes.py` < 250 líneas) |
-| **Fase 6: Módulo de Ejemplo 'Companies'** | 🟢 Completado | 100% Passing (13 tests) | ✅ Verificado (`companies/routes.py`: 115 líneas) |
+| **Fase 5: Background Jobs, Ingesta & Exportación** | 🟢 5.1, 5.2 y 5.3 Completados (5.4 en expansión) | 100% Passing (36 tests dedicados) | ✅ Verificado (`importer.py` & `jobs/routes.py` < 250 líneas) |
+| **Fase 6: Módulo de Ejemplo 'Companies'** | 🟢 Completado | 100% Passing (24 tests) | ✅ Verificado (`companies/routes.py`: 115 líneas) |
 | **Fase 7: Auditoría, Settings & Notificaciones SSE (7.1, 7.2 & 7.3)** | 🟢 7.1, 7.2 y 7.3 Completados (7.4 pendiente) | 100% Passing (28 tests dedicados en 7.1, 7.2 y 7.3) | ✅ Verificado (todos los archivos < 185 líneas) |
 | **Fase 8: Seguridad Global & Auth Avanzado** | ⚪ Pendiente | — | ⏳ Planificado |
 | **Fase 9: Motor Prompts IA Git-like en DB** | ⚪ Pendiente | — | ⏳ Planificado |
@@ -317,7 +320,7 @@ flowchart TD
 | **Fase 13: Hardening OWASP & Batería Intrusión** | ⚪ Pendiente | — | ⏳ Planificado |
 
 ### Métricas de Calidad Global:
-* **Pytest**: **292/292 tests pasando al 100%**.
+* **Pytest**: **294/294 tests pasando al 100%**.
 * **Ruff**: Formato consistente y linter verificado en el 100% del código nuevo.
 * **Mypy**: **0 errores** de tipado estricto en los 178 archivos fuente.
 

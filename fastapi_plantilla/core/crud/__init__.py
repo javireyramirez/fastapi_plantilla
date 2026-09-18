@@ -3,19 +3,6 @@ from fastapi_plantilla.core.crud.dependencies import (
     get_scope_context,
     get_write_options,
 )
-from fastapi_plantilla.core.crud.importer import (
-    DEFAULT_MAX_IMPORT_FILE_BYTES,
-    DEFAULT_MAX_IMPORT_ROWS,
-    IMPORT_STORAGE_PREFIX,
-    MAX_EMBEDDED_ERRORS,
-    RESOURCE_IMPORT_REGISTRY,
-    SYSTEM_IMPORT_EXCLUDE_FIELDS,
-    ResourceImportDefinition,
-    generate_import_template,
-    handle_import_job,
-    parse_import_file,
-    register_import_resource,
-)
 from fastapi_plantilla.core.crud.repository import BaseRepository
 from fastapi_plantilla.core.crud.router import create_crud_router
 from fastapi_plantilla.core.crud.schema import (
@@ -52,12 +39,6 @@ from fastapi_plantilla.core.crud.service import (
 
 __all__ = [
     "DEFAULT_MAX_BULK_LIMIT",
-    "DEFAULT_MAX_IMPORT_FILE_BYTES",
-    "DEFAULT_MAX_IMPORT_ROWS",
-    "IMPORT_STORAGE_PREFIX",
-    "MAX_EMBEDDED_ERRORS",
-    "RESOURCE_IMPORT_REGISTRY",
-    "SYSTEM_IMPORT_EXCLUDE_FIELDS",
     "AuditEntry",
     "AuditFieldsSchema",
     "AuditLevel",
@@ -79,7 +60,6 @@ __all__ = [
     "PaginatedResponse",
     "PaginationMeta",
     "PaginationParams",
-    "ResourceImportDefinition",
     "RowError",
     "ScopeContext",
     "ScopeType",
@@ -88,11 +68,7 @@ __all__ = [
     "WriteOptions",
     "create_crud_router",
     "enrich_actors",
-    "generate_import_template",
     "get_scope_context",
     "get_write_options",
-    "handle_import_job",
-    "parse_import_file",
-    "register_import_resource",
     "to_uuid",
 ]
